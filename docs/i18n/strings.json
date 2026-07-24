@@ -37161,9 +37161,55 @@
      }
     },
     {
+     "name": "terminal_save_connection",
+     "en": "Save connection",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "terminal_save_connection_title",
+     "en": "Save connection",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "terminal_save_connection_id",
+     "en": "ID",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "terminal_save_connection_saved",
+     "en": "Saved connection \\\"%1$s\\\"",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [
+      "%1$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "terminal_save_connection_updated",
+     "en": "Updated connection \\\"%1$s\\\"",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [
+      "%1$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "terminal_save_connection_need_session",
+     "en": "Attach a multiplexer session first (tmux / zellij / screen / byobu)",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "terminal_enter_fullscreen",
      "en": "Enter fullscreen",
-     "comment": "RenameSessionDialog",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {
       "ar": "الدخول إلى وضع ملء الشاشة",
@@ -37182,7 +37228,7 @@
     {
      "name": "terminal_exit_fullscreen",
      "en": "Exit fullscreen",
-     "comment": "RenameSessionDialog",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {
       "ar": "الخروج من وضع ملء الشاشة",
@@ -37201,7 +37247,7 @@
     {
      "name": "terminal_vnc_username_label",
      "en": "Username (optional — VeNCrypt only)",
-     "comment": "RenameSessionDialog",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {
       "ar": "Username (optional — VeNCrypt only)",
@@ -37220,7 +37266,7 @@
     {
      "name": "terminal_vnc_username_placeholder",
      "en": "Leave blank for classic VncAuth",
-     "comment": "RenameSessionDialog",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {
       "ar": "Leave blank for classic VncAuth",
@@ -37239,7 +37285,7 @@
     {
      "name": "terminal_vnc_color_depth",
      "en": "Colour depth",
-     "comment": "RenameSessionDialog",
+     "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {
       "ar": "Colour depth",
