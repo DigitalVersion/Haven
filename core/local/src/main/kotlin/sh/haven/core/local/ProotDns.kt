@@ -1,5 +1,6 @@
 package sh.haven.core.local
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.util.Log

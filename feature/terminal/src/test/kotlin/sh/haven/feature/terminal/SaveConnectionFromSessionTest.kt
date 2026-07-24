@@ -50,7 +50,8 @@ class SaveConnectionFromSessionTest {
         val local = ssh().copy(connectionType = "LOCAL")
         assertNull(SaveConnectionFromSession.draft(local, "maid", SessionManager.TMUX, emptyList()))
         assertNull(SaveConnectionFromSession.draft(ssh(), "maid", SessionManager.NONE, emptyList()))
-        assertNull(SaveConnectionFromSession.draft(ssh(), "   ", SessionManager.TMUX, emptyList()))
+        // Empty only — whitespace sanitizes to "---", which is a valid session token.
+        assertNull(SaveConnectionFromSession.draft(ssh(), "", SessionManager.TMUX, emptyList()))
     }
 
     @Test
