@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.animation.AnimatedVisibility
@@ -600,6 +601,15 @@ fun TerminalScreen(
     LaunchedEffect(showWallpaper) { onTransparentChanged(showWallpaper) }
     DisposableEffect(Unit) { onDispose { onTransparentChanged(false) } }
 
+    val saveConnectionUi by viewModel.saveConnectionUi.collectAsState()
+    saveConnectionUi?.let { ui ->
+        SaveConnectionDialog(
+            draft = ui.draft,
+            onDismiss = { viewModel.dismissSaveConnection() },
+            onConfirm = { name -> viewModel.confirmSaveConnection(name) },
+        )
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (tabs.isEmpty()) {
             EmptyTerminalState(
@@ -796,13 +806,14 @@ fun TerminalScreen(
                                             Icon(Icons.Filled.Close, null, modifier = Modifier.size(18.dp))
                                         }
                                     }
-                                    // Rename action for the current tab — only when the underlying SSH
-                                    // session is wrapped in a session manager (tmux/zellij/screen/byobu)
-                                    // that supports rename. Avoids forcing the user to open the picker
-                                    // via a duplicate connection just to rename an existing session.
+                                    // Rename / Save connection — pin live multiplexer session
+                                    // onto a one-tap profile (name editable, id stable).
                                     val renameableName = viewModel.renameableSessionName(tab.sessionId)
-                                    if (renameableName != null) {
+                                    val canSaveConnection = viewModel.canSaveConnection(tab.sessionId)
+                                    if (renameableName != null || canSaveConnection) {
                                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                    }
+                                    if (renameableName != null) {
                                         DropdownMenuItem(
                                             text = { Text(stringResource(R.string.common_rename)) },
                                             leadingIcon = {
@@ -815,6 +826,22 @@ fun TerminalScreen(
                                             onClick = {
                                                 showTabMenu = false
                                                 renameDialogFor = renameableName
+                                            },
+                                        )
+                                    }
+                                    if (canSaveConnection) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.terminal_save_connection)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Save,
+                                                    null,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showTabMenu = false
+                                                viewModel.beginSaveConnection(tab.sessionId)
                                             },
                                         )
                                     }
@@ -1841,6 +1868,59 @@ private fun RenameSessionDialog(
                 enabled = label.isNotBlank() && label != currentLabel,
             ) {
                 Text(stringResource(R.string.terminal_rename))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
+}
+
+/**
+ * Confirm dialog for Save connection: editable name on top, stable id below,
+ * OK / Cancel. Matches the one-tap pin profiles users keep for each role.
+ */
+@Composable
+private fun SaveConnectionDialog(
+    draft: SaveConnectionFromSession.Draft,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var name by remember(draft.profileId, draft.defaultName) {
+        mutableStateOf(draft.defaultName)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.terminal_save_connection_title)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(stringResource(R.string.terminal_name)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = draft.profileId,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text(stringResource(R.string.terminal_save_connection_id)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(stringResource(R.string.common_ok))
             }
         },
         dismissButton = {

@@ -5,6 +5,10 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## Unreleased
+
+🔌 **Terminal: Save connection pins the live session as a one-tap profile** — long-press a terminal tab → **Save connection** opens a confirm dialog (editable **Name**, read-only **ID**, OK/Cancel). OK clones the live SSH/Mosh/ET host/auth into a Connections profile and pins the multiplexer session via `remoteCommand` (`tmux new -A -s …` / zellij / screen / byobu), so a cold tap re-attaches without the session picker. Same name + host + user upserts the pin instead of duplicating. Distinct from `lastSessionName` reconnect memory: this is an explicit save that closes the loop. (thanks kanazawahere)
+
 ## v5.83.10
 
 🌐 **Local Linux: the guest DNS setting now also covers package installs** — v5.83.9 made the guest's name servers configurable, but only refreshed `/etc/resolv.conf` when a *terminal* session started or a distro was installed. Installing a desktop (or anything else run inside the guest) goes down a different path, so on an existing distro those commands could still use the stale file — which is exactly the "installing Xfce silently hangs" case the setting was added to fix. Every command run in the guest now refreshes the resolver first. (#446)

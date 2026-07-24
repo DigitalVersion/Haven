@@ -2896,6 +2896,172 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
+     * Draft for "Save connection" — pin the live multiplexer session onto a
+     * connection profile (name editable, id stable).
+     */
+    data class SaveConnectionUi(
+        val draft: SaveConnectionFromSession.Draft,
+        val sourceProfileId: String,
+    )
+
+    private val _saveConnectionUi = MutableStateFlow<SaveConnectionUi?>(null)
+    val saveConnectionUi: StateFlow<SaveConnectionUi?> = _saveConnectionUi.asStateFlow()
+
+    fun dismissSaveConnection() {
+        _saveConnectionUi.value = null
+    }
+
+    /**
+     * Whether the tab menu should offer Save connection. Cheap sync check;
+     * full validation runs in [beginSaveConnection].
+     */
+    fun canSaveConnection(sessionId: String): Boolean {
+        val ssh = sessionManager.getSession(sessionId)
+        if (ssh != null &&
+            ssh.sessionManager != SessionManager.NONE &&
+            !ssh.chosenSessionName.isNullOrBlank()
+        ) {
+            return true
+        }
+        val tab = _tabs.value.find { it.sessionId == sessionId } ?: return false
+        return tab.transportType in setOf("SSH", "MOSH", "ET")
+    }
+
+    /** Open the Save connection confirm dialog for [sessionId]. */
+    fun beginSaveConnection(sessionId: String) {
+        viewModelScope.launch {
+            val pin = resolveSavePin(sessionId)
+            if (pin == null) {
+                _newTabMessage.value =
+                    appContext.getString(R.string.terminal_save_connection_need_session)
+                return@launch
+            }
+            val (source, sessionName, manager) = pin
+            val existing = withContext(Dispatchers.IO) { connectionRepository.getAll() }
+            val draft = SaveConnectionFromSession.draft(
+                source = source,
+                sessionName = sessionName,
+                manager = manager,
+                existing = existing,
+                defaultLabel = sessionName,
+            )
+            if (draft == null) {
+                _newTabMessage.value =
+                    appContext.getString(R.string.terminal_save_connection_need_session)
+                return@launch
+            }
+            _saveConnectionUi.value =
+                SaveConnectionUi(draft = draft, sourceProfileId = source.id)
+        }
+    }
+
+    /**
+     * Persist the draft with the user-edited [displayName]. Upserts by
+     * label+host+user so a second save with the same name updates the pin.
+     */
+    fun confirmSaveConnection(displayName: String) {
+        val ui = _saveConnectionUi.value ?: return
+        viewModelScope.launch {
+            val source = withContext(Dispatchers.IO) {
+                connectionRepository.getById(ui.sourceProfileId)
+            } ?: run {
+                _saveConnectionUi.value = null
+                return@launch
+            }
+            val existing = withContext(Dispatchers.IO) { connectionRepository.getAll() }
+            val result = SaveConnectionFromSession.build(
+                source = source,
+                displayName = displayName,
+                sessionName = ui.draft.sessionName,
+                manager = ui.draft.sessionManager,
+                existing = existing,
+                preferredId = ui.draft.profileId,
+            )
+            if (result == null) {
+                _newTabMessage.value =
+                    appContext.getString(R.string.terminal_save_connection_need_session)
+                _saveConnectionUi.value = null
+                return@launch
+            }
+            withContext(Dispatchers.IO) { connectionRepository.save(result.profile) }
+            _saveConnectionUi.value = null
+            val msgRes = if (result.created) {
+                R.string.terminal_save_connection_saved
+            } else {
+                R.string.terminal_save_connection_updated
+            }
+            _newTabMessage.value = appContext.getString(msgRes, result.profile.label)
+        }
+    }
+
+    /**
+     * Resolve the multiplexer session to pin from a live terminal tab.
+     * Prefers an SSH [SessionManager] attach; falls back to profile
+     * remoteCommand / lastSessionName (Mosh/ET + remoteCommand profiles).
+     */
+    private suspend fun resolveSavePin(
+        sessionId: String,
+    ): Triple<sh.haven.core.data.db.entities.ConnectionProfile, String, SessionManager>? {
+        val tab = _tabs.value.find { it.sessionId == sessionId }
+        val ssh = sessionManager.getSession(sessionId)
+        val profileId = tab?.profileId ?: ssh?.profileId ?: return null
+        val source = withContext(Dispatchers.IO) {
+            connectionRepository.getById(profileId)
+        } ?: return null
+        if (!source.isSsh) return null
+
+        if (ssh != null &&
+            ssh.sessionManager != SessionManager.NONE &&
+            !ssh.chosenSessionName.isNullOrBlank()
+        ) {
+            return Triple(source, ssh.chosenSessionName!!, ssh.sessionManager)
+        }
+
+        // remoteCommand pin (incl. Mosh/ET profiles that skip SessionManager)
+        SaveConnectionFromSession.sessionNameFromRemoteCommand(source.remoteCommand)?.let { name ->
+            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
+                ?: SessionManager.TMUX
+            if (mgr != SessionManager.NONE) return Triple(source, name, mgr)
+        }
+
+        // lastSessionName single (reconnect memory) — still a usable pin target
+        val last = source.lastSessionName
+            ?.split("|")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.singleOrNull()
+        if (last != null) {
+            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
+                ?: preferencesRepository.sessionManager.first().let {
+                    try {
+                        SessionManager.valueOf(it.name)
+                    } catch (_: IllegalArgumentException) {
+                        SessionManager.TMUX
+                    }
+                }
+            if (mgr != SessionManager.NONE) return Triple(source, last, mgr)
+        }
+
+        // Tab label last resort (often equals the multiplexer name)
+        val label = tab?.label?.trim()?.takeIf { it.isNotEmpty() }
+        if (label != null) {
+            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
+                ?: preferencesRepository.sessionManager.first().let {
+                    try {
+                        SessionManager.valueOf(it.name)
+                    } catch (_: IllegalArgumentException) {
+                        SessionManager.TMUX
+                    }
+                }
+            if (mgr != SessionManager.NONE) {
+                val san = SessionManager.sanitizeSessionName(label)
+                if (san.isNotBlank()) return Triple(source, san, mgr)
+            }
+        }
+        return null
+    }
+
+    /**
      * Rename the tmux/zellij/screen session backing a connected tab — no need
      * to open a duplicate session via the picker. On success, propagates the
      * new name to the profile's lastSessionName + chosenSessionName + tab label.
