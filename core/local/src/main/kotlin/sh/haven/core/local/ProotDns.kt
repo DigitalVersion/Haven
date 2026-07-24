@@ -97,6 +97,7 @@ object ProotDns {
         nameservers.joinToString(separator = "") { "nameserver $it\n" }
 
     /** The device's current resolvers, newest-network-first; empty when unavailable. */
+    @SuppressLint("MissingPermission") // ACCESS_NETWORK_STATE declared in app manifest
     fun systemNameservers(context: Context): List<String> = try {
         val manager = context.getSystemService(ConnectivityManager::class.java)
         val network = manager?.activeNetwork
