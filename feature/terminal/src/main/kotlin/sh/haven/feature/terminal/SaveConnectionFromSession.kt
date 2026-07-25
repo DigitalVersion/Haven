@@ -92,7 +92,7 @@ object SaveConnectionFromSession {
     ): Result? {
         if (!source.isSsh) return null
         val sanitized = SessionManager.sanitizeSessionName(sessionName)
-        val remote = pinRemoteCommand(manager, sanitized) ?: return null
+        val standardRemote = pinRemoteCommand(manager, sanitized) ?: return null
         val label = displayName.trim().ifBlank { sanitized }
         if (label.isBlank()) return null
 
@@ -101,6 +101,15 @@ object SaveConnectionFromSession {
         val created = match == null
         val sortOrder = match?.sortOrder
             ?: ((existing.maxOfOrNull { it.sortOrder } ?: -1) + 1)
+
+        // Fleet/custom pins (e.g. bash …/haven-role-attach dogfood) must not be
+        // clobbered by a re-Save that only re-derives the simple tmux pin — that
+        // was wiping conversation-recovery wrappers and leaving empty shells.
+        val remote = chooseRemoteCommand(
+            standard = standardRemote,
+            sourceRemote = source.remoteCommand,
+            existingRemote = match?.remoteCommand,
+        )
 
         val base = match ?: source
         val profile = base.copy(
@@ -162,6 +171,35 @@ object SaveConnectionFromSession {
                 it.username == source.username &&
                 it.port == source.port
         }
+
+    /**
+     * Prefer a non-standard (fleet/wrapper) remoteCommand already on the card
+     * or live source over the simple multiplexer pin, so Save does not destroy
+     * conversation-recovery hooks.
+     */
+    fun chooseRemoteCommand(
+        standard: String,
+        sourceRemote: String?,
+        existingRemote: String?,
+    ): String {
+        val candidates = listOfNotNull(existingRemote, sourceRemote)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        val custom = candidates.firstOrNull { !isStandardMultiplexerPin(it) }
+        return custom ?: standard
+    }
+
+    /** True when [cmd] is exactly a pin written by [pinRemoteCommand] (simple form). */
+    fun isStandardMultiplexerPin(cmd: String): Boolean {
+        val t = cmd.trim()
+        if (t.isEmpty()) return false
+        // Must parse as a known pin *and* not look like a shell wrapper.
+        if (sessionNameFromRemoteCommand(t) == null) return false
+        if (t.contains("&&") || t.contains(';') || t.contains('|')) return false
+        if (t.startsWith("bash ") || t.startsWith("sh ") || t.contains("haven-role-attach")) return false
+        if (t.contains('/')) return false
+        return true
+    }
 
     /**
      * Parse a session name out of a profile [remoteCommand] pin (the simple

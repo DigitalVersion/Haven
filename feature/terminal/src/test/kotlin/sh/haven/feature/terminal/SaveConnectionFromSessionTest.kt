@@ -137,6 +137,44 @@ class SaveConnectionFromSessionTest {
     }
 
     @Test
+    fun build_preservesCustomFleetWrapperRemoteCommand() {
+        val wrapper =
+            "bash /home/tin/Central_Command/03_toolkit/bin/haven-role-attach dogfood"
+        val source = ssh(id = "live", label = "seer · Dogfood", useMosh = false).copy(
+            remoteCommand = wrapper,
+        )
+        val existing = listOf(
+            ssh(id = "dogfood", label = "seer · Dogfood", useMosh = true, keyId = "k").copy(
+                remoteCommand = wrapper,
+                lastSessionName = "haven-dogfood",
+            ),
+        )
+        val result = SaveConnectionFromSession.build(
+            source = source,
+            displayName = "seer · Dogfood",
+            sessionName = "haven-dogfood",
+            manager = SessionManager.TMUX,
+            existing = existing,
+            preferredId = "unused",
+        )
+        assertNotNull(result)
+        assertFalse(result!!.created)
+        // Must NOT clobber fleet L4 wrapper with plain tmux pin
+        assertEquals(wrapper, result.profile.remoteCommand)
+        assertEquals("haven-dogfood", result.profile.lastSessionName)
+    }
+
+    @Test
+    fun isStandardMultiplexerPin_distinguishesWrapper() {
+        assertTrue(SaveConnectionFromSession.isStandardMultiplexerPin("tmux new -A -s maid"))
+        assertFalse(
+            SaveConnectionFromSession.isStandardMultiplexerPin(
+                "bash /home/tin/Central_Command/03_toolkit/bin/haven-role-attach dogfood",
+            ),
+        )
+    }
+
+    @Test
     fun build_zellijPin() {
         val result = SaveConnectionFromSession.build(
             source = ssh(),
