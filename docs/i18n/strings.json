@@ -37201,7 +37201,7 @@
     },
     {
      "name": "terminal_save_connection_need_session",
-     "en": "Attach a multiplexer session first (tmux / zellij / screen / byobu)",
+     "en": "Couldn\\'t detect a session name for this tab. Open a named tmux/zellij/screen session, or set Remote command on the profile, then try Save connection again.",
      "comment": "Save connection (pin live session onto a profile for one-tap reconnect)",
      "args": [],
      "t": {}

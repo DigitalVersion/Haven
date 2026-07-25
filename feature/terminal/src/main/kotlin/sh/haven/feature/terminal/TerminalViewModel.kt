@@ -2995,15 +2995,34 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
+     * Manager to use when writing a pin. Never [SessionManager.NONE] — a save
+     * always needs a real attach command. Global pref NONE still defaults to
+     * tmux (most common), otherwise dogfood of remoteCommand / plain-shell
+     * profiles falsely shows "attach a multiplexer first" while already inside one.
+     */
+    private suspend fun resolveManagerForPin(source: sh.haven.core.data.db.entities.ConnectionProfile): SessionManager {
+        SaveConnectionFromSession.parseSessionManager(source.sessionManager)
+            ?.takeIf { it != SessionManager.NONE }
+            ?.let { return it }
+        return try {
+            val pref = SessionManager.valueOf(preferencesRepository.sessionManager.first().name)
+            if (pref == SessionManager.NONE) SessionManager.TMUX else pref
+        } catch (_: IllegalArgumentException) {
+            SessionManager.TMUX
+        }
+    }
+
+    /**
      * Resolve the multiplexer session to pin from a live terminal tab.
      * Prefers an SSH [SessionManager] attach; falls back to profile
-     * remoteCommand / lastSessionName (Mosh/ET + remoteCommand profiles).
+     * remoteCommand / lastSessionName / tab label (Mosh/ET + remoteCommand).
      */
     private suspend fun resolveSavePin(
         sessionId: String,
     ): Triple<sh.haven.core.data.db.entities.ConnectionProfile, String, SessionManager>? {
         val tab = _tabs.value.find { it.sessionId == sessionId }
         val ssh = sessionManager.getSession(sessionId)
+        // Mosh/ET tabs don't live in SshSessionManager — profileId is only on the tab.
         val profileId = tab?.profileId ?: ssh?.profileId ?: return null
         val source = withContext(Dispatchers.IO) {
             connectionRepository.getById(profileId)
@@ -3017,46 +3036,35 @@ class TerminalViewModel @Inject constructor(
             return Triple(source, ssh.chosenSessionName!!, ssh.sessionManager)
         }
 
+        val mgr = resolveManagerForPin(source)
+
         // remoteCommand pin (incl. Mosh/ET profiles that skip SessionManager)
         SaveConnectionFromSession.sessionNameFromRemoteCommand(source.remoteCommand)?.let { name ->
-            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
-                ?: SessionManager.TMUX
-            if (mgr != SessionManager.NONE) return Triple(source, name, mgr)
+            return Triple(source, name, mgr)
         }
 
-        // lastSessionName single (reconnect memory) — still a usable pin target
-        val last = source.lastSessionName
+        // lastSessionName: single, or pick the part matching the tab label
+        val lastParts = source.lastSessionName
             ?.split("|")
             ?.map { it.trim() }
             ?.filter { it.isNotEmpty() }
-            ?.singleOrNull()
-        if (last != null) {
-            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
-                ?: preferencesRepository.sessionManager.first().let {
-                    try {
-                        SessionManager.valueOf(it.name)
-                    } catch (_: IllegalArgumentException) {
-                        SessionManager.TMUX
-                    }
-                }
-            if (mgr != SessionManager.NONE) return Triple(source, last, mgr)
+            .orEmpty()
+        if (lastParts.size == 1) {
+            return Triple(source, lastParts[0], mgr)
+        }
+        val tabLabel = tab?.label?.trim().orEmpty()
+        if (lastParts.size > 1 && tabLabel.isNotEmpty()) {
+            val match = lastParts.firstOrNull {
+                it == tabLabel || SessionManager.sanitizeSessionName(it) ==
+                    SessionManager.sanitizeSessionName(tabLabel)
+            }
+            if (match != null) return Triple(source, match, mgr)
         }
 
-        // Tab label last resort (often equals the multiplexer name)
-        val label = tab?.label?.trim()?.takeIf { it.isNotEmpty() }
-        if (label != null) {
-            val mgr = SaveConnectionFromSession.parseSessionManager(source.sessionManager)
-                ?: preferencesRepository.sessionManager.first().let {
-                    try {
-                        SessionManager.valueOf(it.name)
-                    } catch (_: IllegalArgumentException) {
-                        SessionManager.TMUX
-                    }
-                }
-            if (mgr != SessionManager.NONE) {
-                val san = SessionManager.sanitizeSessionName(label)
-                if (san.isNotBlank()) return Triple(source, san, mgr)
-            }
+        // Tab label last resort (often equals the multiplexer / role name)
+        if (tabLabel.isNotEmpty()) {
+            val san = SessionManager.sanitizeSessionName(tabLabel)
+            if (san.isNotBlank()) return Triple(source, san, mgr)
         }
         return null
     }
