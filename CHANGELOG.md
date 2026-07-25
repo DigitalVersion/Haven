@@ -7,7 +7,9 @@ compare link is appended automatically — don't add it here.
 
 ## Unreleased
 
-🔌 **Terminal: Save connection pins the live session as a one-tap profile** — long-press a terminal tab → **Save connection** opens a confirm dialog (editable **Name**, read-only **ID**, OK/Cancel). OK clones the live SSH/Mosh/ET host/auth into a Connections profile and pins the multiplexer session via `remoteCommand` (`tmux new -A -s …` / zellij / screen / byobu), so a cold tap re-attaches without the session picker. Same name + host + user upserts the pin instead of duplicating. Distinct from `lastSessionName` reconnect memory: this is an explicit save that closes the loop. (thanks kanazawahere)
+📍 **Terminal: Details — where am I? (door · path · room)** — long-press a terminal tab → **Details** shows the three layers that are easy to lose track of on a phone: **door** (connection card label/id/host), **path** (SSH / Mosh / Eternal Terminal), and **room** (live multiplexer session vs the card's remoteCommand pin). A mismatch is highlighted so a detour into an auto-created session is obvious. **Copy** puts the full sitrep on the clipboard for support. (thanks kanazawahere)
+
+🔌 **Terminal: Save connection pins the live session as a one-tap profile** — long-press a terminal tab → **Save connection** opens a confirm dialog with door/path/room context, editable **card name**, read-only **profile id**, and an explicit warning when the live room differs from the card pin (save repins to the live room). OK clones host/auth and writes `remoteCommand` (`tmux new -A -s …` / zellij / screen / byobu). Same name + host + user upserts instead of duplicating. Distinct from `lastSessionName` reconnect memory. (thanks kanazawahere)
 
 ## v5.83.10
 
