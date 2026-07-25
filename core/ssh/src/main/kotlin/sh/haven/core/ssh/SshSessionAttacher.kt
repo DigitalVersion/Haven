@@ -152,6 +152,42 @@ class SshSessionAttacher @Inject constructor(
     }
 
     /**
+     * Last few lines of live terminal content for one multiplexer session
+     * on [profileId] — v1 (session-preview-grid) data source for the
+     * session-browser grid: lets a user see what's actually happening in a
+     * session before attaching, instead of guessing from the name alone.
+     *
+     * One-shot only (no polling/tailing) — refresh means "call this again",
+     * e.g. when the browser dialog is reopened. Null when unknowable
+     * (manager has no [SessionManager.captureCommand] for v1, e.g.
+     * zellij/screen; no live client; or the exec failed) so the caller can
+     * render a "no preview" placeholder instead of stale or wrong text.
+     *
+     * Security note: this reads real remote terminal content — a chat
+     * transcript, a build log, a shell prompt mid-command — and surfaces it
+     * as UI text (grid card, notification-adjacent state). Same trust
+     * boundary as attaching to the session itself (this profile's SSH key
+     * already has that access), but callers/reviewers should keep in mind
+     * previews can leak into places a full attach wouldn't — e.g. logging,
+     * screenshots, or (if ever added) any parent UI that lists profiles
+     * more casually than the attach flow does.
+     */
+    suspend fun capturePreview(profileId: String, sessionName: String): String? {
+        val profile = connectionRepository.getById(profileId) ?: return null
+        val manager = resolveSessionManager(profile)
+        val captureCmd = manager.captureCommand?.invoke(SessionManager.sanitizeSessionName(sessionName))
+            ?: return null
+        val client = sessionManager.getSshClientForProfile(profileId) ?: return null
+        return try {
+            val result = client.execCommand(captureCmd, timeoutMs = 5_000L)
+            if (result.exitStatus == 0) SessionManager.stripAnsi(result.stdout) else null
+        } catch (e: Exception) {
+            Log.d(TAG, "capturePreview($profileId, $sessionName) failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Persist every open multiplexer session name for the profile
      * (pipe-delimited [ConnectionProfile.lastSessionName]) — same
      * bookkeeping `finishConnect` does on a primary dial, so "remembered

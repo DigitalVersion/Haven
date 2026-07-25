@@ -59,6 +59,7 @@
     <string name="connections_menu_port_forwards">Port Forwards</string>
     <string name="connections_menu_connect_with_password">Connect with password</string>
     <string name="connections_menu_sessions">Sessions</string>
+    <string name="connections_menu_browse_sessions">Browse sessions</string>
     <string name="connections_menu_duplicate">Duplicate</string>
     <string name="connections_use_android_shell">Use native Android shell</string>
     <string name="connections_menu_disconnect">Disconnect</string>
@@ -100,6 +101,12 @@
     <string name="connections_kill_session">Kill session</string>
     <string name="connections_new_session_create">Create</string>
     <string name="connections_open_plain_shell">Open plain shell</string>
+
+    <!-- Session browser grid dialog (v1: session-preview-grid) -->
+    <string name="connections_browse_sessions_title">%1$s sessions</string>
+    <string name="connections_browse_sessions_loading">Loading…</string>
+    <string name="connections_browse_sessions_no_preview">No preview available</string>
+    <string name="connections_browse_sessions_empty">No live sessions</string>
 
     <!-- Rename dialog -->
     <string name="connections_rename_title">Rename Connection</string>

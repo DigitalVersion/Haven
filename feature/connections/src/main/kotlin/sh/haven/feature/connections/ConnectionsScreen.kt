@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.NoEncryption
 import androidx.compose.material.icons.filled.Password
@@ -228,6 +229,7 @@ fun ConnectionsScreen(
     val navigateBackToConnections by viewModel.navigateToConnections.collectAsState()
     val deploySuccess by viewModel.deploySuccess.collectAsState()
     val sessionSelection by viewModel.sessionSelection.collectAsState()
+    val sessionBrowser by viewModel.sessionBrowser.collectAsState()
     val passwordFallback by viewModel.passwordFallback.collectAsState()
     val pendingTunnelDependent by viewModel.pendingTunnelDependent.collectAsState()
     val hostKeyPrompt by viewModel.hostKeyPrompt.collectAsState()
@@ -870,6 +872,30 @@ fun ConnectionsScreen(
         )
     }
 
+    // "Browse sessions" grid (v1: session-preview-grid) — separate from
+    // sessionSelection above: this reads existing sessions on an
+    // ALREADY-CONNECTED profile with a live content preview per tile,
+    // rather than the mid-dial "which session becomes the first tab" flow.
+    sessionBrowser?.let { browser ->
+        sh.haven.core.ui.SessionBrowserDialog(
+            title = stringResource(R.string.connections_browse_sessions_title, browser.managerLabel),
+            sessions = browser.items.map {
+                sh.haven.core.ui.SessionPreviewTile(
+                    name = it.name,
+                    preview = it.preview,
+                    previewLoading = it.previewLoading,
+                )
+            },
+            onSelect = { name -> viewModel.onSessionBrowserSelected(name) },
+            onDismiss = { viewModel.dismissSessionBrowser() },
+            onRefresh = { viewModel.browseSessions(browser.profileId) },
+            cancelLabel = stringResource(R.string.common_cancel),
+            loadingLabel = stringResource(R.string.connections_browse_sessions_loading),
+            noPreviewLabel = stringResource(R.string.connections_browse_sessions_no_preview),
+            emptyLabel = stringResource(R.string.connections_browse_sessions_empty),
+        )
+    }
+
     if (showMoshSetupGuide) {
         val uriHandler = LocalUriHandler.current
         AlertDialog(
@@ -1301,6 +1327,7 @@ fun ConnectionsScreen(
                                     onReauthRclone = { viewModel.reauthRcloneProfile(profile) },
                                     onCancelOAuth = { viewModel.cancelPendingOAuth(profile) },
                                     onNewSession = { viewModel.openNewSession(profile.id) },
+                                    onBrowseSessions = { viewModel.browseSessions(profile.id) },
                                     enableDrag = !isFiltering,
                                     dragModifier = if (!isFiltering) Modifier
                                         .zIndex(if (isDragged) 1f else 0f)
@@ -1414,6 +1441,7 @@ fun ConnectionsScreen(
                                         onReauthRclone = { viewModel.reauthRcloneProfile(dep) },
                                         onCancelOAuth = { viewModel.cancelPendingOAuth(dep) },
                                         onNewSession = { viewModel.openNewSession(dep.id) },
+                                        onBrowseSessions = { viewModel.browseSessions(dep.id) },
                                         dragModifier = if (ancestorDragged) Modifier
                                             .zIndex(1f)
                                             .offset(
@@ -1590,6 +1618,7 @@ private fun ConnectionTreeItem(
     onReauthRclone: () -> Unit,
     onCancelOAuth: () -> Unit,
     onNewSession: () -> Unit,
+    onBrowseSessions: () -> Unit = {},
     enableDrag: Boolean = true,
     dragModifier: Modifier = Modifier,
     onDragStart: () -> Unit = {},
@@ -1869,6 +1898,11 @@ private fun ConnectionTreeItem(
                     text = { Text(stringResource(R.string.connections_menu_sessions)) },
                     leadingIcon = { Icon(Icons.Filled.Add, null) },
                     onClick = { showMenu = false; onNewSession() },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.connections_menu_browse_sessions)) },
+                    leadingIcon = { Icon(Icons.Filled.GridView, null) },
+                    onClick = { showMenu = false; onBrowseSessions() },
                 )
             }
             if (profileStatus == ProfileStatus.CONNECTED) {

@@ -7,6 +7,13 @@ package sh.haven.core.ssh
  *                or null for no session manager.
  * @param listCommand Shell command to list existing sessions, or null if not applicable.
  * @param killCommand Template that produces a command to kill/delete a session by name.
+ * @param captureCommand Template that produces a one-shot exec command capturing the last
+ *                few lines of a live session's terminal buffer to stdout, for the
+ *                session-browser preview grid (v1: session-preview-grid). Null when the
+ *                manager has no scrollback-capture primitive that reads cleanly off stdout —
+ *                zellij's `dump-screen` and screen's `hardcopy` both write to a remote file
+ *                instead of a pipe, so those are out of scope for v1; callers show a
+ *                "no preview" placeholder for those managers.
  */
 enum class SessionManager(
     val label: String,
@@ -14,6 +21,7 @@ enum class SessionManager(
     val listCommand: String?,
     val killCommand: ((String) -> String)? = null,
     val renameCommand: ((old: String, new: String) -> String)? = null,
+    val captureCommand: ((String) -> String)? = null,
 ) {
     NONE("None", null, null),
     TMUX("tmux",
@@ -21,6 +29,7 @@ enum class SessionManager(
         "sh -c 'tmux ls -F \"#{session_name}\" 2>/dev/null'",
         { name -> "sh -c 'tmux kill-session -t $name'" },
         { old, new -> "sh -c 'tmux rename-session -t $old $new'" },
+        captureCommand = { name -> "sh -c 'tmux capture-pane -p -S -8 -t $name 2>/dev/null'" },
     ),
     ZELLIJ("zellij",
         { name -> "exec sh -c 'if ! command -v zellij >/dev/null 2>&1; then echo \"Haven: zellij not found. See https://zellij.dev/documentation/installation or change session manager in connection settings.\"; else exec zellij attach $name --create; fi'" },
@@ -53,7 +62,14 @@ enum class SessionManager(
 
         /** Strip ANSI escape sequences (colors, bold, etc.) from a string. */
         private val ANSI_REGEX = Regex("\\x1B\\[[0-9;]*[a-zA-Z]")
-        private fun stripAnsi(s: String): String = s.replace(ANSI_REGEX, "")
+
+        /**
+         * Strip ANSI escape sequences (colors, bold, etc.) from a string.
+         * Internal (not private) so [SshSessionAttacher.capturePreview] can
+         * clean a `capture-pane` snippet before it's rendered as a preview —
+         * same module, same reason [parseSessionList] needs it below.
+         */
+        internal fun stripAnsi(s: String): String = s.replace(ANSI_REGEX, "")
 
         /**
          * Parse session list output into session names.

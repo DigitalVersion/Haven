@@ -3933,6 +3933,101 @@ class ConnectionsViewModel @Inject constructor(
         sshSessionManager.removeSession(sel.sessionId)
     }
 
+    // --- Session browser (v1: session-preview-grid) ---
+
+    /** One tile in [sessionBrowser]; mirrors [sh.haven.core.ui.SessionPreviewTile]. */
+    data class SessionPreviewItem(
+        val name: String,
+        val preview: String? = null,
+        val previewLoading: Boolean = true,
+    )
+
+    /** When non-null, the UI shows the session-browser grid dialog. */
+    data class SessionBrowserSelection(
+        val profileId: String,
+        val managerLabel: String,
+        val items: List<SessionPreviewItem>,
+    )
+
+    private val _sessionBrowser = MutableStateFlow<SessionBrowserSelection?>(null)
+    val sessionBrowser: StateFlow<SessionBrowserSelection?> = _sessionBrowser.asStateFlow()
+
+    /**
+     * "Browse sessions" — grid of live tmux/zellij/screen sessions on an
+     * ALREADY-CONNECTED profile, each with a snippet of real terminal
+     * content (v1: session-preview-grid, inspired by — not a clone of —
+     * the Tin Mobile web app's session grid). Batin's framing: the name
+     * alone isn't enough to know what's inside; you have to see it.
+     *
+     * Distinct from [_sessionSelection] (shown mid-dial, deciding which
+     * session becomes the connection's first tab): this is read-then-attach
+     * on a profile that's already up, riding the live connection via
+     * [sshSessionAttacher] — the same "one SSH connection, several
+     * multiplexer sessions" model [restorePreviousSessions] uses, rather
+     * than dialing a fresh connection per browse.
+     *
+     * Refresh is on-open only (no polling/tailing) — call this again
+     * (e.g. the dialog's refresh button) to re-fetch; that's the full v1
+     * scope, not a missing feature.
+     */
+    fun browseSessions(profileId: String) {
+        viewModelScope.launch {
+            val names = sshSessionAttacher.listRemoteSessions(profileId)
+            if (names.isNullOrEmpty()) {
+                _error.value = "No live sessions found on this host"
+                return@launch
+            }
+            val manager = resolveSessionManager(repository.getById(profileId))
+            _sessionBrowser.value = SessionBrowserSelection(
+                profileId = profileId,
+                managerLabel = manager.label,
+                items = names.map { SessionPreviewItem(name = it) },
+            )
+            // Each tile's preview fetches (and updates the grid)
+            // independently, so one slow/hung session doesn't hold up the
+            // rest of the grid rendering.
+            names.forEach { name ->
+                launch {
+                    val preview = sshSessionAttacher.capturePreview(profileId, name)
+                    val current = _sessionBrowser.value ?: return@launch
+                    if (current.profileId != profileId) return@launch // dialog moved on
+                    _sessionBrowser.value = current.copy(
+                        items = current.items.map {
+                            if (it.name == name) it.copy(preview = preview, previewLoading = false) else it
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissSessionBrowser() {
+        _sessionBrowser.value = null
+    }
+
+    /** User tapped a tile in the browser grid — attach it as a new tab on the live connection. */
+    fun onSessionBrowserSelected(sessionName: String) {
+        val sel = _sessionBrowser.value ?: return
+        _sessionBrowser.value = null
+        val profileId = sel.profileId
+        viewModelScope.launch {
+            _connectingProfileId.value = profileId
+            try {
+                when (val r = sshSessionAttacher.ensureAttached(profileId, sessionName)) {
+                    is sh.haven.core.ssh.SshSessionAttacher.Result.Attached,
+                    is sh.haven.core.ssh.SshSessionAttacher.Result.AlreadyLive,
+                    -> _navigateToTerminal.value = profileId
+                    is sh.haven.core.ssh.SshSessionAttacher.Result.NoLiveConnection ->
+                        _error.value = "Connection is not up"
+                    is sh.haven.core.ssh.SshSessionAttacher.Result.Failed ->
+                        _error.value = r.message
+                }
+            } finally {
+                _connectingProfileId.value = null
+            }
+        }
+    }
+
     /**
      * Connect to a jump host profile, reusing an existing connected session if available.
      * Returns Pair(sessionId, reused) — reused=true if an existing session was used.
