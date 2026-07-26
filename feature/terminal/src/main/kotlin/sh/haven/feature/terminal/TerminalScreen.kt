@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.animation.AnimatedVisibility
@@ -86,6 +88,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -149,6 +155,8 @@ fun TerminalScreen(
     toolbarUniformGrid: Boolean = false,
     editModeControlsPlacement: sh.haven.core.data.preferences.EditModeControlsPlacement = sh.haven.core.data.preferences.EditModeControlsPlacement.LEFT,
     desktopKeyPlacement: sh.haven.core.data.preferences.DesktopKeyPlacement = sh.haven.core.data.preferences.DesktopKeyPlacement.LEFT,
+    fullscreenButtonCorner: sh.haven.core.data.preferences.FullscreenButtonCorner = sh.haven.core.data.preferences.FullscreenButtonCorner.DEFAULT,
+    onFullscreenButtonCornerChange: (sh.haven.core.data.preferences.FullscreenButtonCorner) -> Unit = {},
     toolbarMinKeyWidth: Int = sh.haven.core.data.preferences.UserPreferencesRepository.DEFAULT_TOOLBAR_MIN_BUTTON_WIDTH,
     showSearchButton: Boolean = false,
     showCopyOutputButton: Boolean = false,
@@ -594,6 +602,22 @@ fun TerminalScreen(
     LaunchedEffect(showWallpaper) { onTransparentChanged(showWallpaper) }
     DisposableEffect(Unit) { onDispose { onTransparentChanged(false) } }
 
+    val saveConnectionUi by viewModel.saveConnectionUi.collectAsState()
+    saveConnectionUi?.let { ui ->
+        SaveConnectionDialog(
+            ui = ui,
+            onDismiss = { viewModel.dismissSaveConnection() },
+            onConfirm = { name -> viewModel.confirmSaveConnection(name) },
+        )
+    }
+    val whereaboutsUi by viewModel.whereaboutsUi.collectAsState()
+    whereaboutsUi?.let { w ->
+        WhereaboutsDialog(
+            whereabouts = w,
+            onDismiss = { viewModel.dismissWhereabouts() },
+        )
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (tabs.isEmpty()) {
             EmptyTerminalState(
@@ -790,13 +814,30 @@ fun TerminalScreen(
                                             Icon(Icons.Filled.Close, null, modifier = Modifier.size(18.dp))
                                         }
                                     }
-                                    // Rename action for the current tab — only when the underlying SSH
-                                    // session is wrapped in a session manager (tmux/zellij/screen/byobu)
-                                    // that supports rename. Avoids forcing the user to open the picker
-                                    // via a duplicate connection just to rename an existing session.
+                                    // Details (door/path/room) + Rename + Save connection
                                     val renameableName = viewModel.renameableSessionName(tab.sessionId)
-                                    if (renameableName != null) {
+                                    val canSaveConnection = viewModel.canSaveConnection(tab.sessionId)
+                                    val canShowDetails = viewModel.canShowDetails(tab.sessionId)
+                                    if (renameableName != null || canSaveConnection || canShowDetails) {
                                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                    }
+                                    if (canShowDetails) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.terminal_details)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Info,
+                                                    null,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showTabMenu = false
+                                                viewModel.beginShowDetails(tab.sessionId)
+                                            },
+                                        )
+                                    }
+                                    if (renameableName != null) {
                                         DropdownMenuItem(
                                             text = { Text(stringResource(R.string.common_rename)) },
                                             leadingIcon = {
@@ -809,6 +850,22 @@ fun TerminalScreen(
                                             onClick = {
                                                 showTabMenu = false
                                                 renameDialogFor = renameableName
+                                            },
+                                        )
+                                    }
+                                    if (canSaveConnection) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.terminal_save_connection)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Save,
+                                                    null,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showTabMenu = false
+                                                viewModel.beginSaveConnection(tab.sessionId)
                                             },
                                         )
                                     }
@@ -1246,13 +1303,44 @@ fun TerminalScreen(
                             modifier = Modifier.align(Alignment.TopCenter),
                         )
 
-                        // Fullscreen toggle (#138). Small low-opacity overlay
-                        // top-right; the TopCenter slot is taken by the
-                        // disconnect banner so they never collide.
+                        // Fullscreen toggle (#138). Small low-opacity overlay in
+                        // a corner (default top-right; the TopCenter slot is the
+                        // disconnect banner's, so they never collide). Tap toggles
+                        // fullscreen; hold-drag moves it to another corner, snapping
+                        // to whichever it's released nearest and remembering it (#445).
+                        var fsDragOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                        var fsButtonCoords by remember {
+                            mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null)
+                        }
                         IconButton(
                             onClick = { fullscreen = !fullscreen },
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
+                                .align(fullscreenButtonCorner.toComposeAlignment())
+                                .offset { androidx.compose.ui.unit.IntOffset(fsDragOffset.x.toInt(), fsDragOffset.y.toInt()) }
+                                .onGloballyPositioned { fsButtonCoords = it }
+                                .pointerInput(Unit) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDrag = { change, delta ->
+                                            change.consume()
+                                            fsDragOffset += delta
+                                        },
+                                        onDragEnd = {
+                                            val coords = fsButtonCoords
+                                            val parent = coords?.parentLayoutCoordinates
+                                            if (coords != null && parent != null) {
+                                                val c = coords.boundsInParent().center
+                                                onFullscreenButtonCornerChange(
+                                                    sh.haven.core.data.preferences.FullscreenButtonCorner.nearest(
+                                                        c.x, c.y,
+                                                        parent.size.width.toFloat(),
+                                                        parent.size.height.toFloat(),
+                                                    ),
+                                                )
+                                            }
+                                            fsDragOffset = androidx.compose.ui.geometry.Offset.Zero
+                                        },
+                                    )
+                                }
                                 .padding(2.dp)
                                 .size(32.dp),
                         ) {
@@ -1528,6 +1616,14 @@ private fun handleLayoutAwareKeyEvent(
 internal fun bracketPasteWrap(text: CharSequence, bracketPasteMode: Boolean): String =
     if (bracketPasteMode) "\u001b[200~$text\u001b[201~" else text.toString()
 
+/** Box alignment for the fullscreen button's persisted corner (#445). */
+private fun sh.haven.core.data.preferences.FullscreenButtonCorner.toComposeAlignment(): Alignment = when (this) {
+    sh.haven.core.data.preferences.FullscreenButtonCorner.TOP_END -> Alignment.TopEnd
+    sh.haven.core.data.preferences.FullscreenButtonCorner.TOP_START -> Alignment.TopStart
+    sh.haven.core.data.preferences.FullscreenButtonCorner.BOTTOM_END -> Alignment.BottomEnd
+    sh.haven.core.data.preferences.FullscreenButtonCorner.BOTTOM_START -> Alignment.BottomStart
+}
+
 /** Keys that termlib maps to VTermKey codes — let termlib handle these directly. */
 private fun isSpecialTerminalKey(keyCode: Int): Boolean {
     if (keyCode in android.view.KeyEvent.KEYCODE_F1..android.view.KeyEvent.KEYCODE_F12) return true
@@ -1801,6 +1897,197 @@ private fun RenameSessionDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
+}
+
+/**
+ * Confirm dialog for Save connection: door/path/room context, editable name,
+ * stable profile id, OK / Cancel.
+ */
+@Composable
+private fun SaveConnectionDialog(
+    ui: TerminalViewModel.SaveConnectionUi,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val draft = ui.draft
+    var name by remember(draft.profileId, draft.defaultName) {
+        mutableStateOf(draft.defaultName)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.terminal_save_connection_title)) },
+        text = {
+            Column {
+                Text(
+                    text = stringResource(
+                        R.string.terminal_save_connection_context,
+                        ui.doorLabel,
+                        ui.pathTransport,
+                        ui.roomName,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (ui.roomMismatch && ui.roomPinnedOnCard != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(
+                            R.string.terminal_save_connection_mismatch,
+                            ui.roomPinnedOnCard,
+                            ui.roomName,
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(stringResource(R.string.terminal_save_connection_name_label)) },
+                    supportingText = {
+                        Text(stringResource(R.string.terminal_save_connection_name_hint))
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = draft.profileId,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text(stringResource(R.string.terminal_save_connection_id)) },
+                    supportingText = {
+                        Text(stringResource(R.string.terminal_save_connection_id_hint))
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(
+                    if (draft.isUpdate) stringResource(R.string.terminal_save_connection_update)
+                    else stringResource(R.string.common_ok),
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
+}
+
+/** Read-only door / path / room sitrep for the active terminal tab. */
+@Composable
+private fun WhereaboutsDialog(
+    whereabouts: TerminalViewModel.ConnectionWhereabouts,
+    onDismiss: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.terminal_details_title)) },
+        text = {
+            Column {
+                val desc = whereabouts.description
+                if (!desc.isNullOrBlank()) {
+                    Text(
+                        stringResource(R.string.terminal_details_description),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(desc, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(12.dp))
+                }
+                Text(
+                    stringResource(R.string.terminal_details_door),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(whereabouts.doorLabel, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "${whereabouts.doorUser}@${whereabouts.doorHost}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    whereabouts.doorId,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    stringResource(R.string.terminal_details_path),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(whereabouts.pathTransport, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    whereabouts.pathDetail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    stringResource(R.string.terminal_details_room),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Text(
+                    whereabouts.roomName
+                        ?: stringResource(R.string.terminal_details_room_unknown),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    stringResource(
+                        R.string.terminal_details_room_pin,
+                        whereabouts.roomPinnedOnCard
+                            ?: stringResource(R.string.terminal_details_room_no_pin),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (whereabouts.roomMismatch) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.terminal_details_room_mismatch),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val clip = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clip.setPrimaryClip(
+                        ClipData.newPlainText("haven-whereabouts", whereabouts.summaryText),
+                    )
+                    @Suppress("LocalContextGetResourceValueCall")
+                    android.widget.Toast.makeText(
+                        context,
+                        context.getString(R.string.terminal_details_copied),
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            ) {
+                Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(R.string.terminal_details_copy))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_close))
             }
         },
     )

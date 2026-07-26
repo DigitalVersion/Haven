@@ -214,6 +214,7 @@ class BackupServiceTest {
             vncPort = 5901,
             vncPassword = "vncpass",
             vncSshForward = false,
+            description = "Test description",
         )
 
         coEvery { connectionRepository.getAll() } returns listOf(profile)
@@ -251,6 +252,7 @@ class BackupServiceTest {
         assertEquals(5901, imported.vncPort)
         assertEquals("vncpass", imported.vncPassword)
         assertEquals(false, imported.vncSshForward)
+        assertEquals("Test description", imported.description)
     }
 
     @Test
@@ -278,6 +280,7 @@ class BackupServiceTest {
         val imported = captured.captured
         assertNull(imported.keyId)
         assertNull(imported.lastConnected)
+        assertNull(imported.description)
         assertNull(imported.destinationHash)
         assertNull(imported.jumpProfileId)
         assertNull(imported.sshOptions)

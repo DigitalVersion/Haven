@@ -362,6 +362,7 @@ data class ConnectionProfile(
      * `ConnectionPreflight`.
      */
     val usbDriveSerial: String? = null,
+    val description: String? = null,
 ) {
     enum class AuthType {
         PASSWORD,

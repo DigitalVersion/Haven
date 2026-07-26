@@ -41,7 +41,7 @@ Tools are grouped into sections by what they touch, and each tool is collapsed �
 expand one for its description and arguments. The tag after each name is its
 consent level:
 
-- **asks every call** — side-effectful or sensitive; a consent sheet describing the specific action on every call (67 tools).
+- **asks every call** — side-effectful or sensitive; a consent sheet describing the specific action on every call (68 tools).
 - **asks once per session** — reversible actions and screen-reading; prompts the first time each session, then proceeds (49 tools).
 - **no per-call prompt** — read-only queries and tap-equivalent UI actions; still behind the endpoint being enabled and the client paired (82 tools).
 
@@ -57,7 +57,7 @@ consent level:
 - [**USB & host-device brokers**](#sec-usb) — 17 tools
 - [**Security — SSH keys, host keys, TOTP & age**](#sec-security) — 14 tools
 - [**Agent ↔ you (attention & self-drive)**](#sec-agent-you) — 12 tools
-- [**Agent endpoint, device & diagnostics**](#sec-agent-endpoint) — 13 tools
+- [**Agent endpoint, device & diagnostics**](#sec-agent-endpoint) — 14 tools
 
 <a id="sec-connections"></a>
 
@@ -203,7 +203,7 @@ Edit fields on an existing connection profile (load → change → save). Pass p
 - `smbSshProfileId` (string) — SMB only: SSH profile id to tunnel through. Empty string clears.
 - `spiceSshForward` (boolean) — SPICE only: tunnel through a saved SSH profile (set spiceSshProfileId).
 - `spiceSshProfileId` (string) — SPICE only: SSH profile id to tunnel through. Empty string clears.
-- `sshOptions` (string) — SSH only: replace the profile's ssh_config-style option lines (e.g. 'HavenSshEngine sshlib' toggles the #58 SFTP engine). Empty string clears. Ignored on non-SSH profiles (USB-serial packs its line format here).
+- `sshOptions` (string) — SSH only: replace the profile's ssh_config-style option lines (e.g. 'HavenSshEngine sshlib' opts this profile into the EXPERIMENTAL sshlib engine for the whole connection — terminal, exec, SFTP and tunnels; it refuses jump/proxy, FIDO2, OpenSSH certs and MFA chains). Empty string clears. Ignored on non-SSH profiles (USB-serial packs its line format here).
 - `useMosh` (boolean) — SSH only: use Mosh on top of the SSH bootstrap.
 - `username` (string) — New username (SSH/SMB).
 - `vncSshForward` (boolean) — VNC only: tunnel through a saved SSH profile (set vncSshProfileId).
@@ -2045,7 +2045,7 @@ Inject a swipe/drag into HAVEN'S OWN UI from (fromX, fromY) to (toX, toY) in win
 <details markdown="1">
 <summary><code>tap_haven_ui</code> · asks every call</summary>
 
-Inject a tap (or, with holdMs > 0, a press-and-hold) into HAVEN'S OWN UI at window-pixel (x, y) — the same coordinate space capture_haven_ui reports in its width/height. This is the 'drive' half of the self-hosting loop: read a control's position from a capture_haven_ui image, then tap it. Drives the real touch pipeline (Compose clickables, nav tabs, dialog buttons). Refused while a consent prompt is showing (so an injected tap can't self-confirm) and when Haven is not foreground. Returns { delivered, reason?, x, y, holdMs }. Verify the effect with a follow-up capture_haven_ui.
+Inject a tap (or, with holdMs > 0, a press-and-hold) into HAVEN'S OWN UI at window-pixel (x, y) — the same coordinate space capture_haven_ui reports in its width/height. This is the 'drive' half of the self-hosting loop: read a control's position from a capture_haven_ui image, then tap it. A plain tap activates the control under the point via its accessibility OnClick action — so it drives everything from nav tabs and dialog buttons to the keyboard-toolbar keys and toggles nested in an expanded settings panel — and falls back to a raw MotionEvent (for the terminal cursor, custom drag handles) when nothing actionable sits there; holdMs > 0 always sends a real held press. Refused while a consent prompt is showing (so an injected tap can't self-confirm) and when Haven is not foreground. Returns { delivered, reason?, x, y, holdMs }. Verify the effect with a follow-up capture_haven_ui.
 
 - `x` (integer, required) — Window-pixel X (0..width from capture_haven_ui).
 - `y` (integer, required) — Window-pixel Y (0..height from capture_haven_ui).
@@ -2055,7 +2055,7 @@ Inject a tap (or, with holdMs > 0, a press-and-hold) into HAVEN'S OWN UI at wind
 
 <a id="sec-agent-endpoint"></a>
 
-## Agent endpoint, device & diagnostics (13)
+## Agent endpoint, device & diagnostics (14)
 
 Pairing, standing policies, app info/update, preferences, and device diagnostics.
 
@@ -2089,7 +2089,7 @@ Return the consent/pairing prompts Haven is currently showing or holding, oldest
 <details markdown="1">
 <summary><code>get_preference</code> · no per-call prompt</summary>
 
-Read a Haven user preference by key. Whitelisted keys: terminal_scrollback_rows, terminal_tap_to_position_cursor, terminal_font_size, terminal_color_scheme, terminal_auto_switch_scheme, terminal_light_color_scheme, terminal_dark_color_scheme, terminal_locale, mouse_input_enabled, terminal_right_click, mcp_tunnel_endpoint_profile_id, mcp_wireguard_enabled, mcp_lan_bind_enabled, mcp_wireguard_tunnel_config_id, usb_guest_exposure_enabled, connection_logging_enabled, remap_low_ports (#300 proot launch toggle), share_storage_with_guest (#301 proot launch toggle), bind_android_system (#304 proot launch toggle). Returns { key, value } where value's type follows the preference's type (int / boolean / string). Colour-scheme values are TerminalColorScheme enum names.
+Read a Haven user preference by key. Whitelisted keys: terminal_scrollback_rows, terminal_tap_to_position_cursor, terminal_font_size, terminal_color_scheme, terminal_auto_switch_scheme, terminal_light_color_scheme, terminal_dark_color_scheme, terminal_locale, mouse_input_enabled, terminal_right_click, mcp_tunnel_endpoint_profile_id, mcp_wireguard_enabled, mcp_lan_bind_enabled, mcp_wireguard_tunnel_config_id, usb_guest_exposure_enabled, connection_logging_enabled, remap_low_ports (#300 proot launch toggle), share_storage_with_guest (#301 proot launch toggle), bind_android_system (#304 proot launch toggle), proot_dns_mode (#446 - system|public|custom), proot_dns_servers (custom nameservers), toolbar_layout (string — the terminal keyboard toolbar layout as JSON; see set_preference for the shape). Returns { key, value } where value's type follows the preference's type (int / boolean / string). Colour-scheme values are TerminalColorScheme enum names.
 
 - `key` (string, required) — Preference key (see whitelist in description).
 
@@ -2149,6 +2149,13 @@ Read recent Android system log lines via Shizuku, so the agent can observe forei
 </details>
 
 <details markdown="1">
+<summary><code>restart_app</code> · asks every call</summary>
+
+Restart Haven's own process — kill it and relaunch the app. The missing rung of the self-hosting loop: install_apk_from_backend stages a self-update, but the running process is held alive by Haven's persistent foreground service, so the new APK only takes effect on a process restart (previously only a manual Force-stop could do it). Call this right after get_app_info shows lastInstall.ok but the version hasn't changed. The MCP server lives in this process, so the link DROPS on the kill and the call returns just before it — the client must reconnect (/mcp reconnect), then re-check get_app_info for the new version. Also useful to recover a wedged UI. No-op-safe: it only relaunches Haven's own launcher activity. Returns { restarting:true }.
+
+</details>
+
+<details markdown="1">
 <summary><code>revoke_standing_policy</code> · no per-call prompt</summary>
 
 Revoke (delete) a standing policy by id — see list_standing_policies. Pure privilege reduction, so no prompt; the user's kill-switch lives on the Agent activity screen.
@@ -2160,7 +2167,7 @@ Revoke (delete) a standing policy by id — see list_standing_policies. Pure pri
 <details markdown="1">
 <summary><code>set_preference</code> · asks once per session</summary>
 
-Write a Haven user preference. Whitelisted keys (and their types): terminal_scrollback_rows (int 100..25000), terminal_tap_to_position_cursor (bool), terminal_font_size (int 8..32), mouse_input_enabled (bool), terminal_right_click (bool), terminal_color_scheme (string — a TerminalColorScheme enum name, e.g. HAVEN, DRACULA, NORD, GRUVBOX; case-insensitive), terminal_auto_switch_scheme (bool — when true the active scheme follows system light/dark via the light/dark keys), terminal_light_color_scheme (string scheme name), terminal_dark_color_scheme (string scheme name), terminal_background_opacity (float 0.0..1.0 — below 1.0 the terminal renders over the device wallpaper), terminal_locale (string, e.g. zh_CN.UTF-8 — exported to local terminal sessions as LANG/LC_ALL; glibc distros need the locale generated first), mcp_tunnel_endpoint_profile_id (string SSH profile id, empty to clear), mcp_wireguard_enabled (bool), mcp_lan_bind_enabled (bool — also bind the device Wi-Fi/LAN address for direct same-network reach), mcp_wireguard_tunnel_config_id (string tunnel config id the MCP server keeps up as its WG carrier, empty to clear), usb_guest_exposure_enabled (bool — master gate for usb_attach_to_guest), connection_logging_enabled (bool — audit-log connection lifecycle events to Settings → View connection log; off by default; enable before reproducing a connection issue, then read get_connection_log), gpu_use_venus (bool — experimental venus+zink GPU stack for accelerated desktops; off = virgl/virpipe), remap_low_ports (bool — #300 proot launch toggle: remap guest privileged ports +2000), share_storage_with_guest (bool — #301 proot launch toggle: mount /storage + /sdcard into the local guest; default on), bind_android_system (bool — #304 proot launch toggle: bind Android's read-only /system, /vendor, /apex, /product, /system_ext, /odm into the guest so it can run Android native binaries like getprop/toybox; default off, exposes device internals). Takes effect on the next local session/command. Returns { key, value }.
+Write a Haven user preference. Whitelisted keys (and their types): terminal_scrollback_rows (int 100..25000), terminal_tap_to_position_cursor (bool), terminal_font_size (int 8..32), mouse_input_enabled (bool), terminal_right_click (bool), terminal_color_scheme (string — a TerminalColorScheme enum name, e.g. HAVEN, DRACULA, NORD, GRUVBOX; case-insensitive), terminal_auto_switch_scheme (bool — when true the active scheme follows system light/dark via the light/dark keys), terminal_light_color_scheme (string scheme name), terminal_dark_color_scheme (string scheme name), terminal_background_opacity (float 0.0..1.0 — below 1.0 the terminal renders over the device wallpaper), terminal_locale (string, e.g. zh_CN.UTF-8 — exported to local terminal sessions as LANG/LC_ALL; glibc distros need the locale generated first), mcp_tunnel_endpoint_profile_id (string SSH profile id, empty to clear), mcp_wireguard_enabled (bool), mcp_lan_bind_enabled (bool — also bind the device Wi-Fi/LAN address for direct same-network reach), mcp_wireguard_tunnel_config_id (string tunnel config id the MCP server keeps up as its WG carrier, empty to clear), usb_guest_exposure_enabled (bool — master gate for usb_attach_to_guest), connection_logging_enabled (bool — audit-log connection lifecycle events to Settings → View connection log; off by default; enable before reproducing a connection issue, then read get_connection_log), gpu_use_venus (bool — experimental venus+zink GPU stack for accelerated desktops; off = virgl/virpipe), remap_low_ports (bool — #300 proot launch toggle: remap guest privileged ports +2000), share_storage_with_guest (bool — #301 proot launch toggle: mount /storage + /sdcard into the local guest; default on), bind_android_system (bool — #304 proot launch toggle: bind Android's read-only /system, /vendor, /apex, /product, /system_ext, /odm into the guest so it can run Android native binaries like getprop/toybox; default off, exposes device internals), proot_dns_mode (string - #446: which resolvers the local Linux guest gets in /etc/resolv.conf. "system" (default) uses the network's own resolvers, "public" uses Google 8.8.8.8 + Cloudflare 1.1.1.1 (the old hardcoded pair), "custom" uses proot_dns_servers. Networks that block outbound port 53 to anything but their own resolver make "public" fail silently - package installs just hang), proot_dns_servers (string - comma/space separated IP literals for "custom"; hostnames are rejected because resolv.conf has no way to resolve them), toolbar_layout (string — the terminal keyboard toolbar as JSON: a 2-element array of rows, each row an array whose elements are either a built-in key id string ("esc", "paste", "text_input", "arrow_up", "ctrl", "home", … — see ToolbarKey) or a custom-key object {"label":"…","send":"…"}; set validates against ToolbarLayout and replaces the WHOLE layout, so get_preference it first, edit, and write it back — e.g. add "text_input" to a row to surface the floating-text-input key). Takes effect on the next local session/command. Returns { key, value }.
 
 - `key` (string, required) — Preference key (see whitelist).
 - `value` (any, required) — New value. Type must match the key's type — int for the *_rows / *_size keys, bool for the rest.

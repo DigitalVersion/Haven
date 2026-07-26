@@ -610,7 +610,7 @@ internal class McpTools(
         ) { _ -> readClipboard() },
 
         "get_preference" to ToolHandler(
-            description = "Read a Haven user preference by key. Whitelisted keys: terminal_scrollback_rows, terminal_tap_to_position_cursor, terminal_font_size, terminal_color_scheme, terminal_auto_switch_scheme, terminal_light_color_scheme, terminal_dark_color_scheme, terminal_locale, mouse_input_enabled, terminal_right_click, mcp_tunnel_endpoint_profile_id, mcp_wireguard_enabled, mcp_lan_bind_enabled, mcp_wireguard_tunnel_config_id, usb_guest_exposure_enabled, connection_logging_enabled, remap_low_ports (#300 proot launch toggle), share_storage_with_guest (#301 proot launch toggle), bind_android_system (#304 proot launch toggle). Returns { key, value } where value's type follows the preference's type (int / boolean / string). Colour-scheme values are TerminalColorScheme enum names.",
+            description = "Read a Haven user preference by key. Whitelisted keys: terminal_scrollback_rows, terminal_tap_to_position_cursor, terminal_font_size, terminal_color_scheme, terminal_auto_switch_scheme, terminal_light_color_scheme, terminal_dark_color_scheme, terminal_locale, mouse_input_enabled, terminal_right_click, mcp_tunnel_endpoint_profile_id, mcp_wireguard_enabled, mcp_lan_bind_enabled, mcp_wireguard_tunnel_config_id, usb_guest_exposure_enabled, connection_logging_enabled, remap_low_ports (#300 proot launch toggle), share_storage_with_guest (#301 proot launch toggle), bind_android_system (#304 proot launch toggle), proot_dns_mode (#446 - system|public|custom), proot_dns_servers (custom nameservers), toolbar_layout (string — the terminal keyboard toolbar layout as JSON; see set_preference for the shape). Returns { key, value } where value's type follows the preference's type (int / boolean / string). Colour-scheme values are TerminalColorScheme enum names.",
             inputSchema = objectSchema {
                 string("key", "Preference key (see whitelist in description).", required = true)
             },
@@ -804,7 +804,7 @@ internal class McpTools(
         ) { args -> writeClipboard(args) },
 
         "set_preference" to ToolHandler(
-            description = "Write a Haven user preference. Whitelisted keys (and their types): terminal_scrollback_rows (int 100..25000), terminal_tap_to_position_cursor (bool), terminal_font_size (int 8..32), mouse_input_enabled (bool), terminal_right_click (bool), terminal_color_scheme (string — a TerminalColorScheme enum name, e.g. HAVEN, DRACULA, NORD, GRUVBOX; case-insensitive), terminal_auto_switch_scheme (bool — when true the active scheme follows system light/dark via the light/dark keys), terminal_light_color_scheme (string scheme name), terminal_dark_color_scheme (string scheme name), terminal_background_opacity (float 0.0..1.0 — below 1.0 the terminal renders over the device wallpaper), terminal_locale (string, e.g. zh_CN.UTF-8 — exported to local terminal sessions as LANG/LC_ALL; glibc distros need the locale generated first), mcp_tunnel_endpoint_profile_id (string SSH profile id, empty to clear), mcp_wireguard_enabled (bool), mcp_lan_bind_enabled (bool — also bind the device Wi-Fi/LAN address for direct same-network reach), mcp_wireguard_tunnel_config_id (string tunnel config id the MCP server keeps up as its WG carrier, empty to clear), usb_guest_exposure_enabled (bool — master gate for usb_attach_to_guest), connection_logging_enabled (bool — audit-log connection lifecycle events to Settings → View connection log; off by default; enable before reproducing a connection issue, then read get_connection_log), gpu_use_venus (bool — experimental venus+zink GPU stack for accelerated desktops; off = virgl/virpipe), remap_low_ports (bool — #300 proot launch toggle: remap guest privileged ports +2000), share_storage_with_guest (bool — #301 proot launch toggle: mount /storage + /sdcard into the local guest; default on), bind_android_system (bool — #304 proot launch toggle: bind Android's read-only /system, /vendor, /apex, /product, /system_ext, /odm into the guest so it can run Android native binaries like getprop/toybox; default off, exposes device internals). Takes effect on the next local session/command. Returns { key, value }.",
+            description = "Write a Haven user preference. Whitelisted keys (and their types): terminal_scrollback_rows (int 100..25000), terminal_tap_to_position_cursor (bool), terminal_font_size (int 8..32), mouse_input_enabled (bool), terminal_right_click (bool), terminal_color_scheme (string — a TerminalColorScheme enum name, e.g. HAVEN, DRACULA, NORD, GRUVBOX; case-insensitive), terminal_auto_switch_scheme (bool — when true the active scheme follows system light/dark via the light/dark keys), terminal_light_color_scheme (string scheme name), terminal_dark_color_scheme (string scheme name), terminal_background_opacity (float 0.0..1.0 — below 1.0 the terminal renders over the device wallpaper), terminal_locale (string, e.g. zh_CN.UTF-8 — exported to local terminal sessions as LANG/LC_ALL; glibc distros need the locale generated first), mcp_tunnel_endpoint_profile_id (string SSH profile id, empty to clear), mcp_wireguard_enabled (bool), mcp_lan_bind_enabled (bool — also bind the device Wi-Fi/LAN address for direct same-network reach), mcp_wireguard_tunnel_config_id (string tunnel config id the MCP server keeps up as its WG carrier, empty to clear), usb_guest_exposure_enabled (bool — master gate for usb_attach_to_guest), connection_logging_enabled (bool — audit-log connection lifecycle events to Settings → View connection log; off by default; enable before reproducing a connection issue, then read get_connection_log), gpu_use_venus (bool — experimental venus+zink GPU stack for accelerated desktops; off = virgl/virpipe), remap_low_ports (bool — #300 proot launch toggle: remap guest privileged ports +2000), share_storage_with_guest (bool — #301 proot launch toggle: mount /storage + /sdcard into the local guest; default on), bind_android_system (bool — #304 proot launch toggle: bind Android's read-only /system, /vendor, /apex, /product, /system_ext, /odm into the guest so it can run Android native binaries like getprop/toybox; default off, exposes device internals), proot_dns_mode (string - #446: which resolvers the local Linux guest gets in /etc/resolv.conf. \"system\" (default) uses the network's own resolvers, \"public\" uses Google 8.8.8.8 + Cloudflare 1.1.1.1 (the old hardcoded pair), \"custom\" uses proot_dns_servers. Networks that block outbound port 53 to anything but their own resolver make \"public\" fail silently - package installs just hang), proot_dns_servers (string - comma/space separated IP literals for \"custom\"; hostnames are rejected because resolv.conf has no way to resolve them), toolbar_layout (string — the terminal keyboard toolbar as JSON: a 2-element array of rows, each row an array whose elements are either a built-in key id string (\"esc\", \"paste\", \"text_input\", \"arrow_up\", \"ctrl\", \"home\", … — see ToolbarKey) or a custom-key object {\"label\":\"…\",\"send\":\"…\"}; set validates against ToolbarLayout and replaces the WHOLE layout, so get_preference it first, edit, and write it back — e.g. add \"text_input\" to a row to surface the floating-text-input key). Takes effect on the next local session/command. Returns { key, value }.",
             inputSchema = objectSchema {
                 string("key", "Preference key (see whitelist).", required = true)
                 property("value", JSONObject().put("description", "New value. Type must match the key's type — int for the *_rows / *_size keys, bool for the rest."), required = true)
@@ -1128,7 +1128,7 @@ internal class McpTools(
         ) { _ -> dumpHavenUi() },
 
         "tap_haven_ui" to ToolHandler(
-            description = "Inject a tap (or, with holdMs > 0, a press-and-hold) into HAVEN'S OWN UI at window-pixel (x, y) — the same coordinate space capture_haven_ui reports in its width/height. This is the 'drive' half of the self-hosting loop: read a control's position from a capture_haven_ui image, then tap it. Drives the real touch pipeline (Compose clickables, nav tabs, dialog buttons). Refused while a consent prompt is showing (so an injected tap can't self-confirm) and when Haven is not foreground. Returns { delivered, reason?, x, y, holdMs }. Verify the effect with a follow-up capture_haven_ui.",
+            description = "Inject a tap (or, with holdMs > 0, a press-and-hold) into HAVEN'S OWN UI at window-pixel (x, y) — the same coordinate space capture_haven_ui reports in its width/height. This is the 'drive' half of the self-hosting loop: read a control's position from a capture_haven_ui image, then tap it. A plain tap activates the control under the point via its accessibility OnClick action — so it drives everything from nav tabs and dialog buttons to the keyboard-toolbar keys and toggles nested in an expanded settings panel — and falls back to a raw MotionEvent (for the terminal cursor, custom drag handles) when nothing actionable sits there; holdMs > 0 always sends a real held press. Refused while a consent prompt is showing (so an injected tap can't self-confirm) and when Haven is not foreground. Returns { delivered, reason?, x, y, holdMs }. Verify the effect with a follow-up capture_haven_ui.",
             inputSchema = objectSchema {
                 integer("x", "Window-pixel X (0..width from capture_haven_ui).", required = true)
                 integer("y", "Window-pixel Y (0..height from capture_haven_ui).", required = true)
@@ -1157,6 +1157,13 @@ internal class McpTools(
                 "Swipe Haven's own UI (${args.optInt("fromX")}, ${args.optInt("fromY")}) → (${args.optInt("toX")}, ${args.optInt("toY")})?"
             },
         ) { args -> swipeHavenUi(args) },
+
+        "restart_app" to ToolHandler(
+            description = "Restart Haven's own process — kill it and relaunch the app. The missing rung of the self-hosting loop: install_apk_from_backend stages a self-update, but the running process is held alive by Haven's persistent foreground service, so the new APK only takes effect on a process restart (previously only a manual Force-stop could do it). Call this right after get_app_info shows lastInstall.ok but the version hasn't changed. The MCP server lives in this process, so the link DROPS on the kill and the call returns just before it — the client must reconnect (/mcp reconnect), then re-check get_app_info for the new version. Also useful to recover a wedged UI. No-op-safe: it only relaunches Haven's own launcher activity. Returns { restarting:true }.",
+            inputSchema = emptyObjectSchema(),
+            consentLevel = ConsentLevel.EVERY_CALL,
+            summarise = { _ -> "Restart the Haven app? (applies a pending update; the MCP link drops and must reconnect)" },
+        ) { _ -> restartApp() },
 
         "create_standing_policy" to ToolHandler(
             description = "Propose a Tier-3 STANDING POLICY: a scoped, rate-capped, expiring grant that lets THIS client call the listed tools without a per-call consent prompt. The user's tap on this tool's consent sheet IS the installation — the sheet spells out the full scope. Use it when a workflow needs many consented calls in a row (e.g. a tap_haven_ui/swipe_haven_ui drive-and-verify loop) so the user grants the loop once instead of per tap. toolNames must be existing tools; some can never be covered (the policy tools themselves, install_apk_*, unpair_mcp_client). argConstraints (optional) pins arguments: every key given must exactly equal the call's argument (e.g. {\"profileId\":\"<id>\"} scopes the grant to one connection). Covered calls are still written to the audit log; the rate ceiling makes extra calls fall back to normal prompts; the policy expires on its own and can be revoked any time from Haven's Agent activity screen or via revoke_standing_policy. Returns { id, expiresAt }.",
@@ -1503,7 +1510,7 @@ internal class McpTools(
                 string("username", "New username (SSH/SMB).")
                 string("password", "New password (stored encrypted). Mapped to the profile's transport (SSH/VNC/RDP/SMB). Pass an empty string to clear it.")
                 string("keyId", "SSH only: id of a saved key (list_ssh_keys). Empty string clears.")
-                string("sshOptions", "SSH only: replace the profile's ssh_config-style option lines (e.g. 'HavenSshEngine sshlib' toggles the #58 SFTP engine). Empty string clears. Ignored on non-SSH profiles (USB-serial packs its line format here).")
+                string("sshOptions", "SSH only: replace the profile's ssh_config-style option lines (e.g. 'HavenSshEngine sshlib' opts this profile into the EXPERIMENTAL sshlib engine for the whole connection — terminal, exec, SFTP and tunnels; it refuses jump/proxy, FIDO2, OpenSSH certs and MFA chains). Empty string clears. Ignored on non-SSH profiles (USB-serial packs its line format here).")
                 string("remoteCommand", "SSH only (#436): run this command via an SSH exec request instead of a login shell (e.g. 'tmux new -A -s work'). Empty string clears (back to the normal shell).")
                 boolean("requestPty", "SSH only (#436): allocate a PTY for remoteCommand (tmux needs one). Ignored when remoteCommand is empty.")
                 string("jumpProfileId", "SSH only: id of the SSH profile to jump through (ssh -J). The target host is dialled from the jump host, so it may be an address only the jump can reach. Empty string clears.")
@@ -3535,6 +3542,10 @@ internal class McpTools(
         "remap_low_ports",
         "share_storage_with_guest",
         "bind_android_system",
+        // #446: which resolvers the local guest's /etc/resolv.conf gets. Drivable
+        // so a DNS-blocked network can be diagnosed and fixed without the GUI.
+        "proot_dns_mode",
+        "proot_dns_servers",
     )
 
     private suspend fun getPreference(args: JSONObject): JSONObject {
@@ -3569,6 +3580,8 @@ internal class McpTools(
             "remap_low_ports" -> prootManager.remapLowPorts
             "share_storage_with_guest" -> prootManager.shareStorageWithGuest
             "bind_android_system" -> prootManager.bindAndroidSystem
+            "proot_dns_mode" -> prootManager.dnsMode.id
+            "proot_dns_servers" -> prootManager.dnsServers
             else -> throw McpError(-32602, "Preference $key is not in the whitelist")
         }
         return JSONObject().apply {
@@ -3667,6 +3680,23 @@ internal class McpTools(
             "remap_low_ports" -> prootManager.setRemapLowPorts(coerceBool())
             "share_storage_with_guest" -> prootManager.setShareStorageWithGuest(coerceBool())
             "bind_android_system" -> prootManager.setBindAndroidSystem(coerceBool())
+            "proot_dns_mode" -> {
+                val raw = (rawValue as? String)?.trim()
+                    ?: throw McpError(-32602, "value must be one of system|public|custom for $key")
+                val mode = sh.haven.core.local.ProotDnsMode.entries.firstOrNull { it.id.equals(raw, ignoreCase = true) }
+                    ?: throw McpError(-32602, "Invalid DNS mode \"$raw\" for $key (expected system, public or custom)")
+                prootManager.setDnsMode(mode)
+            }
+            "proot_dns_servers" -> {
+                val raw = (rawValue as? String)
+                    ?: throw McpError(-32602, "value must be a string of IP literals for $key")
+                // Reject early rather than writing a resolv.conf that silently never
+                // resolves - a hostname here cannot be resolved (#446).
+                if (raw.isNotBlank() && sh.haven.core.local.ProotDns.parseServers(raw).isEmpty()) {
+                    throw McpError(-32602, "No usable IP literals in \"$raw\" for $key")
+                }
+                prootManager.setDnsServers(raw)
+            }
         }
         return JSONObject().apply {
             put("key", key)
@@ -6827,6 +6857,31 @@ internal class McpTools(
                 put("delivered", false)
                 put("reason", result.reason)
             }
+        }
+    }
+
+    /**
+     * Kill and relaunch Haven's own process (the self-update rung of the
+     * self-hosting loop — the persistent foreground service otherwise keeps a
+     * staged update from taking effect). Delegates to [sh.haven.app.RestartActivity],
+     * a separate-process resurrector that kills the main process and starts the
+     * launcher while itself foreground; that foreground start is what clears the
+     * background-activity-launch block which silently defeats a post-kill
+     * AlarmManager relaunch. The in-process MCP server dies with the kill, so the
+     * caller must reconnect afterwards.
+     */
+    private fun restartApp(): JSONObject {
+        // Fail before committing to a kill if there's nothing to relaunch.
+        context.packageManager.getLaunchIntentForPackage(context.packageName)
+            ?: throw McpError(-32603, "No launcher activity to relaunch ${context.packageName}")
+        context.startActivity(sh.haven.app.RestartActivity.launchIntent(context))
+        return JSONObject().apply {
+            put("restarting", true)
+            put(
+                "message",
+                "Haven is restarting (~1s) via a resurrector process. The MCP link drops on the kill — " +
+                    "reconnect, then get_app_info to confirm the new version. A staged self-update takes effect on the relaunch.",
+            )
         }
     }
 

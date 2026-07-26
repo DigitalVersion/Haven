@@ -1889,7 +1889,7 @@ class ConnectionsViewModel @Inject constructor(
             return
         }
         if (profile.isEternalTerminal) {
-            connectEternalTerminal(profile, password, keyOnly, usernameOverride = runtimeUsername)
+            connectEternalTerminal(profile, password, keyOnly, usernameOverride = runtimeUsername, startupCommand = startupCommand)
             return
         }
         if (profile.isMosh) {
@@ -3344,6 +3344,7 @@ class ConnectionsViewModel @Inject constructor(
         password: String,
         keyOnly: Boolean,
         usernameOverride: String? = null,
+        startupCommand: String? = null,
     ) {
         val effectiveUsername = usernameOverride?.takeIf { it.isNotBlank() } ?: profile.username
         viewModelScope.launch {
@@ -3374,6 +3375,38 @@ class ConnectionsViewModel @Inject constructor(
 
                 // Phase 2: Resolve session manager, check for existing sessions
                 val smgr = resolveSessionManager(profile)
+
+                val effectiveStartupCommand = startupCommand ?: profile.remoteCommand?.takeIf { it.isNotBlank() }
+                if (effectiveStartupCommand != null) {
+                    if (profile.requestPty) {
+                        finishEtConnect(
+                            sessionId = sessionId,
+                            profile = profile,
+                            client = client,
+                            manager = smgr,
+                            chosenSessionName = null,
+                            verboseLogger = verboseLogger,
+                            startupCommand = effectiveStartupCommand,
+                        )
+                    } else {
+                        userMessageBus.emit(
+                            sh.haven.core.data.message.UserMessage(
+                                "remoteCommand ignored on Eternal Terminal",
+                                sh.haven.core.data.message.UserMessage.Severity.WARNING
+                            )
+                        )
+                        finishEtConnect(
+                            sessionId = sessionId,
+                            profile = profile,
+                            client = client,
+                            manager = smgr,
+                            chosenSessionName = null,
+                            verboseLogger = verboseLogger,
+                            startupCommand = null,
+                        )
+                    }
+                    return@launch
+                }
 
                 val existingSessions = withContext(Dispatchers.IO) {
                     listExistingMultiplexerSessions(smgr) { client.execCommand(it) }
@@ -4272,6 +4305,7 @@ class ConnectionsViewModel @Inject constructor(
         chosenSessionName: String?,
         silent: Boolean = false,
         verboseLogger: SshVerboseLogger? = null,
+        startupCommand: String? = null,
     ) {
         val etPort = profile.etPort
         val (etClientId, etPasskey) = withContext(Dispatchers.IO) {
@@ -4311,7 +4345,9 @@ class ConnectionsViewModel @Inject constructor(
         // Build session manager command with chosen or default session name
         val smCmd = manager.command
         var effectiveSessionName: String? = null
-        if (smCmd != null) {
+        if (startupCommand != null) {
+            etSessionManager.setInitialCommand(sessionId, startupCommand)
+        } else if (smCmd != null) {
             val rawName = chosenSessionName
                 ?: etSessionManager.sessions.value[sessionId]?.label
                 ?: sessionId.take(8)
@@ -5376,7 +5412,40 @@ class ConnectionsViewModel @Inject constructor(
             }
 
             val smgr = resolveSessionManager(profile)
-            finishEtConnect(sessionId, profile, client, smgr, profile.lastSessionName, silent = true, verboseLogger = verboseLogger)
+            val effectiveStartupCommand = profile.remoteCommand?.takeIf { it.isNotBlank() }
+            if (effectiveStartupCommand != null) {
+                if (profile.requestPty) {
+                    finishEtConnect(
+                        sessionId = sessionId,
+                        profile = profile,
+                        client = client,
+                        manager = smgr,
+                        chosenSessionName = profile.lastSessionName,
+                        silent = true,
+                        verboseLogger = verboseLogger,
+                        startupCommand = effectiveStartupCommand,
+                    )
+                } else {
+                    userMessageBus.emit(
+                        sh.haven.core.data.message.UserMessage(
+                            "remoteCommand ignored on Eternal Terminal",
+                            sh.haven.core.data.message.UserMessage.Severity.WARNING
+                        )
+                    )
+                    finishEtConnect(
+                        sessionId = sessionId,
+                        profile = profile,
+                        client = client,
+                        manager = smgr,
+                        chosenSessionName = profile.lastSessionName,
+                        silent = true,
+                        verboseLogger = verboseLogger,
+                        startupCommand = null,
+                    )
+                }
+            } else {
+                finishEtConnect(sessionId, profile, client, smgr, profile.lastSessionName, silent = true, verboseLogger = verboseLogger)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "connectEtSilent failed for ${profile.label}: ${e.message}", e)
             connectionLogRepository.logEvent(profile.id, ConnectionLog.Status.FAILED, details = e.message, verboseLog = verboseLogger?.drain())

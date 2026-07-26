@@ -40,7 +40,7 @@ import kotlin.random.Random
 
 /**
  * Phase-2 capability spike for the #58 dual-engine migration: each probe pins
- * sshlib 0.3.1's ACTUAL behaviour against a real MINA sshd, so later phases
+ * sshlib 0.4.0's ACTUAL behaviour against a real MINA sshd, so later phases
  * are sorted into pure-Haven work vs blocked-on-upstream by a test verdict,
  * not an assumption. Probes that document a GAP assert the failure — when a
  * new sshlib release closes the gap, the probe fails and tells us to unlock
@@ -260,32 +260,77 @@ class SshlibCapabilitySpikeTest {
     }
 
     @Test
-    fun `GAP client byte-limit rekey during in-flight SFTP writes kills the channel — flips when upstream fixes`() {
-        // sshlib 0.3.1: with rekeyBytesLimit=256 KiB, the transfer dies right
-        // past the limit (ChannelClosedException at ~write 294912). Real-world
-        // impact: any single SFTP transfer larger than the rekey byte limit
-        // (default 1 GiB) dies mid-flight. Upstream bug to file; when a fix
-        // ships this probe fails and the workaround/pin can be dropped.
+    fun `PASS client byte-limit rekey survives in-flight SFTP writes`() {
+        // Was a GAP on 0.3.1: with rekeyBytesLimit=256 KiB the transfer died
+        // right past the limit (ChannelClosedException at ~write 294912), so any
+        // SFTP transfer larger than the rekey byte limit died mid-flight —
+        // reported as connectbot/cbssh#231, root-caused upstream to strict-KEX
+        // + ChaCha20/Poly1305 packet numbering and fixed in 0.4.0. This 2 MiB
+        // transfer crosses the 256 KiB limit ~8 times and must still roundtrip.
         val server = newServer()
         val client = sshlibClient {
             host = "127.0.0.1"; port = server.port
             rekeyBytesLimit = 256L * 1024
         }
         assertTrue(connectAndAuth(client) is ConnectResult.Success)
-        val outcome = runCatching { sftpRoundtrip(client, Random(58).nextBytes(2 * 1024 * 1024)) }
+        // Throws (failing the test) if any write/read across a rekey breaks.
+        sftpRoundtrip(client, Random(58).nextBytes(2 * 1024 * 1024))
+    }
+
+    @Test
+    fun `GAP sequential session channels collide on remote channel reuse — flips when upstream fixes`() {
+        // Found device-testing the #58 experimental whole-connection engine
+        // against a real OpenSSH server: the first exec succeeds, a later one
+        // dies with IllegalStateException "Remote channel N is already
+        // registered", and the failure takes the WHOLE connection down (the
+        // session disconnects and Haven starts reconnecting) — not just that
+        // exec. sshlib registers a channel under the server's remote number but
+        // does not release it on close, so the moment the server legitimately
+        // reuses that number the client rejects its own channel.
+        //
+        // Any long-lived connection running more than one exec is exposed, which
+        // is why the sshlib engine stays experimental/opt-in.
+        // Reported upstream as connectbot/cbssh#238.
+        val server = newServer()
+        val client = sshlibClient { host = "127.0.0.1"; port = server.port }
+        assertTrue(connectAndAuth(client) is ConnectResult.Success)
+        val outcome = runCatching {
+            runBlocking {
+                repeat(12) { attempt ->
+                    val session = client.openSession()
+                        ?: error("openSession returned null on attempt $attempt")
+                    session.requestExec("true")
+                    session.close()
+                }
+            }
+        }
         assertTrue(
-            "rekey-under-load now works — remove this GAP probe and re-verify large transfers (#58 P2)",
+            "sequential session channels now open cleanly — upstream fixed channel " +
+                "deregistration; remove this GAP probe and re-verify multi-exec sessions (#58)",
             outcome.isFailure,
+        )
+        // Pin the SYMPTOM too, so this probe and the upstream report cannot
+        // drift apart (and so an unrelated failure can't masquerade as the bug).
+        // It surfaces differently per server, which is worth recording: against
+        // this MINA rig the second openSession simply returns null, while
+        // against a real OpenSSH server it throws "Remote channel N is already
+        // registered" AND tears the whole connection down.
+        val error = outcome.exceptionOrNull()
+        val text = "${error?.javaClass?.simpleName}: ${error?.message}"
+        assertTrue(
+            "unexpected failure mode — expected a second-session-channel failure, got $text",
+            text.contains("already registered", ignoreCase = true) ||
+                text.contains("openSession returned null", ignoreCase = true),
         )
     }
 
     @Test
-    fun `GAP interval rekey wedges an idle session — flips when upstream fixes`() {
-        // sshlib 0.3.1: after interval-triggered rekeys on an idle session the
-        // next SFTP op suspends forever (no error — a hang). Worse than the
-        // byte-limit symptom above because nothing surfaces to the user.
-        // SshlibSftpConnector cranks both rekey thresholds as the mitigation;
-        // when this probe fails, upstream fixed rekey — restore the defaults.
+    fun `PASS interval rekey leaves an idle session usable`() {
+        // Was a GAP on 0.3.1: after interval-triggered rekeys on an idle session
+        // the next SFTP op suspended forever — a hang with nothing surfaced to
+        // the user, which is why SshlibSftpConnector pushed both rekey
+        // thresholds out of reach. Fixed upstream in 0.4.0 with the byte-limit
+        // case (connectbot/cbssh#231), so those defaults are restored.
         val server = newServer()
         val client = sshlibClient {
             host = "127.0.0.1"; port = server.port
@@ -298,10 +343,10 @@ class SshlibCapabilitySpikeTest {
                 runCatching { sftpRoundtripSuspend(client, Random(59).nextBytes(64 * 1024)) }
             }
         }
+        assertNotNull("post-rekey SFTP hung (timed out) — interval rekey regressed", completed)
         assertTrue(
-            "post-rekey SFTP now completes ($completed) — remove this GAP probe and restore " +
-                "default rekey thresholds in SshlibSftpConnector (#58 P2)",
-            completed == null || completed.isFailure,
+            "post-rekey SFTP failed: ${completed?.exceptionOrNull()}",
+            completed!!.isSuccess,
         )
     }
 
@@ -398,7 +443,7 @@ class SshlibCapabilitySpikeTest {
     @Test
     fun `GAP no certificate surface in the public auth API — flips when upstream adds one`() {
         // User-cert auth needs the client to send a *-cert-v01@openssh.com blob
-        // in the publickey method. sshlib 0.3.1 exposes no way in: no public
+        // in the publickey method. sshlib 0.4.0 exposes no way in: no public
         // method or parameter mentions certificates. When this fails, upstream
         // grew a cert path — unlock the cert slice of phase 8.
         val certMentions = listOf(
@@ -433,15 +478,18 @@ class SshlibCapabilitySpikeTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `GAP exec exit status is not surfaced — flips when a release carries cbssh PR 232`() {
-        // sshlib runs exec fine but drops the RFC 4254 §6.10 exit-status
-        // report, so ExecResult.exitStatus cannot be produced honestly.
-        // Upstreamed as connectbot/cbssh#232 (SshSession.exitInfo). When a
-        // release carries it, this fails: add SshlibExecContractTest and the
-        // engine-aware exec routing (#58 P3).
+    fun `PASS exec exit status is surfaced via SshSession exitInfo`() {
+        // Was a GAP: sshlib ran exec fine but dropped the RFC 4254 §6.10
+        // exit-status report, so ExecResult.exitStatus could not be produced
+        // honestly. Upstreamed as connectbot/cbssh#232 (SshSession.exitInfo),
+        // merged and carried by 0.4.0. Consuming it — SshlibExecContractTest
+        // plus engine-aware exec routing — is #58 P3.
         val exitMembers = org.connectbot.sshlib.SshSession::class.java.methods
             .filter { "exit" in it.name.lowercase() }
-        assertTrue("exit API appeared: $exitMembers", exitMembers.isEmpty())
+        assertTrue(
+            "SshSession exit API missing — did the sshlib pin regress below 0.4.0?",
+            exitMembers.isNotEmpty(),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -516,9 +564,17 @@ class SshlibCapabilitySpikeTest {
         val server = newServer()
         val client = sshlibClient { host = "127.0.0.1"; port = server.port }
         client.enableAgentForwarding(
+            // sshlib 0.4.0 wraps both agent callbacks in AgentResult so a provider
+            // can report failure instead of an ambiguous null.
             object : org.connectbot.sshlib.AgentProvider {
-                override suspend fun getIdentities(): List<org.connectbot.sshlib.AgentIdentity> = emptyList()
-                override suspend fun signData(context: org.connectbot.sshlib.AgentSigningContext): ByteArray? = null
+                override suspend fun getIdentities():
+                    org.connectbot.sshlib.AgentResult<List<org.connectbot.sshlib.AgentIdentity>> =
+                    org.connectbot.sshlib.AgentResult.Success(emptyList())
+
+                override suspend fun signData(
+                    context: org.connectbot.sshlib.AgentSigningContext,
+                ): org.connectbot.sshlib.AgentResult<ByteArray?> =
+                    org.connectbot.sshlib.AgentResult.Success(null)
             },
         )
         assertTrue(connectAndAuth(client) is ConnectResult.Success)

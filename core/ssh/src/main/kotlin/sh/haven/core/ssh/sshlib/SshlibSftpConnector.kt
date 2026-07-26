@@ -66,21 +66,39 @@ internal object SshlibSftpConnector {
         config: ConnectionConfig,
         hostKeyVerifier: HostKeyVerifier,
         connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
+    ): SshlibClient = dialAndAuth(
+        config,
+        TrustedOnlyVerifier(hostKeyVerifier, config.host, config.port),
+        connectTimeoutMs,
+    )
+
+    /**
+     * As [dialAndAuth], but with the sshlib-level host-key gate supplied
+     * directly so a caller can apply a different trust policy. The SFTP path
+     * uses the fail-closed [TrustedOnlyVerifier] above (trust was already
+     * established by the interactive JSch connect that preceded it);
+     * [SshlibConnection] has no such predecessor, so it passes a gate that
+     * captures the key and hands it back for Haven's normal TOFU prompt —
+     * the same accept-then-verify order the JSch engine uses.
+     */
+    suspend fun dialAndAuth(
+        config: ConnectionConfig,
+        hostKeyGate: org.connectbot.sshlib.HostKeyVerifier,
+        connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
     ): SshlibClient {
         val host = SshClient.resolveHost(config.host, config.addressFamily)
-        val trustGate = TrustedOnlyVerifier(hostKeyVerifier, config.host, config.port)
         val client = SshlibClient(
             org.connectbot.sshlib.SshClientConfig {
                 this.host = host
                 this.port = config.port
-                this.hostKeyVerifier = trustGate
-                // sshlib 0.3.1 client-initiated rekey is broken both ways: a
-                // byte-limit rekey mid-transfer kills the channel, an interval
-                // rekey wedges an idle session (SshlibCapabilitySpikeTest GAP
-                // probes). Push both thresholds out of practical reach until
-                // the upstream fix ships; the probes flip when it does.
-                rekeyIntervalMs = Long.MAX_VALUE / 2
-                rekeyBytesLimit = Long.MAX_VALUE / 2
+                this.hostKeyVerifier = hostKeyGate
+                // Rekey thresholds are sshlib's defaults (1 GiB / 1 h) again.
+                // 0.3.1 had client-initiated rekey broken both ways — a
+                // byte-limit rekey mid-transfer killed the channel, an interval
+                // rekey wedged an idle session (connectbot/cbssh#231) — so both
+                // were pushed out of reach. 0.4.0 fixes it (strict-KEX packet
+                // numbering); the SshlibCapabilitySpikeTest probes flipped, so
+                // the mitigation is gone and keys rotate normally again.
             },
         )
         try {

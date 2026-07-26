@@ -5,6 +5,46 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## Unreleased
+
+📍 **Terminal: Details — where am I? (door · path · room)** — long-press a terminal tab → **Details** shows the three layers that are easy to lose track of on a phone: **door** (connection card label/id/host), **path** (SSH / Mosh / Eternal Terminal), and **room** (live multiplexer session vs the card's remoteCommand pin). A mismatch is highlighted so a detour into an auto-created session is obvious. **Copy** puts the full sitrep on the clipboard for support. (thanks kanazawahere)
+
+🔌 **Terminal: Save connection pins the live session as a one-tap profile** — long-press a terminal tab → **Save connection** opens a confirm dialog with door/path/room context, editable **card name**, read-only **profile id**, and an explicit warning when the live room differs from the card pin (save repins to the live room). OK clones host/auth and writes `remoteCommand` (`tmux new -A -s …` / zellij / screen / byobu). Same name + host + user upserts instead of duplicating. Distinct from `lastSessionName` reconnect memory. (thanks kanazawahere)
+
+## v5.83.10
+
+🌐 **Local Linux: the guest DNS setting now also covers package installs** — v5.83.9 made the guest's name servers configurable, but only refreshed `/etc/resolv.conf` when a *terminal* session started or a distro was installed. Installing a desktop (or anything else run inside the guest) goes down a different path, so on an existing distro those commands could still use the stale file — which is exactly the "installing Xfce silently hangs" case the setting was added to fix. Every command run in the guest now refreshes the resolver first. (#446)
+
+## v5.83.9
+
+🌐 **Local Linux: the guest's DNS is configurable, and now follows your network by default** — the Linux guest's `/etc/resolv.conf` was hardcoded to public name servers (Google + Cloudflare). On a network that only allows DNS to its own resolver — common on corporate and guest Wi-Fi — that fails *silently*: installing a desktop like Xfce simply hangs during background setup, with nothing pointing at DNS until you open a shell in the container. You can now pick **Network (DHCP)** — the new default, and the only option that works on every network — **Public (Google + Cloudflare)** for the old behaviour, or **Custom** name servers, under Desktop → Options & mounts → Guest DNS. It is rewritten on every guest launch, so changing it takes effect without reinstalling the distro, and it is also settable from the agent API — handy precisely when DNS is what's broken. (#446, thanks itskenny0)
+
+## v5.83.8
+
+🔐 **SSH: session keys rotate again on the sshlib engine** — Haven's second SSH engine had both of its rekey thresholds pinned to effectively "never", because client-initiated rekeying was broken upstream in sshlib 0.3.1: a byte-limit rekey killed an in-flight transfer, and an interval rekey silently wedged an idle session. Haven reported it (connectbot/cbssh#231) and it's fixed in sshlib 0.4.0, so that workaround is gone and connections re-key on the normal schedule (1 GiB / 1 hour) again.
+
+🧪 **SSH: sshlib is now a full engine, opt-in and experimental** — putting `HavenSshEngine sshlib` in a profile's SSH Options now runs that profile's *whole* connection on sshlib — terminal, remote-command, one-shot commands, SFTP and port forwarding — instead of only its SFTP. JSch remains the default for every profile that doesn't opt in. The engine deliberately refuses what it can't do yet — jump hosts and proxies, FIDO2 security keys, OpenSSH certificates and multi-factor chains — with a clear error rather than quietly behaving differently, so move those profiles back to JSch. **Known limitation:** an upstream sshlib bug means a connection that opens more than one command channel can be refused and drop the connection — if you hit it, that's [connectbot/cbssh#238](https://github.com/connectbot/cbssh/issues/238), and the fix is to remove `HavenSshEngine sshlib` from that profile's SSH Options to go back to JSch. Haven names the issue in the error itself so you don't have to guess. Treat the engine as a preview rather than a daily driver; JSch remains the default and is completely unaffected. (#58)
+
+## v5.83.7
+
+♿ **Terminal: the keyboard-toolbar keys are now proper accessibility targets** — the configurable toolbar keys (Esc, Paste, the arrows, symbols and custom keys) were drawn with a low-level touch handler for press-and-hold key repeat that never exposed a "click" action. So screen readers like TalkBack couldn't activate them, and Haven's own agent-driving/self-hosting loop couldn't tap them either. They now expose a standard button action — keeping the press-and-hold repeat — so assistive tech and automated UI checks can operate every key. (accessibility / self-hosting loop)
+
+🤖 **Agent API: `restart_app` finishes the self-update loop** — an agent can already stream a new build to the device (`install_apk_from_backend`), but Haven's persistent foreground service kept the old process alive, so the update only took effect after a manual Force-stop. The new `restart_app` verb kills and relaunches Haven's own process to apply a staged update (the MCP link drops on restart and reconnects), removing the last manual step from remote install-and-verify.
+
+## v5.83.4
+
+⌨️ **Terminal: the floating text input's selection toolbar now appears** — selecting text inside the floating text input box (v5.82.0) showed the selection handles but never the Copy / Cut / Paste / Select-all toolbar, so there was no way to act on a selection. The box is a focusable popup with no real DecorView, and Compose 1.11's new text-context-menu path silently no-ops there. Haven now renders the menu inside the popup's own window, so the toolbar shows and works. (#444, thanks kanazawahere)
+
+⛶ **Terminal: the fullscreen button can be moved to any corner** — the ⛶ button that toggles terminal fullscreen was pinned to the top-right, where it could sit over content. Long-press and drag it, and it snaps to whichever corner you release it nearest; the choice is remembered per app. (#445, thanks PurpleMyst)
+
+## v5.83.3
+
+📁 **Files: the folder picker on the Local tab is no longer a trap** — the built-in "Local" Files tab showed "Upload folder" and "Upload file" buttons that couldn't work there (uploads target a connected remote, so on Local they just failed with "Not connected"). Worse, "Upload folder" sat right next to "Add folder location" and opened the same Android folder picker — so picking, say, your Termux home to *browse* it easily went through the wrong button and did nothing. Those upload buttons are now hidden on the Local tab, leaving "Add folder location" as the clear way to add a folder to browse. (#415, thanks timerloggedout-spec)
+
+## v5.83.2
+
+🔌 **RDP: connecting to VirtualBox works past login (empty Font Map)** — after v5.81.10 fixed the certificate handshake, RDP to a VirtualBox VM authenticated ("access granted") but then died immediately with a protocol decode error. VirtualBox's built-in RDP server sends an *empty* Server Font Map in the connection-finalisation handshake, and Haven's decoder rejected it as malformed. The Font Map is only a "you may start drawing now" signal and its contents are unused, so Haven now accepts an empty/short one and continues — the same leniency mstsc and FreeRDP have. Reported for VirtualBox; should also help other RDP servers that send a minimal Font Map. (#422, thanks pawlosck)
+
 ## v5.83.1
 
 🔌 **Agent API: profiles' remote command is settable over MCP** — `create_connection` and `update_connection` now take `remoteCommand` (run via an SSH exec request instead of a login shell, e.g. `tmux new -A -s work`) and `requestPty`, and profiles report them back through `list_connections`. Previously the v5.83.0 remote-command field could only be set in the connection editor. (#436)

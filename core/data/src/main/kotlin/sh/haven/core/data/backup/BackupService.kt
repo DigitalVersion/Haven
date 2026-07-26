@@ -139,6 +139,7 @@ class BackupService @Inject constructor(
                 put("spaExplicitIp", p.spaExplicitIp ?: JSONObject.NULL)
                 put("spaPort", p.spaPort)
                 put("identityId", p.identityId ?: JSONObject.NULL)
+                put("description", p.description ?: JSONObject.NULL)
             })
         }
         json.put("connections", connections)
@@ -455,6 +456,7 @@ class BackupService @Inject constructor(
                             spaExplicitIp = c.optStringOrNull("spaExplicitIp"),
                             spaPort = c.optInt("spaPort", 62201),
                             identityId = c.optStringOrNull("identityId"),
+                            description = c.optStringOrNull("description"),
                         ),
                     )
                     count++

@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Password
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SyncAlt
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.DragHandle
@@ -1601,6 +1602,7 @@ private fun ConnectionTreeItem(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showForgetPasswordConfirm by remember { mutableStateOf(false) }
+    var showDetailsDialog by remember { mutableStateOf(false) }
 
     if (showRenameDialog) {
         RenameDialog(
@@ -1651,6 +1653,13 @@ private fun ConnectionTreeItem(
                     Text(stringResource(R.string.common_cancel))
                 }
             },
+        )
+    }
+
+    if (showDetailsDialog) {
+        ConnectionDetailsDialog(
+            profile = profile,
+            onDismiss = { showDetailsDialog = false }
         )
     }
 
@@ -1803,6 +1812,11 @@ private fun ConnectionTreeItem(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
         ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.connections_menu_details)) },
+                leadingIcon = { Icon(Icons.Filled.Info, null) },
+                onClick = { showMenu = false; showDetailsDialog = true },
+            )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.common_rename)) },
                 leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
@@ -2242,3 +2256,70 @@ private fun GroupIdentityDialog(
         },
     )
 }
+
+@Composable
+fun ConnectionDetailsDialog(
+    profile: ConnectionProfile,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.connections_details_title)) },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                DetailRow(label = stringResource(R.string.connections_details_name), value = profile.label)
+                DetailRow(label = stringResource(R.string.connections_details_type), value = profile.connectionType)
+                if (profile.host.isNotBlank()) {
+                    DetailRow(label = stringResource(R.string.common_host), value = profile.host)
+                }
+                if (profile.username.isNotBlank()) {
+                    DetailRow(label = stringResource(R.string.common_username), value = profile.username)
+                }
+                if (profile.port > 0) {
+                    DetailRow(label = stringResource(R.string.common_port), value = profile.port.toString())
+                }
+                val desc = profile.description
+                if (!desc.isNullOrBlank()) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        text = stringResource(R.string.connections_field_description),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = desc,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_close))
+            }
+        }
+    )
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
