@@ -1109,8 +1109,8 @@ fun ConnectionEditDialog(
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text("Description") },
-                    placeholder = { Text("Optional description of this connection") },
+                    label = { Text(stringResource(R.string.connections_field_description)) },
+                    placeholder = { Text(stringResource(R.string.connections_field_description_placeholder)) },
                     minLines = 2,
                     maxLines = 5,
                     modifier = Modifier.fillMaxWidth(),

@@ -591,4 +591,10 @@
     <string name="connections_deeplink_confirm_message">A link wants to connect to %1$s.</string>
     <string name="connections_deeplink_confirm_session">A link wants to connect to %1$s and attach session “%2$s”.</string>
     <string name="connections_deeplink_confirm_connect">Connect</string>
+    <string name="connections_field_description">Description</string>
+    <string name="connections_field_description_placeholder">Optional description of this connection</string>
+    <string name="connections_menu_details">Details</string>
+    <string name="connections_details_title">Connection Details</string>
+    <string name="connections_details_name">Name</string>
+    <string name="connections_details_type">Type</string>
 </resources>

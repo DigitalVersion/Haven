@@ -2003,7 +2003,7 @@ private fun WhereaboutsDialog(
                 val desc = whereabouts.description
                 if (!desc.isNullOrBlank()) {
                     Text(
-                        "DESCRIPTION",
+                        stringResource(R.string.terminal_details_description),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )

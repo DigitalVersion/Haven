@@ -1813,7 +1813,7 @@ private fun ConnectionTreeItem(
             onDismissRequest = { showMenu = false },
         ) {
             DropdownMenuItem(
-                text = { Text("Details") },
+                text = { Text(stringResource(R.string.connections_menu_details)) },
                 leadingIcon = { Icon(Icons.Filled.Info, null) },
                 onClick = { showMenu = false; showDetailsDialog = true },
             )
@@ -2264,28 +2264,28 @@ fun ConnectionDetailsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Connection Details") },
+        title = { Text(stringResource(R.string.connections_details_title)) },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                DetailRow(label = "Name", value = profile.label)
-                DetailRow(label = "Type", value = profile.connectionType)
+                DetailRow(label = stringResource(R.string.connections_details_name), value = profile.label)
+                DetailRow(label = stringResource(R.string.connections_details_type), value = profile.connectionType)
                 if (profile.host.isNotBlank()) {
-                    DetailRow(label = "Host", value = profile.host)
+                    DetailRow(label = stringResource(R.string.common_host), value = profile.host)
                 }
                 if (profile.username.isNotBlank()) {
-                    DetailRow(label = "Username", value = profile.username)
+                    DetailRow(label = stringResource(R.string.common_username), value = profile.username)
                 }
                 if (profile.port > 0) {
-                    DetailRow(label = "Port", value = profile.port.toString())
+                    DetailRow(label = stringResource(R.string.common_port), value = profile.port.toString())
                 }
                 val desc = profile.description
                 if (!desc.isNullOrBlank()) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     Text(
-                        text = "Description",
+                        text = stringResource(R.string.connections_field_description),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary
                     )
