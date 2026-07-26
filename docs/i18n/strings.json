@@ -7445,6 +7445,13 @@
      }
     },
     {
+     "name": "connections_menu_browse_sessions",
+     "en": "Browse sessions",
+     "comment": "Connection context menu",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "connections_menu_duplicate",
      "en": "Duplicate",
      "comment": "Connection context menu",
@@ -7964,6 +7971,36 @@
       "ru": "Открыть простой shell",
       "zh": "打开纯 shell"
      }
+    },
+    {
+     "name": "connections_browse_sessions_title",
+     "en": "%1$s sessions",
+     "comment": "Session browser grid dialog (v1: session-preview-grid)",
+     "args": [
+      "%1$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "connections_browse_sessions_loading",
+     "en": "Loading…",
+     "comment": "Session browser grid dialog (v1: session-preview-grid)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_browse_sessions_no_preview",
+     "en": "No preview available",
+     "comment": "Session browser grid dialog (v1: session-preview-grid)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_browse_sessions_empty",
+     "en": "No live sessions",
+     "comment": "Session browser grid dialog (v1: session-preview-grid)",
+     "args": [],
+     "t": {}
     },
     {
      "name": "connections_rename_title",
