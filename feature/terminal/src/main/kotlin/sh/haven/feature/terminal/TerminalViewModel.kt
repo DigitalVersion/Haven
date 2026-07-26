@@ -2906,6 +2906,7 @@ class TerminalViewModel @Inject constructor(
         val doorId: String,
         val doorHost: String,
         val doorUser: String,
+        val description: String?,
         /** Path — SSH / Mosh / Eternal Terminal / … */
         val pathTransport: String,
         val pathDetail: String,
@@ -3080,6 +3081,7 @@ class TerminalViewModel @Inject constructor(
             doorId = profile.id,
             doorHost = profile.host,
             doorUser = profile.username,
+            description = profile.description,
             pathTransport = path,
             pathDetail = pathDetail,
             roomName = liveRoom,

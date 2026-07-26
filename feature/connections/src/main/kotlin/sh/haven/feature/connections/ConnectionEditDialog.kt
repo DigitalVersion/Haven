@@ -228,6 +228,7 @@ fun ConnectionEditDialog(
         else -> "SSH"
     }
     var label by rememberSaveable { mutableStateOf(existing?.label ?: "") }
+    var description by rememberSaveable { mutableStateOf(existing?.description ?: "") }
     var colorTag by rememberSaveable { mutableIntStateOf(existing?.colorTag ?: 0) }
     var groupId by rememberSaveable { mutableStateOf(existing?.groupId) }
     var identityId by rememberSaveable { mutableStateOf(existing?.identityId) }
@@ -1101,6 +1102,17 @@ fun ConnectionEditDialog(
                         )
                     },
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description") },
+                    placeholder = { Text("Optional description of this connection") },
+                    minLines = 2,
+                    maxLines = 5,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(4.dp))
@@ -3701,7 +3713,11 @@ fun ConnectionEditDialog(
                     // toggle is gated on mcpEnabled). For other transports or
                     // when MCP is off, report false so the screen tears down
                     // any stale rule.
-                    onSave(profile, cfInput, mcpReverseTunnel && mcpEnabled && selectedTransport == "SSH")
+                    onSave(
+                        profile.copy(description = description.ifBlank { null }),
+                        cfInput,
+                        mcpReverseTunnel && mcpEnabled && selectedTransport == "SSH"
+                    )
                 },
                 enabled = canSave,
             ) {

@@ -2000,6 +2000,16 @@ private fun WhereaboutsDialog(
         title = { Text(stringResource(R.string.terminal_details_title)) },
         text = {
             Column {
+                val desc = whereabouts.description
+                if (!desc.isNullOrBlank()) {
+                    Text(
+                        "DESCRIPTION",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(desc, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(12.dp))
+                }
                 Text(
                     stringResource(R.string.terminal_details_door),
                     style = MaterialTheme.typography.labelLarge,
