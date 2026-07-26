@@ -16119,6 +16119,48 @@
       "ru": "Подключиться",
       "zh": "连接"
      }
+    },
+    {
+     "name": "connections_field_description",
+     "en": "Description",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_field_description_placeholder",
+     "en": "Optional description of this connection",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_menu_details",
+     "en": "Details",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_details_title",
+     "en": "Connection Details",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_details_name",
+     "en": "Name",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_details_type",
+     "en": "Type",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
     }
    ]
   },
@@ -38077,6 +38119,13 @@
       "ru": "256 цветов (минимальный трафик)",
       "zh": "256 色（最低带宽）"
      }
+    },
+    {
+     "name": "terminal_details_description",
+     "en": "DESCRIPTION",
+     "comment": "VncSettingsDialog colour depth options",
+     "args": [],
+     "t": {}
     }
    ]
   },
