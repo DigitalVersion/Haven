@@ -1782,7 +1782,7 @@ fun SettingsScreen(
 
     showBackupPasswordDialog?.let { action ->
         BackupPasswordDialog(
-            isExport = action !is BackupAction.Restore && action !is BackupAction.PullRemote,
+            isExport = action !is BackupAction.Restore && action !is BackupAction.PullRemote && action !is BackupAction.EnableAutoPull,
             titleOverride = when (action) {
                 is BackupAction.EnableAutoSync -> stringResource(R.string.settings_backup_auto_sync_dialog_title)
                 is BackupAction.EnableAutoPull -> stringResource(R.string.settings_backup_auto_pull_dialog_title)
