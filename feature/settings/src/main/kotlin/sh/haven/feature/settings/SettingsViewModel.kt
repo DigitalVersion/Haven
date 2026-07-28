@@ -241,6 +241,24 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { preferencesRepository.setBackupAutoSync(enabled, passphrase) }
     }
 
+    val backupAutoPullEnabled: StateFlow<Boolean> = preferencesRepository.backupAutoPullEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setBackupAutoPull(enabled: Boolean, passphrase: String?) {
+        viewModelScope.launch { preferencesRepository.setBackupAutoPull(enabled, passphrase) }
+    }
+
+    val backupSyncPassphrase: StateFlow<String?> = preferencesRepository.backupSyncPassphraseFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun saveBackupSyncPassphrase(passphrase: String) {
+        viewModelScope.launch { preferencesRepository.saveBackupSyncPassphrase(passphrase) }
+    }
+
+    fun clearBackupSyncPassphrase() {
+        viewModelScope.launch { preferencesRepository.clearBackupSyncPassphrase() }
+    }
+
     /** Encrypt the config and write it to the configured remote. */
     fun pushBackupToRemote(password: String) {
         val profileId = backupSyncProfileId.value
