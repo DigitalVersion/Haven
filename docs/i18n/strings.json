@@ -7275,6 +7275,163 @@
      }
     },
     {
+     "name": "connections_view_mode_list",
+     "en": "List",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_grid",
+     "en": "Grid",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_tinder",
+     "en": "Tinder",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_selector_desc",
+     "en": "Switch connections view mode",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tinder_no_preview",
+     "en": "No Tin preview for this card",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_grid_no_preview",
+     "en": "No preview",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_grid_empty_filter",
+     "en": "No connections match filter",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tinder_empty",
+     "en": "No connections available",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tinder_connect_btn",
+     "en": "Connect",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tinder_kill_desc",
+     "en": "Kill tmux session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_menu_item",
+     "en": "Tin preview hub\\u2026",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_title",
+     "en": "Tin Preview Hub",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_label",
+     "en": "Hub Base URL",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_save",
+     "en": "Save",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_confirm_title",
+     "en": "Kill tmux session?",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_confirm_message",
+     "en": "Are you sure you want to kill the tmux session \\\"%1$s\\\" on host \\\"%2$s\\\"? This is a real tmux session on the fleet machine, it cannot be undone.",
+     "comment": "Connections screen",
+     "args": [
+      "%1$s",
+      "%2$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_force_title",
+     "en": "Force kill session?",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_title",
+     "en": "Type session name to confirm",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_label",
+     "en": "Type session name",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_btn",
+     "en": "Confirm Kill",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_success",
+     "en": "Successfully killed session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_error",
+     "en": "Failed to kill session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "connections_filter_clear",
      "en": "Clear filter",
      "comment": "Connections screen",

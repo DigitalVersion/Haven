@@ -44,6 +44,8 @@ class UserPreferencesRepository @Inject constructor(
     // LANG value exported into the local proot/Android shell (#282).
     private val terminalLocaleKey = stringPreferencesKey("terminal_locale")
     private val themeKey = stringPreferencesKey("theme")
+    private val connectionsViewModeKey = stringPreferencesKey("connections_view_mode")
+    private val tinHubBaseUrlKey = stringPreferencesKey("tin_hub_base_url")
     private val sessionManagerKey = stringPreferencesKey("session_manager")
     private val reticulumRpcKeyKey = stringPreferencesKey("reticulum_rpc_key")
     private val reticulumHostKey = stringPreferencesKey("reticulum_host")
@@ -1235,6 +1237,26 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setTheme(mode: ThemeMode) {
         dataStore.edit { prefs ->
             prefs[themeKey] = mode.name
+        }
+    }
+
+    val connectionsViewMode: Flow<String> = dataStore.data.map { prefs ->
+        prefs[connectionsViewModeKey] ?: "LIST"
+    }
+
+    suspend fun setConnectionsViewMode(mode: String) {
+        dataStore.edit { prefs ->
+            prefs[connectionsViewModeKey] = mode
+        }
+    }
+
+    val tinHubBaseUrl: Flow<String> = dataStore.data.map { prefs ->
+        prefs[tinHubBaseUrlKey] ?: "https://tin.tail7f125e.ts.net/api"
+    }
+
+    suspend fun setTinHubBaseUrl(url: String) {
+        dataStore.edit { prefs ->
+            prefs[tinHubBaseUrlKey] = url
         }
     }
 

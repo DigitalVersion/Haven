@@ -458,6 +458,24 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
+    val connectionsViewMode: StateFlow<String> = preferencesRepository.connectionsViewMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "LIST")
+
+    fun setConnectionsViewMode(mode: String) {
+        viewModelScope.launch {
+            preferencesRepository.setConnectionsViewMode(mode)
+        }
+    }
+
+    val tinHubBaseUrl: StateFlow<String> = preferencesRepository.tinHubBaseUrl
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "https://tin.tail7f125e.ts.net/api")
+
+    fun setTinHubBaseUrl(url: String) {
+        viewModelScope.launch {
+            preferencesRepository.setTinHubBaseUrl(url)
+        }
+    }
+
     val sessions: StateFlow<Map<String, SshSessionManager.SessionState>> = sshSessionManager.sessions
 
     /**
