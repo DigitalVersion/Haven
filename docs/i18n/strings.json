@@ -25845,7 +25845,7 @@
     },
     {
      "name": "settings_backup_auto_sync_hint",
-     "en": "Re-pushes the encrypted backup a couple of minutes after settings change, plus a daily catch-up. Requires storing your backup passphrase (encrypted) on this device so pushes can run in the background. Pull always stays manual.",
+     "en": "Re-pushes the encrypted backup a couple of minutes after settings change, plus a daily catch-up. Requires storing your backup passphrase (encrypted) on this device so pushes can run in the background. Automatic pull is a separate opt-in below.",
      "comment": "Backup section",
      "args": [],
      "t": {
