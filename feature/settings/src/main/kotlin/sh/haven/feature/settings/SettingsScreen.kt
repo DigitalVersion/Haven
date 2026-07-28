@@ -258,6 +258,11 @@ fun SettingsScreen(
     var showBackupSyncDialog by remember { mutableStateOf(false) }
     var showLockTimeoutDialog by remember { mutableStateOf(false) }
     var showOsc133SetupDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        viewModel.openBackupPasswordDialogEvent.collect {
+            showBackupPasswordDialog = BackupAction.PullRemote
+        }
+    }
     var showScreenOrderDialog by remember { mutableStateOf(false) }
     val screenOrder by viewModel.screenOrder.collectAsState()
 
@@ -1833,12 +1838,14 @@ fun SettingsScreen(
         val syncPath by viewModel.backupSyncPath.collectAsState()
         val autoSyncEnabled by viewModel.backupAutoSyncEnabled.collectAsState()
         val autoPullEnabled by viewModel.backupAutoPullEnabled.collectAsState()
+        val autoPullIntervalMinutes by viewModel.backupAutoPullIntervalMinutes.collectAsState()
         BackupSyncDialog(
             candidates = syncCandidates,
             selectedProfileId = syncProfileId,
             path = syncPath,
             autoSyncEnabled = autoSyncEnabled,
             autoPullEnabled = autoPullEnabled,
+            autoPullIntervalMinutes = autoPullIntervalMinutes,
             onDestinationChange = { pid, p -> viewModel.setBackupSyncDestination(pid, p) },
             onAutoSyncChange = { enable ->
                 if (enable) {
@@ -1855,6 +1862,9 @@ fun SettingsScreen(
                 } else {
                     viewModel.setBackupAutoPull(false, null)
                 }
+            },
+            onAutoPullIntervalChange = { minutes ->
+                viewModel.setBackupAutoPullInterval(minutes)
             },
             onPush = {
                 showBackupSyncDialog = false
@@ -1972,9 +1982,11 @@ private fun BackupSyncDialog(
     path: String,
     autoSyncEnabled: Boolean,
     autoPullEnabled: Boolean,
+    autoPullIntervalMinutes: Int,
     onDestinationChange: (String?, String) -> Unit,
     onAutoSyncChange: (Boolean) -> Unit,
     onAutoPullChange: (Boolean) -> Unit,
+    onAutoPullIntervalChange: (Int) -> Unit,
     onPush: () -> Unit,
     onPull: () -> Unit,
     onDismiss: () -> Unit,
@@ -2071,6 +2083,45 @@ private fun BackupSyncDialog(
                             enabled = hasDestination || autoPullEnabled,
                         )
                     }
+                    if (autoPullEnabled) {
+                        Spacer(Modifier.height(8.dp))
+                        var intervalExpanded by remember { mutableStateOf(false) }
+                        val intervals = listOf(15, 60, 360, 1440)
+                        val intervalLabels = mapOf(
+                            15 to stringResource(R.string.settings_backup_auto_pull_interval_15m),
+                            60 to stringResource(R.string.settings_backup_auto_pull_interval_1h),
+                            360 to stringResource(R.string.settings_backup_auto_pull_interval_6h),
+                            1440 to stringResource(R.string.settings_backup_auto_pull_interval_24h)
+                        )
+                        ExposedDropdownMenuBox(
+                            expanded = intervalExpanded,
+                            onExpandedChange = { intervalExpanded = it },
+                        ) {
+                            OutlinedTextField(
+                                value = intervalLabels[autoPullIntervalMinutes] ?: intervalLabels[1440]!!,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text(stringResource(R.string.settings_backup_auto_pull_interval_label)) },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(intervalExpanded) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+                            )
+                            ExposedDropdownMenu(
+                                expanded = intervalExpanded,
+                                onDismissRequest = { intervalExpanded = false }
+                            ) {
+                                intervals.forEach { minutes ->
+                                    DropdownMenuItem(
+                                        text = { Text(intervalLabels[minutes] ?: "") },
+                                        onClick = {
+                                            onAutoPullIntervalChange(minutes)
+                                            intervalExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         text = stringResource(R.string.settings_backup_auto_pull_hint),
                         style = MaterialTheme.typography.bodySmall,

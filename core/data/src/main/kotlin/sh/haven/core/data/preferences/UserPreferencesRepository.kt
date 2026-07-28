@@ -81,6 +81,7 @@ class UserPreferencesRepository @Inject constructor(
     private val backupSyncPathKey = stringPreferencesKey("backup_sync_path")
     private val backupAutoSyncEnabledKey = booleanPreferencesKey("backup_auto_sync_enabled")
     private val backupAutoPullEnabledKey = booleanPreferencesKey("backup_auto_pull_enabled")
+    private val backupAutoPullIntervalMinutesKey = intPreferencesKey("backup_auto_pull_interval_minutes")
     // CredentialEncryption-wrapped backup passphrase for background pushes (#359).
     private val backupSyncPassphraseKey = stringPreferencesKey("backup_sync_passphrase")
     // Session command for the Custom (X11) desktop (#361).
@@ -360,6 +361,10 @@ class UserPreferencesRepository @Inject constructor(
         prefs[backupAutoPullEnabledKey] ?: false
     }
 
+    val backupAutoPullIntervalMinutes: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[backupAutoPullIntervalMinutesKey] ?: 1440
+    }
+
     suspend fun setBackupAutoPull(enabled: Boolean, passphrase: String?) {
         val encrypted = if (enabled) passphrase?.let { CredentialEncryption.encrypt(context, it) } else null
         dataStore.edit { prefs ->
@@ -374,6 +379,12 @@ class UserPreferencesRepository @Inject constructor(
                     prefs.remove(backupSyncPassphraseKey)
                 }
             }
+        }
+    }
+
+    suspend fun setBackupAutoPullInterval(minutes: Int) {
+        dataStore.edit { prefs ->
+            prefs[backupAutoPullIntervalMinutesKey] = minutes
         }
     }
 

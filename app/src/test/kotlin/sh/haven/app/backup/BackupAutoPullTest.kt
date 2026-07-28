@@ -25,10 +25,15 @@ class BackupAutoPullTest {
     private val preferencesRepository = mockk<UserPreferencesRepository>(relaxed = true)
     private val workManager = mockk<WorkManager>(relaxed = true)
 
+    private val enabledFlow = MutableStateFlow(false)
+    private val intervalFlow = MutableStateFlow(1440)
+
     @Before
     fun setUp() {
         mockkStatic(WorkManager::class)
         every { WorkManager.getInstance(any()) } returns workManager
+        every { preferencesRepository.backupAutoPullEnabled } returns enabledFlow
+        every { preferencesRepository.backupAutoPullIntervalMinutes } returns intervalFlow
     }
 
     @After
@@ -38,8 +43,7 @@ class BackupAutoPullTest {
 
     @Test
     fun `scheduler cancels work when auto-pull is disabled`() = runTest {
-        val enabledFlow = MutableStateFlow(false)
-        every { preferencesRepository.backupAutoPullEnabled } returns enabledFlow
+        enabledFlow.value = false
 
         val scheduler = BackupAutoPullScheduler(context, preferencesRepository)
         val testJob = Job()
@@ -55,8 +59,7 @@ class BackupAutoPullTest {
 
     @Test
     fun `scheduler schedules work when auto-pull is enabled`() = runTest {
-        val enabledFlow = MutableStateFlow(true)
-        every { preferencesRepository.backupAutoPullEnabled } returns enabledFlow
+        enabledFlow.value = true
 
         val scheduler = BackupAutoPullScheduler(context, preferencesRepository)
         val testJob = Job()
@@ -66,6 +69,29 @@ class BackupAutoPullTest {
         runCurrent()
 
         verify(exactly = 1) { workManager.enqueueUniquePeriodicWork("backup-auto-pull-periodic", any(), any()) }
+
+        testJob.cancel()
+    }
+
+    @Test
+    fun `scheduler reschedules work when interval changes`() = runTest {
+        enabledFlow.value = true
+        intervalFlow.value = 1440
+
+        val scheduler = BackupAutoPullScheduler(context, preferencesRepository)
+        val testJob = Job()
+        val childScope = CoroutineScope(coroutineContext + testJob)
+
+        scheduler.start(childScope)
+        runCurrent()
+
+        verify(exactly = 1) { workManager.enqueueUniquePeriodicWork("backup-auto-pull-periodic", any(), any()) }
+
+        // Change interval
+        intervalFlow.value = 60
+        runCurrent()
+
+        verify(exactly = 2) { workManager.enqueueUniquePeriodicWork("backup-auto-pull-periodic", any(), any()) }
 
         testJob.cancel()
     }
