@@ -3,7 +3,7 @@ package sh.haven.app.backup
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -17,7 +17,7 @@ import sh.haven.core.data.preferences.UserPreferencesRepository
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class PullBackupShortcutActivity : AppCompatActivity() {
+class PullBackupShortcutActivity : ComponentActivity() {
 
     @Inject
     lateinit var preferencesRepository: UserPreferencesRepository
