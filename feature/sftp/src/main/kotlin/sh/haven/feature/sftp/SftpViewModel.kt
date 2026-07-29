@@ -266,6 +266,19 @@ class SftpViewModel @Inject constructor(
     }
 
     init {
+        viewModelScope.launch {
+            combine(
+                sessionManager.sessions,
+                moshSessionManager.sessions,
+                etSessionManager.sessions,
+                smbSessionManager.sessions,
+                rcloneSessionManager.sessions,
+                reticulumSessionManager.sessions
+            ) { _ -> }.collect {
+                syncConnectedProfiles()
+            }
+        }
+
         // Subscribe to agent-driven UI commands so an MCP-issued navigation
         // verb can drive the file browser to a new profile/path. The
         // matching pager switch happens in HavenNavHost; both collectors
