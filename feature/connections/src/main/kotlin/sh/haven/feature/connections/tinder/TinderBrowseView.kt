@@ -322,9 +322,9 @@ fun TinderBrowseView(
                 }
 
                 // 4. Stale/Fresh label
+                val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
                 val timeText = if (previewState.lastFetchAt != null) {
-                    val sdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-                    sdf.format(Date(previewState.lastFetchAt))
+                    timeFormatter.format(Date(previewState.lastFetchAt))
                 } else ""
                 val staleText = if (previewState.lastFetchOk) {
                     "Tin: updated $timeText"
