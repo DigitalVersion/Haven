@@ -351,13 +351,13 @@ fun TinderBrowseView(
                             onClick = { onConnect(profile) },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Mở Terminal")
+                            Text(stringResource(R.string.connections_tinder_open_terminal_btn))
                         }
                         Button(
                             onClick = { onOpenFiles(profile) },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Mở Files")
+                            Text(stringResource(R.string.connections_tinder_open_files_btn))
                         }
                     }
                 } else {

@@ -7345,6 +7345,20 @@
      "t": {}
     },
     {
+     "name": "connections_tinder_open_terminal_btn",
+     "en": "Open Terminal",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tinder_open_files_btn",
+     "en": "Open Files",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "connections_tinder_kill_desc",
      "en": "Kill tmux session",
      "comment": "Connections screen",
