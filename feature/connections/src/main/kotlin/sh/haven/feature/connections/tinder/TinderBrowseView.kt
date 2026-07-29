@@ -58,7 +58,9 @@ fun TinderBrowseView(
     profiles: List<ConnectionProfile>,
     previewState: TinPreviewState,
     profileStatuses: Map<String, ProfileStatus>,
+    filesStatuses: Map<String, ProfileStatus> = emptyMap(),
     onConnect: (ConnectionProfile) -> Unit,
+    onOpenFiles: (ConnectionProfile) -> Unit = {},
     onRequestKill: (Pair<String, String>) -> Unit,
     initialPage: Int,
     onPageChanged: (Int) -> Unit,
@@ -167,6 +169,91 @@ fun TinderBrowseView(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        // Terminal status chip
+                        val termStatus = profileStatuses[profile.id] ?: ProfileStatus.DISCONNECTED
+                        val termColor = when (termStatus) {
+                            ProfileStatus.CONNECTED -> Color(0xFF4CAF50)
+                            ProfileStatus.ERROR -> Color(0xFFF44336)
+                            ProfileStatus.CONNECTING, ProfileStatus.RECONNECTING -> Color(0xFFFFB300)
+                            else -> MaterialTheme.colorScheme.outline
+                        }
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = termColor.copy(alpha = 0.12f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, termColor.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (termStatus == ProfileStatus.CONNECTING || termStatus == ProfileStatus.RECONNECTING) {
+                                    androidx.compose.material3.CircularProgressIndicator(
+                                        modifier = Modifier.size(10.dp),
+                                        strokeWidth = 1.dp,
+                                        color = termColor
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(termColor, CircleShape)
+                                    )
+                                }
+                                Text(
+                                    text = "Terminal: ${termStatus.name}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = termColor
+                                )
+                            }
+                        }
+
+                        // Files status chip
+                        if (profile.isSsh) {
+                            val filesStatus = filesStatuses[profile.id] ?: ProfileStatus.DISCONNECTED
+                            val filesColor = when (filesStatus) {
+                                ProfileStatus.CONNECTED -> Color(0xFF4CAF50)
+                                ProfileStatus.ERROR -> Color(0xFFF44336)
+                                ProfileStatus.CONNECTING, ProfileStatus.RECONNECTING -> Color(0xFFFFB300)
+                                else -> MaterialTheme.colorScheme.outline
+                            }
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = filesColor.copy(alpha = 0.12f)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, filesColor.copy(alpha = 0.5f)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    if (filesStatus == ProfileStatus.CONNECTING || filesStatus == ProfileStatus.RECONNECTING) {
+                                        androidx.compose.material3.CircularProgressIndicator(
+                                            modifier = Modifier.size(10.dp),
+                                            strokeWidth = 1.dp,
+                                            color = filesColor
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .background(filesColor, CircleShape)
+                                        )
+                                    }
+                                    Text(
+                                        text = "Files: ${filesStatus.name}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = filesColor
+                                    )
+                                }
+                            }
+                        }
+                    }
                     val previewText = card?.preview ?: ""
                     if (previewText.isNotEmpty()) {
                         Text(
@@ -252,14 +339,36 @@ fun TinderBrowseView(
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
 
-                // 5. Connect Button
-                Button(
-                    onClick = { onConnect(profile) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                ) {
-                    Text(stringResource(R.string.connections_tinder_connect_btn))
+                // 5. Connect Buttons
+                if (profile.isSsh) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { onConnect(profile) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Mở Terminal")
+                        }
+                        Button(
+                            onClick = { onOpenFiles(profile) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Mở Files")
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = { onConnect(profile) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    ) {
+                        Text(stringResource(R.string.connections_tinder_connect_btn))
+                    }
                 }
             }
         }

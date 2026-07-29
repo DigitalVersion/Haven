@@ -154,6 +154,7 @@ import java.util.Locale
 fun SftpScreen(
     pendingSmbProfileId: String? = null,
     pendingRcloneProfileId: String? = null,
+    pendingSftpProfileId: String? = null,
     onEditorOpenChanged: (Boolean) -> Unit = {},
     onImageToolOpenChanged: (Boolean) -> Unit = {},
     /**
@@ -257,6 +258,10 @@ fun SftpScreen(
 
     LaunchedEffect(pendingRcloneProfileId) {
         pendingRcloneProfileId?.let { viewModel.setPendingRcloneProfile(it) }
+    }
+
+    LaunchedEffect(pendingSftpProfileId) {
+        pendingSftpProfileId?.let { viewModel.setPendingSftpProfile(it) }
     }
 
     viewModel.syncConnectedProfiles()

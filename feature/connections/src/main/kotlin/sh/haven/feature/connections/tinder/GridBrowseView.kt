@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,7 +50,9 @@ fun GridBrowseView(
     profiles: List<ConnectionProfile>,
     previewState: TinPreviewState,
     profileStatuses: Map<String, ProfileStatus>,
+    filesStatuses: Map<String, ProfileStatus> = emptyMap(),
     onConnect: (ConnectionProfile) -> Unit,
+    onOpenFiles: (ConnectionProfile) -> Unit = {},
     onRequestKill: (Pair<String, String>) -> Unit,
     gridState: LazyGridState,
     isFiltering: Boolean,
@@ -106,7 +109,9 @@ fun GridBrowseView(
                     GridCellItem(
                         profile = profile,
                         previewState = previewState,
+                        filesStatuses = filesStatuses,
                         onConnect = onConnect,
+                        onOpenFiles = onOpenFiles,
                         onRequestKill = onRequestKill
                     )
                 }
@@ -119,7 +124,9 @@ fun GridBrowseView(
 fun GridCellItem(
     profile: ConnectionProfile,
     previewState: TinPreviewState,
+    filesStatuses: Map<String, ProfileStatus>,
     onConnect: (ConnectionProfile) -> Unit,
+    onOpenFiles: (ConnectionProfile) -> Unit,
     onRequestKill: (Pair<String, String>) -> Unit
 ) {
     val key = TinPreviewClient.tinSessionKeyOf(profile)
@@ -159,6 +166,34 @@ fun GridCellItem(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (profile.isSsh) {
+                    val filesStatus = filesStatuses[profile.id] ?: ProfileStatus.DISCONNECTED
+                    val filesColor = when (filesStatus) {
+                        ProfileStatus.CONNECTED -> Color(0xFF4CAF50)
+                        ProfileStatus.ERROR -> Color(0xFFF44336)
+                        ProfileStatus.CONNECTING, ProfileStatus.RECONNECTING -> Color(0xFFFFB300)
+                        else -> MaterialTheme.colorScheme.outline
+                    }
+                    IconButton(
+                        onClick = { onOpenFiles(profile) },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        if (filesStatus == ProfileStatus.CONNECTING || filesStatus == ProfileStatus.RECONNECTING) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 1.dp,
+                                color = filesColor
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Folder,
+                                contentDescription = "Open Files",
+                                tint = filesColor,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
                 if (card != null) {
                     IconButton(
                         onClick = { onRequestKill(key) },

@@ -498,6 +498,9 @@ fun HavenNavHost(
     // Rclone auto-connect params
     var pendingRcloneProfileId by rememberSaveable { mutableStateOf<String?>(null) }
 
+    // SFTP auto-connect params
+    var pendingSftpProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+
     // Email (Mail) auto-open params
     var pendingEmailProfileId by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -610,6 +613,12 @@ fun HavenNavHost(
                     },
                     onNavigateToRclone = { profileId ->
                         pendingRcloneProfileId = profileId
+                        coroutineScope.launch {
+                            requestScreen(Screen.Sftp)
+                        }
+                    },
+                    onNavigateToSftp = { profileId ->
+                        pendingSftpProfileId = profileId
                         coroutineScope.launch {
                             requestScreen(Screen.Sftp)
                         }
@@ -800,6 +809,7 @@ fun HavenNavHost(
                     SftpScreen(
                         pendingSmbProfileId = pendingSmbProfileId,
                         pendingRcloneProfileId = pendingRcloneProfileId,
+                        pendingSftpProfileId = pendingSftpProfileId,
                         onEditorOpenChanged = { sftpEditorOpen = it },
                         onImageToolOpenChanged = { sftpImageToolOpen = it },
                         sftpModifier = sftpModifier,
@@ -823,6 +833,11 @@ fun HavenNavHost(
                     LaunchedEffect(pendingRcloneProfileId) {
                         if (pendingRcloneProfileId != null) {
                             pendingRcloneProfileId = null
+                        }
+                    }
+                    LaunchedEffect(pendingSftpProfileId) {
+                        if (pendingSftpProfileId != null) {
+                            pendingSftpProfileId = null
                         }
                     }
                 }
