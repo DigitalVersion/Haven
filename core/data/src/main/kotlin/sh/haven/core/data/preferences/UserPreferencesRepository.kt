@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import sh.haven.core.security.CredentialEncryption
-import java.security.GeneralSecurityException
 import javax.inject.Inject
 import javax.inject.Singleton
 
