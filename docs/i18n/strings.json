@@ -8065,6 +8065,69 @@
      }
     },
     {
+     "name": "connections_tin_not_found_title",
+     "en": "Tin companion not found",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_not_found_message",
+     "en": "The remote host doesn\\'t have the tin-companion daemon installed. The companion allows live terminal previews on your connection cards.",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_install_prompt",
+     "en": "Install it on the server:",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_install_commands",
+     "en": "\\u0020 Install companion:  pipx install tin-companion\\n\\u0020 Start companion:    tin-companion start\\n\\u0020 Show token &amp; URL:   tin-companion info",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_token_label",
+     "en": "Access token (optional)",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_auth_required",
+     "en": "Tin hub requires a token — set it in \\u22ee \\u2192 Tin preview hub\\u2026",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_setup_hint",
+     "en": "Live previews need the Tin companion — set up in \\u22ee menu",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_github",
+     "en": "https://github.com/kanazawahere/tin-companion",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_github_label",
+     "en": "GitHub",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "connections_mosh_client_missing_title",
      "en": "Mosh client not built",
      "comment": "Mosh client missing dialog",

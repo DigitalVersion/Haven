@@ -424,7 +424,13 @@ class UserPreferencesRepository @Inject constructor(
     private fun decryptSyncPassphraseOrNull(encrypted: String): String? =
         try {
             CredentialEncryption.decrypt(context, encrypted)
-        } catch (e: GeneralSecurityException) {
+        } catch (_: Exception) {
+            // Broad on purpose: a lost Keystore key surfaces as
+            // GeneralSecurityException, a corrupt stored value as
+            // IllegalArgumentException (Base64), and an unparseable restored
+            // Tink keyset as IOException — all mean the same thing here, and
+            // any of them uncaught is the same launch crash-loop. Mirrors
+            // CredentialEncryption.isEncrypted's catch.
             null
         }
 

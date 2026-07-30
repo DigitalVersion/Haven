@@ -121,6 +121,7 @@
     <string name="connections_tin_auth_required">Tin hub requires a token — set it in \u22ee \u2192 Tin preview hub\u2026</string>
     <string name="connections_tin_setup_hint">Live previews need the Tin companion — set up in \u22ee menu</string>
     <string name="connections_tin_github">https://github.com/kanazawahere/tin-companion</string>
+    <string name="connections_tin_github_label">GitHub</string>
 
     <!-- Mosh client missing dialog -->
     <string name="connections_mosh_client_missing_title">Mosh client not built</string>

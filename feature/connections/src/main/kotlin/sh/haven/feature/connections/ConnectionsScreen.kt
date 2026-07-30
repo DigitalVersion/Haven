@@ -962,7 +962,7 @@ fun ConnectionsScreen(
                 val githubUrl = stringResource(R.string.connections_tin_github)
                 TextButton(onClick = {
                     uriHandler.openUri(githubUrl)
-                }) { Text("GitHub") }
+                }) { Text(stringResource(R.string.connections_tin_github_label)) }
             },
             dismissButton = {
                 TextButton(onClick = { tinPreviewViewModel.dismissTinSetupGuide() }) { Text(stringResource(R.string.common_ok)) }
