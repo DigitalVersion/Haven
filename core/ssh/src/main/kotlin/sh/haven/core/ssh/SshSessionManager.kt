@@ -213,8 +213,10 @@ class SshSessionManager @Inject constructor(
          * (and possibly server-rejected) shell. (#150 tunnel-only.)
          */
         val headless: Boolean = false,
+        val purpose: SessionPurpose = SessionPurpose.INTERACTIVE,
     ) {
         enum class Status { CONNECTING, CONNECTED, RECONNECTING, DISCONNECTED, ERROR }
+        enum class SessionPurpose { INTERACTIVE, FILES }
     }
 
     private val _sessions = MutableStateFlow<Map<String, SessionState>>(emptyMap())
@@ -297,6 +299,7 @@ class SshSessionManager @Inject constructor(
         label: String,
         client: SshConnection,
         headless: Boolean = false,
+        purpose: SessionState.SessionPurpose = SessionState.SessionPurpose.INTERACTIVE,
     ): String {
         // Reap dead sessions of the same profile AND kind so they don't pile up
         // across failed-reconnect / re-connect cycles (observed: a stale
@@ -308,6 +311,7 @@ class SshSessionManager @Inject constructor(
             .filter {
                 it.profileId == profileId &&
                     it.headless == headless &&
+                    it.purpose == purpose &&
                     (it.status == SessionState.Status.DISCONNECTED || it.status == SessionState.Status.ERROR) &&
                     it.sessionId !in reconnectingInFlight
             }
@@ -323,6 +327,7 @@ class SshSessionManager @Inject constructor(
                 status = SessionState.Status.CONNECTING,
                 client = client,
                 headless = headless,
+                purpose = purpose,
             ))
         }
         return sessionId
@@ -590,9 +595,11 @@ class SshSessionManager @Inject constructor(
      * the sshlib path throws — never a silent fallback.
      */
     fun openSftpSession(profileId: String): SftpSession? {
-        val session = _sessions.value.values
+        val sessions = _sessions.value.values
             .filter { it.profileId == profileId && it.status == SessionState.Status.CONNECTED }
-            .firstOrNull() ?: return null
+        val session = sessions.firstOrNull { it.purpose == SessionState.SessionPurpose.FILES }
+            ?: sessions.firstOrNull { it.purpose == SessionState.SessionPurpose.INTERACTIVE }
+            ?: return null
         // Reuse the existing session if still connected
         session.sftpSession?.let { if (it.isConnected) return it }
         val sftp = dialSftp(session)

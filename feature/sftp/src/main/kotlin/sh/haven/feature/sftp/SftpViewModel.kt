@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import sh.haven.core.ssh.SshIoException
 import sh.haven.core.ssh.sftp.SftpSession
 import sh.haven.core.ssh.sftp.SftpWriteMode
+import sh.haven.core.ssh.SilentSshDialer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -229,6 +230,7 @@ class SftpViewModel @Inject constructor(
     private val agentUiCommandBus: sh.haven.core.data.agent.AgentUiCommandBus,
     private val attachCoordinator: sh.haven.feature.sftp.attach.TerminalAttachCoordinator,
     private val servedFileTracker: sh.haven.core.data.agent.ServedFileTracker,
+    private val silentSshDialer: SilentSshDialer,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -264,6 +266,19 @@ class SftpViewModel @Inject constructor(
     }
 
     init {
+        viewModelScope.launch {
+            combine(
+                sessionManager.sessions,
+                moshSessionManager.sessions,
+                etSessionManager.sessions,
+                smbSessionManager.sessions,
+                rcloneSessionManager.sessions,
+                reticulumSessionManager.sessions
+            ) { _ -> }.collect {
+                syncConnectedProfiles()
+            }
+        }
+
         // Subscribe to agent-driven UI commands so an MCP-issued navigation
         // verb can drive the file browser to a new profile/path. The
         // matching pager switch happens in HavenNavHost; both collectors
@@ -1198,6 +1213,9 @@ class SftpViewModel @Inject constructor(
     /** Pending rclone profile to auto-select when navigating to Files tab. */
     private val _pendingRcloneProfileId = MutableStateFlow<String?>(null)
 
+    /** Pending SFTP profile to auto-select when navigating to Files tab. */
+    private val _pendingSftpProfileId = MutableStateFlow<String?>(null)
+
     /** Per-profile state cache so tab switching preserves path and entries. */
     private data class ProfileBrowseState(
         val path: String,
@@ -1307,6 +1325,14 @@ class SftpViewModel @Inject constructor(
                 return@launch
             }
 
+            // Handle pending SFTP navigation
+            val pendingSftp = _pendingSftpProfileId.value
+            if (pendingSftp != null && pendingSftp in connectedProfileIds) {
+                _pendingSftpProfileId.value = null
+                selectProfile(pendingSftp)
+                return@launch
+            }
+
             // Auto-select first connected profile if none selected. SAF "local
             // folder" profiles (#415) and the synthetic "local" tab are valid
             // active selections even though they're never in connectedProfileIds
@@ -1328,6 +1354,10 @@ class SftpViewModel @Inject constructor(
 
     fun setPendingRcloneProfile(profileId: String) {
         _pendingRcloneProfileId.value = profileId
+    }
+
+    fun setPendingSftpProfile(profileId: String) {
+        _pendingSftpProfileId.value = profileId
     }
 
     /**
@@ -4780,8 +4810,19 @@ class SftpViewModel @Inject constructor(
                 // servers) we shell out to `echo "$HOME"` over exec instead.
                 // Fall back to "/" as a last resort.
                 val home: String = withContext(Dispatchers.IO) {
-                    val sftpSessionForHome = sessionManager.openSftpSession(profileId)
+                    var sftpSessionForHome = sessionManager.openSftpSession(profileId)
                         ?: openMoshSftpSession(profileId)
+                    if (sftpSessionForHome == null) {
+                        val profile = repository.getById(profileId)
+                        if (profile != null && profile.isSsh && !profile.isMosh && !profile.isEternalTerminal) {
+                            try {
+                                silentSshDialer.dialFilesSession(profile)
+                                sftpSessionForHome = sessionManager.openSftpSession(profileId)
+                            } catch (dialEx: Exception) {
+                                Log.e(TAG, "Silent dial for files session failed", dialEx)
+                            }
+                        }
+                    }
                     if (sftpSessionForHome != null) {
                         sftpSession = sftpSessionForHome
                         sftpSessionForHome.home()

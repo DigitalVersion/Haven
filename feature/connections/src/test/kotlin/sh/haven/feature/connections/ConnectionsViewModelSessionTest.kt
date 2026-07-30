@@ -217,6 +217,7 @@ class ConnectionsViewModelSessionTest {
                     sh.haven.core.data.repository.ConnectionPreflight.Result.Proceed(firstArg())
                 }
             },
+            silentSshDialer = mockk(relaxed = true),
         )
     }
 

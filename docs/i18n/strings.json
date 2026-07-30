@@ -5469,6 +5469,13 @@
       "ru": "%1$s — ошибка",
       "zh": "%1$s — 失败"
      }
+    },
+    {
+     "name": "shortcut_pull_backup_label",
+     "en": "Pull Backup Now",
+     "comment": "App shortcuts",
+     "args": [],
+     "t": {}
     }
    ]
   },
@@ -7275,6 +7282,177 @@
      }
     },
     {
+     "name": "connections_view_mode_list",
+     "en": "List",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_grid",
+     "en": "Grid",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_card",
+     "en": "Card",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_view_mode_selector_desc",
+     "en": "Switch connections view mode",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_no_preview",
+     "en": "No Tin preview for this card",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_grid_no_preview",
+     "en": "No preview",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_grid_empty_filter",
+     "en": "No connections match filter",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_empty",
+     "en": "No connections available",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_connect_btn",
+     "en": "Connect",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_open_terminal_btn",
+     "en": "Open Terminal",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_open_files_btn",
+     "en": "Open Files",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_card_kill_desc",
+     "en": "Kill tmux session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_menu_item",
+     "en": "Tin preview hub\\u2026",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_title",
+     "en": "Tin Preview Hub",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_label",
+     "en": "Hub Base URL",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_hub_dialog_save",
+     "en": "Save",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_confirm_title",
+     "en": "Kill tmux session?",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_confirm_message",
+     "en": "Are you sure you want to kill the tmux session \\\"%1$s\\\" on host \\\"%2$s\\\"? This is a real tmux session on the fleet machine, it cannot be undone.",
+     "comment": "Connections screen",
+     "args": [
+      "%1$s",
+      "%2$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_force_title",
+     "en": "Force kill session?",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_title",
+     "en": "Type session name to confirm",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_label",
+     "en": "Type session name",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_type_name_btn",
+     "en": "Confirm Kill",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_success",
+     "en": "Successfully killed session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_kill_error",
+     "en": "Failed to kill session",
+     "comment": "Connections screen",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "connections_filter_clear",
      "en": "Clear filter",
      "comment": "Connections screen",
@@ -7885,6 +8063,69 @@
       "ru": "Mosh на GitHub",
       "zh": "GitHub 上的 Mosh"
      }
+    },
+    {
+     "name": "connections_tin_not_found_title",
+     "en": "Tin companion not found",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_not_found_message",
+     "en": "The remote host doesn\\'t have the tin-companion daemon installed. The companion allows live terminal previews on your connection cards.",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_install_prompt",
+     "en": "Install it on the server:",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_install_commands",
+     "en": "\\u0020 curl -fsSL https://raw.githubusercontent.com/kanazawahere/tin-companion/main/install.sh | bash\\n\\u0020 Prints your access token and hub URL, enter them above.",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_token_label",
+     "en": "Access token (optional)",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_auth_required",
+     "en": "Tin hub requires a token — set it in \\u22ee \\u2192 Tin preview hub\\u2026",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_setup_hint",
+     "en": "Live previews need the Tin companion — set up in \\u22ee menu",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_github",
+     "en": "https://github.com/kanazawahere/tin-companion",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_tin_github_label",
+     "en": "GitHub",
+     "comment": "Tin setup guide dialog",
+     "args": [],
+     "t": {}
     },
     {
      "name": "connections_mosh_client_missing_title",
@@ -25838,7 +26079,7 @@
     },
     {
      "name": "settings_backup_auto_sync_hint",
-     "en": "Re-pushes the encrypted backup a couple of minutes after settings change, plus a daily catch-up. Requires storing your backup passphrase (encrypted) on this device so pushes can run in the background. Pull always stays manual.",
+     "en": "Re-pushes the encrypted backup a couple of minutes after settings change, plus a daily catch-up. Requires storing your backup passphrase (encrypted) on this device so pushes can run in the background. Automatic pull is a separate opt-in below.",
      "comment": "Backup section",
      "args": [],
      "t": {
@@ -25892,6 +26133,76 @@
       "ru": "Задайте пароль, которым будет шифроваться каждая автоматическая резервная копия. Он хранится в зашифрованном виде на этом устройстве — при отключении автоотправки он удаляется.",
       "zh": "设置用于加密每次自动备份的密码。它加密保存在本设备上——关闭自动推送即会删除。"
      }
+    },
+    {
+     "name": "settings_backup_auto_pull_label",
+     "en": "Pull automatically",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_hint",
+     "en": "Periodically pulls the latest backup and restores it. If you also edit connections on this device, unsaved local changes can be overwritten (remote is last-write-wins).",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_dialog_title",
+     "en": "Enable automatic pull",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_dialog_description",
+     "en": "Enter the backup passphrase. It is kept encrypted on this device to pull backups in the background — turning auto-pull off deletes it.",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_interval_label",
+     "en": "Pull interval",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_interval_15m",
+     "en": "15 minutes",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_interval_1h",
+     "en": "1 hour",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_interval_6h",
+     "en": "6 hours",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_auto_pull_interval_24h",
+     "en": "24 hours",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_remember_password_label",
+     "en": "Remember this password",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
     },
     {
      "name": "settings_export_backup_title",

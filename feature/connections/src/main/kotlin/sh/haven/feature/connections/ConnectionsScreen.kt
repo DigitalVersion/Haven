@@ -133,6 +133,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import sh.haven.core.data.db.entities.ConnectionGroup
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.ssh.SshSessionManager
+import sh.haven.feature.connections.tinder.*
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewCarousel
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 
 /** Profile group colors — matches TAB_GROUP_COLORS in TerminalScreen. */
 private val PROFILE_COLORS = listOf(
@@ -156,6 +161,7 @@ fun ConnectionsScreen(
     // composed (fixes Retry / connect_profile reliability, #121).
     onNavigateToSmb: (profileId: String) -> Unit = {},
     onNavigateToRclone: (profileId: String) -> Unit = {},
+    onNavigateToSftp: (profileId: String) -> Unit = {},
     onNavigateToEmail: (profileId: String) -> Unit = {},
     onNavigateToWayland: () -> Unit = {},
     onNavigateToConnections: () -> Unit = {},
@@ -175,6 +181,27 @@ fun ConnectionsScreen(
     val identities by viewModel.identities.collectAsState()
     val totpSecrets by viewModel.totpSecrets.collectAsState()
     val tunnelConfigs by viewModel.tunnelConfigs.collectAsState()
+
+    val tinPreviewViewModel: TinPreviewViewModel = hiltViewModel()
+    val tinPreviewState by tinPreviewViewModel.state.collectAsState()
+    val killPrompt by tinPreviewViewModel.killPrompt.collectAsState()
+    val showTinSetupGuide by tinPreviewViewModel.showTinSetupGuide.collectAsState()
+    val connectionsViewMode by viewModel.connectionsViewMode.collectAsState()
+    val tinHubBaseUrl by viewModel.tinHubBaseUrl.collectAsState()
+    val tinHubToken by viewModel.tinHubToken.collectAsState()
+
+    LaunchedEffect(connectionsViewMode) {
+        if (connectionsViewMode == "CARD" || connectionsViewMode == "GRID") {
+            tinPreviewViewModel.startPolling()
+        } else {
+            tinPreviewViewModel.stopPolling()
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            tinPreviewViewModel.stopPolling()
+        }
+    }
     // Installed distros for a LOCAL profile's "open in" picker. Snapshotted
     // for this screen's lifetime — installs are rare and re-entering the
     // screen refreshes it.
@@ -191,6 +218,14 @@ fun ConnectionsScreen(
     }
     // (showDesktopsScreen removed in 3c — Desktops UI moved to top-level Desktop tab.)
     val profileStatuses by viewModel.profileStatuses.collectAsState()
+    val filesStatuses by viewModel.filesStatuses.collectAsState()
+    val onOpenFiles = { profile: ConnectionProfile ->
+        val currentStatus = filesStatuses[profile.id]
+        if (currentStatus != ProfileStatus.CONNECTED) {
+            viewModel.connectFiles(profile)
+        }
+        onNavigateToSftp(profile.id)
+    }
     val mcpExposure by viewModel.mcpExposure.collectAsState()
     val agentActiveProfiles by viewModel.agentActiveProfiles.collectAsState()
     val sessions by viewModel.sessions.collectAsState()
@@ -314,6 +349,16 @@ fun ConnectionsScreen(
     var filterText by rememberSaveable { mutableStateOf("") }
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        tinPreviewViewModel.errorEvents.collect { msg ->
+            snackbarHostState.showSnackbar(msg)
+        }
+    }
+
+    var showTinHubDialog by rememberSaveable { mutableStateOf(false) }
+    var cardPageIndex by rememberSaveable { mutableIntStateOf(0) }
+    val gridState = rememberLazyGridState()
     val context = LocalContext.current
 
     // haven://connect with no saved match (#305): seed a draft and open the
@@ -897,6 +942,34 @@ fun ConnectionsScreen(
         )
     }
 
+    if (showTinSetupGuide) {
+        val uriHandler = LocalUriHandler.current
+        AlertDialog(
+            onDismissRequest = { tinPreviewViewModel.dismissTinSetupGuide() },
+            title = { Text(stringResource(R.string.connections_tin_not_found_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.connections_tin_not_found_message))
+                    Text(stringResource(R.string.connections_tin_install_prompt))
+                    Text(
+                        stringResource(R.string.connections_tin_install_commands),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(stringResource(R.string.connections_tin_setup_hint))
+                }
+            },
+            confirmButton = {
+                val githubUrl = stringResource(R.string.connections_tin_github)
+                TextButton(onClick = {
+                    uriHandler.openUri(githubUrl)
+                }) { Text(stringResource(R.string.connections_tin_github_label)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { tinPreviewViewModel.dismissTinSetupGuide() }) { Text(stringResource(R.string.common_ok)) }
+            },
+        )
+    }
+
     if (showMoshClientMissing) {
         val uriHandler = LocalUriHandler.current
         AlertDialog(
@@ -950,6 +1023,135 @@ fun ConnectionsScreen(
         )
     }
 
+    if (showTinHubDialog) {
+        var tempUrl by remember { mutableStateOf(tinHubBaseUrl) }
+        var tempToken by remember { mutableStateOf(tinHubToken) }
+        AlertDialog(
+            onDismissRequest = { showTinHubDialog = false },
+            title = { Text(stringResource(R.string.connections_tin_hub_dialog_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = tempUrl,
+                        onValueChange = { tempUrl = it },
+                        label = { Text(stringResource(R.string.connections_tin_hub_dialog_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = tempToken,
+                        onValueChange = { tempToken = it },
+                        label = { Text(stringResource(R.string.connections_tin_token_label)) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setTinHubBaseUrl(tempUrl)
+                    viewModel.setTinHubToken(tempToken)
+                    showTinHubDialog = false
+                }) {
+                    Text(stringResource(R.string.connections_tin_hub_dialog_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTinHubDialog = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
+    }
+
+    killPrompt?.let { prompt ->
+        when (prompt) {
+            is KillPrompt.ConfirmKill -> {
+                AlertDialog(
+                    onDismissRequest = { tinPreviewViewModel.dismissKill() },
+                    title = { Text(stringResource(R.string.connections_kill_confirm_title)) },
+                    text = {
+                        Text(
+                            stringResource(
+                                R.string.connections_kill_confirm_message,
+                                prompt.key.second,
+                                prompt.key.first
+                            )
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            tinPreviewViewModel.confirmKill(prompt.key, force = false, confirmName = null)
+                        }) {
+                            Text(stringResource(R.string.connections_kill_session))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { tinPreviewViewModel.dismissKill() }) {
+                            Text(stringResource(R.string.common_cancel))
+                        }
+                    }
+                )
+            }
+            is KillPrompt.ConfirmForce -> {
+                AlertDialog(
+                    onDismissRequest = { tinPreviewViewModel.dismissKill() },
+                    title = { Text(stringResource(R.string.connections_kill_force_title)) },
+                    text = {
+                        Text("${prompt.serverMsg}\n\nSession ĐANG SỐNG, xoá sẽ mất luôn")
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            tinPreviewViewModel.confirmKill(prompt.key, force = true, confirmName = null)
+                        }) {
+                            Text(stringResource(R.string.connections_kill_session))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { tinPreviewViewModel.dismissKill() }) {
+                            Text(stringResource(R.string.common_cancel))
+                        }
+                    }
+                )
+            }
+            is KillPrompt.TypeName -> {
+                var inputName by remember { mutableStateOf("") }
+                AlertDialog(
+                    onDismissRequest = { tinPreviewViewModel.dismissKill() },
+                    title = { Text(stringResource(R.string.connections_kill_type_name_title)) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(prompt.serverMsg)
+                            OutlinedTextField(
+                                value = inputName,
+                                onValueChange = { inputName = it },
+                                label = { Text(stringResource(R.string.connections_kill_type_name_label)) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                tinPreviewViewModel.confirmKill(prompt.key, force = false, confirmName = inputName)
+                            },
+                            enabled = inputName == prompt.key.second
+                        ) {
+                            Text(stringResource(R.string.connections_kill_type_name_btn))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { tinPreviewViewModel.dismissKill() }) {
+                            Text(stringResource(R.string.common_cancel))
+                        }
+                    }
+                )
+            }
+        }
+    }
+
     var showNewGroupDialog by rememberSaveable { mutableStateOf(false) }
 
     if (showNewGroupDialog) {
@@ -985,6 +1187,58 @@ fun ConnectionsScreen(
                     // WireGuard configs that other profiles route
                     // through), so they belong on this screen rather
                     // than in app Settings where they used to live.
+                    var showModeMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { showModeMenu = true }) {
+                            val icon = when (connectionsViewMode) {
+                                "GRID" -> Icons.Filled.GridView
+                                "CARD" -> Icons.Filled.ViewCarousel
+                                else -> Icons.AutoMirrored.Filled.ViewList
+                            }
+                            Icon(icon, contentDescription = stringResource(R.string.connections_view_mode_selector_desc))
+                        }
+                        DropdownMenu(
+                            expanded = showModeMenu,
+                            onDismissRequest = { showModeMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.connections_view_mode_list)) },
+                                onClick = {
+                                    viewModel.setConnectionsViewMode("LIST")
+                                    showModeMenu = false
+                                },
+                                trailingIcon = {
+                                    if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "CARD")) {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.connections_view_mode_grid)) },
+                                onClick = {
+                                    viewModel.setConnectionsViewMode("GRID")
+                                    showModeMenu = false
+                                },
+                                trailingIcon = {
+                                    if (connectionsViewMode == "GRID") {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.connections_view_mode_card)) },
+                                onClick = {
+                                    viewModel.setConnectionsViewMode("CARD")
+                                    showModeMenu = false
+                                },
+                                trailingIcon = {
+                                    if (connectionsViewMode == "CARD") {
+                                        Icon(Icons.Filled.Check, contentDescription = null)
+                                    }
+                                }
+                            )
+                        }
+                    }
                     IconButton(onClick = {
                         pendingTunnelAddType = null
                         showTunnelsScreen = true
@@ -1008,14 +1262,23 @@ fun ConnectionsScreen(
                                 showImportRclone = true
                             },
                         )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.connections_tin_hub_menu_item)) },
+                            onClick = {
+                                showOverflowMenu = false
+                                showTinHubDialog = true
+                            },
+                        )
                     }
                 },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
-                Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.connections_add))
+            if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "CARD")) {
+                FloatingActionButton(onClick = { showAddDialog = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.connections_add))
+                }
             }
         },
     ) { innerPadding ->
@@ -1054,14 +1317,30 @@ fun ConnectionsScreen(
 
             // Quick connect bar
             val quickConnectError = stringResource(R.string.connections_quick_connect_error)
-            OutlinedTextField(
-                value = quickConnectText,
-                onValueChange = { quickConnectText = it },
-                placeholder = { Text(stringResource(R.string.connections_quick_connect_placeholder)) },
-                singleLine = true,
-                trailingIcon = {
-                    IconButton(
-                        onClick = {
+            if (connectionsViewMode != "CARD") {
+                OutlinedTextField(
+                    value = quickConnectText,
+                    onValueChange = { quickConnectText = it },
+                    placeholder = { Text(stringResource(R.string.connections_quick_connect_placeholder)) },
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                quickConnectAction(
+                                    quickConnectText, viewModel, sshKeys,
+                                    { connectingProfile = it },
+                                    { quickConnectText = "" },
+                                    quickConnectError,
+                                )
+                            },
+                            enabled = quickConnectText.isNotBlank(),
+                        ) {
+                            Icon(Icons.Filled.Cable, contentDescription = stringResource(R.string.connections_quick_connect_button))
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(
+                        onGo = {
                             quickConnectAction(
                                 quickConnectText, viewModel, sshKeys,
                                 { connectingProfile = it },
@@ -1069,29 +1348,15 @@ fun ConnectionsScreen(
                                 quickConnectError,
                             )
                         },
-                        enabled = quickConnectText.isNotBlank(),
-                    ) {
-                        Icon(Icons.Filled.Cable, contentDescription = stringResource(R.string.connections_quick_connect_button))
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(
-                    onGo = {
-                        quickConnectAction(
-                            quickConnectText, viewModel, sshKeys,
-                            { connectingProfile = it },
-                            { quickConnectText = "" },
-                            quickConnectError,
-                        )
-                    },
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            )
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
 
             // Filter/search bar
-            if (connections.isNotEmpty()) {
+            if (connections.isNotEmpty() && connectionsViewMode != "CARD") {
                 OutlinedTextField(
                     value = filterText,
                     onValueChange = { filterText = it },
@@ -1117,60 +1382,21 @@ fun ConnectionsScreen(
                 EmptyState()
             } else {
                 // Build tree: top-level profiles first, then dependents nested beneath.
-                val profileMap = connections.associateBy { it.id }
-                val dependentsByParent = connections
-                    .mapNotNull { profile ->
-                        // Nest a profile under the SSH profile that carries its
-                        // tunnel: a jump-host chain, or a VNC/RDP/SMB-over-SSH
-                        // forward. VNC/SMB are gated by their forward flag
-                        // (vncSshForward defaults true) so a direct connection
-                        // with a stale sshProfileId isn't wrongly nested.
-                        val parentId = profile.jumpProfileId
-                            ?: profile.vncSshProfileId?.takeIf { profile.vncSshForward }
-                            ?: profile.rdpSshProfileId
-                            ?: profile.smbSshProfileId?.takeIf { profile.smbSshForward }
-                        if (parentId != null && parentId in profileMap) parentId to profile else null
-                    }
-                    .groupBy({ it.first }, { it.second })
-                val renderedAsChild = dependentsByParent.values.flatten().map { it.id }.toSet()
-                // Local profiles show in the list like every other transport.
-                // The topbar Terminal icon is a quick-launch convenience for
-                // the common case (one tap, find-or-create, connect) but the
-                // list is the source of truth — adds, edits, multi-profile
-                // setups, and config tweaks (session manager, label, color
-                // tag, useAndroidShell) all happen here. Earlier filter
-                // (#114) treated topbar + list as duplicates, but they're
-                // really shortcut-vs-canonical, like RDP and the Desktops
-                // topbar icon.
-                val allTopLevel = connections.filter { it.id !in renderedAsChild }
+                val canonicalOrder = remember(connections, groups) {
+                    calculateCanonicalOrder(connections, groups)
+                }
+                val dependentsByParent = canonicalOrder.dependentsByParent
+                val allTopLevel = canonicalOrder.allTopLevel
+                val canonicalProfiles = canonicalOrder.canonicalProfiles
+                val canonicalFlatIds = canonicalOrder.canonicalFlatIds
+                val groupMap = remember(groups) { groups.associateBy { it.id } }
+                val profileMap = remember(connections) { connections.associateBy { it.id } }
+                val byGroup = remember(allTopLevel) { allTopLevel.filter { it.groupId != null }.groupBy { it.groupId!! } }
 
-                // Filter by search text (match label, host, username)
                 val isFiltering = filterText.isNotBlank()
                 val query = filterText.lowercase()
                 fun matchesFilter(p: ConnectionProfile): Boolean =
-                    isFiltering && (
-                        p.label.lowercase().contains(query) ||
-                            p.host.lowercase().contains(query) ||
-                            p.username.lowercase().contains(query))
-
-                // Build a unified flat list: ungrouped connections + (group header + its connections) ...
-                // Group headers use key "group-{id}", connections use their profile id.
-                val groupMap = groups.associateBy { it.id }
-                val byGroup = allTopLevel.filter { it.groupId != null }.groupBy { it.groupId!! }
-
-                // Canonical ordering: ungrouped profiles by sortOrder, then each group (by group sortOrder)
-                // with its profiles (by profile sortOrder) — all as one flat list of keys.
-                val canonicalFlatIds = buildList {
-                    allTopLevel.filter { it.groupId == null }
-                        .sortedBy { it.sortOrder }
-                        .forEach { add(it.id) }
-                    groups.sortedBy { it.sortOrder }.forEach { group ->
-                        add("group-${group.id}")
-                        byGroup[group.id].orEmpty()
-                            .sortedBy { it.sortOrder }
-                            .forEach { add(it.id) }
-                    }
-                }
+                    isFiltering && matchesConnectionFilter(p, query, null)
 
                 // Drag-to-reorder state — unified flat list
                 var draggedId by remember { mutableStateOf<String?>(null) }
@@ -1240,193 +1466,249 @@ fun ConnectionsScreen(
                     }
                 }
 
-                LazyColumn(state = lazyListState, modifier = Modifier.fillMaxSize()) {
-                    item(key = "workspace-section") { workspaceSection() }
-                    displayIds.forEach { key ->
-                        if (key.startsWith("group-")) {
-                            val gid = key.removePrefix("group-")
-                            val group = groupMap[gid] ?: return@forEach
-                            val groupProfileCount = byGroup[gid]?.size ?: 0
-                            item(key = key) {
-                                ConnectionGroupHeader(
-                                    group = group,
-                                    connectionCount = groupProfileCount,
-                                    isLaunching = groupLaunchState?.groupId == group.id,
-                                    launchProgress = groupLaunchState?.takeIf { it.groupId == group.id }?.let {
-                                        "${it.succeeded}/${it.total}"
-                                    },
-                                    identities = identities,
-                                    onToggleCollapsed = { viewModel.toggleGroupCollapsed(group.id) },
-                                    onRename = { newLabel -> viewModel.renameGroup(group.id, newLabel) },
-                                    onDelete = { viewModel.deleteGroup(group.id) },
-                                    onSetIdentity = { id -> viewModel.setGroupIdentity(group.id, id) },
-                                    onLaunchGroup = { viewModel.launchGroup(group.id) },
-                                )
+                val handleConnectProfile = { profile: ConnectionProfile ->
+                    val id = effectiveIdentityFor(profile, groupMap, identities)
+                    onTapProfile(
+                        profile, profileStatuses[profile.id], sshKeys,
+                        id != null && (id.keyId != null || id.password != null),
+                        viewModel, onNavigateToSmb, onNavigateToRclone, onNavigateToEmail,
+                    ) { connectingProfile = profile }
+                }
+
+                when (connectionsViewMode) {
+                    "GRID" -> {
+                        val filteredGridProfiles = remember(canonicalProfiles, filterText, tinPreviewState) {
+                            if (filterText.isBlank()) {
+                                canonicalProfiles.filter { p ->
+                                    val key = TinPreviewClient.tinSessionKeyOf(p)
+                                    key !in tinPreviewState.killedKeys
+                                }
+                            } else {
+                                val queryLower = filterText.lowercase()
+                                canonicalProfiles.filter { p ->
+                                    val key = TinPreviewClient.tinSessionKeyOf(p)
+                                    if (key in tinPreviewState.killedKeys) return@filter false
+                                    val card = tinPreviewState.getCardForProfile(p)
+                                    val previewText = card?.let { "${it.preview ?: ""}\n${it.snapshotPlain ?: ""}" }
+                                    matchesConnectionFilter(p, queryLower, previewText)
+                                }
                             }
-                        } else {
-                            val profile = allTopLevel.find { it.id == key } ?: return@forEach
-                            val isDragged = !isFiltering && draggedId == profile.id
-                            item(key = key) {
-                                ConnectionTreeItem(
-                                    profile = profile,
-                                    indent = 0,
-                                    isLastChild = false,
-                                    profileStatuses = profileStatuses,
-                                    mcpExposure = mcpExposure,
-                                    agentActiveProfiles = agentActiveProfiles,
-                                    onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(profile.id, enabled) },
-                                    profileColors = profileColors,
-                                    isConnecting = connectingProfileId == profile.id ||
-                                        groupLaunchState?.connectingIds?.contains(profile.id) == true,
-                                    hasKeys = sshKeys.isNotEmpty(),
-                                    hasDependents = profile.id in dependentsByParent,
-                                    jumpHostLabel = profile.jumpProfileId?.let { profileMap[it]?.label },
-                                    onTap = {
-                                        val id = effectiveIdentityFor(profile, groupMap, identities)
-                                        onTapProfile(
-                                            profile, profileStatuses[profile.id], sshKeys,
-                                            id != null && (id.keyId != null || id.password != null),
-                                            viewModel, onNavigateToSmb, onNavigateToRclone, onNavigateToEmail,
-                                        ) { connectingProfile = profile }
-                                    },
-                                    onRename = { newLabel -> viewModel.saveConnection(profile.copy(label = newLabel)) },
-                                    onEdit = { editingProfileId = profile.id },
-                                    onDelete = { viewModel.deleteConnection(profile.id) },
-                                    onDuplicate = { viewModel.duplicateConnection(profile.id) },
-                                    onDisconnect = { viewModel.disconnect(profile.id) },
-                                    onDeployKey = { deployingProfile = profile },
-                                    onConnectWithPassword = { connectingProfile = profile },
-                                    onForgetPassword = { viewModel.forgetPassword(profile.id) },
-                                    onPortForwards = { portForwardProfile = profile },
-                                    onReauthRclone = { viewModel.reauthRcloneProfile(profile) },
-                                    onCancelOAuth = { viewModel.cancelPendingOAuth(profile) },
-                                    onNewSession = { viewModel.openNewSession(profile.id) },
-                                    enableDrag = !isFiltering,
-                                    dragModifier = if (!isFiltering) Modifier
-                                        .zIndex(if (isDragged) 1f else 0f)
-                                        .offset(
-                                            y = with(LocalDensity.current) {
-                                                if (isDragged) dragOffset.roundToInt().toDp() else 0.dp
+                        }
+                        GridBrowseView(
+                            profiles = filteredGridProfiles,
+                            previewState = tinPreviewState,
+                            profileStatuses = profileStatuses,
+                            filesStatuses = filesStatuses,
+                            onConnect = handleConnectProfile,
+                            onOpenFiles = onOpenFiles,
+                            onRequestKill = { key ->
+                                tinPreviewViewModel.requestKill(key)
+                            },
+                            gridState = gridState,
+                            isFiltering = isFiltering
+                        )
+                    }
+                    "CARD" -> {
+                        val cardProfiles = remember(canonicalProfiles, tinPreviewState.killedKeys) {
+                            canonicalProfiles.filter { p ->
+                                val key = TinPreviewClient.tinSessionKeyOf(p)
+                                key !in tinPreviewState.killedKeys
+                            }
+                        }
+                        CardBrowseView(
+                            profiles = cardProfiles,
+                            previewState = tinPreviewState,
+                            profileStatuses = profileStatuses,
+                            filesStatuses = filesStatuses,
+                            onConnect = handleConnectProfile,
+                            onOpenFiles = onOpenFiles,
+                            onRequestKill = { key ->
+                                tinPreviewViewModel.requestKill(key)
+                            },
+                            initialPage = cardPageIndex,
+                            onPageChanged = { cardPageIndex = it }
+                        )
+                    }
+                    else -> {
+                        LazyColumn(state = lazyListState, modifier = Modifier.fillMaxSize()) {
+                            item(key = "workspace-section") { workspaceSection() }
+                            displayIds.forEach { key ->
+                                if (key.startsWith("group-")) {
+                                    val gid = key.removePrefix("group-")
+                                    val group = groupMap[gid] ?: return@forEach
+                                    val groupProfileCount = byGroup[gid]?.size ?: 0
+                                    item(key = key) {
+                                        ConnectionGroupHeader(
+                                            group = group,
+                                            connectionCount = groupProfileCount,
+                                            isLaunching = groupLaunchState?.groupId == group.id,
+                                            launchProgress = groupLaunchState?.takeIf { it.groupId == group.id }?.let {
+                                                "${it.succeeded}/${it.total}"
                                             },
-                                        ) else Modifier,
-                                    onDragStart = {
-                                        if (!isFiltering) {
-                                            draggedId = profile.id
-                                            dragOffset = 0f
+                                            identities = identities,
+                                            onToggleCollapsed = { viewModel.toggleGroupCollapsed(group.id) },
+                                            onRename = { newLabel -> viewModel.renameGroup(group.id, newLabel) },
+                                            onDelete = { viewModel.deleteGroup(group.id) },
+                                            onSetIdentity = { id -> viewModel.setGroupIdentity(group.id, id) },
+                                            onLaunchGroup = { viewModel.launchGroup(group.id) },
+                                        )
+                                    }
+                                } else {
+                                    val profile = allTopLevel.find { it.id == key } ?: return@forEach
+                                    val isDragged = !isFiltering && draggedId == profile.id
+                                    item(key = key) {
+                                        ConnectionTreeItem(
+                                            profile = profile,
+                                            indent = 0,
+                                            isLastChild = false,
+                                            profileStatuses = profileStatuses,
+                                            filesStatuses = filesStatuses,
+                                            mcpExposure = mcpExposure,
+                                            agentActiveProfiles = agentActiveProfiles,
+                                            onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(profile.id, enabled) },
+                                            onOpenFiles = onOpenFiles,
+                                            profileColors = profileColors,
+                                            isConnecting = connectingProfileId == profile.id ||
+                                                groupLaunchState?.connectingIds?.contains(profile.id) == true,
+                                            hasKeys = sshKeys.isNotEmpty(),
+                                            hasDependents = profile.id in dependentsByParent,
+                                            jumpHostLabel = profile.jumpProfileId?.let { profileMap[it]?.label },
+                                            onTap = {
+                                                val id = effectiveIdentityFor(profile, groupMap, identities)
+                                                onTapProfile(
+                                                    profile, profileStatuses[profile.id], sshKeys,
+                                                    id != null && (id.keyId != null || id.password != null),
+                                                    viewModel, onNavigateToSmb, onNavigateToRclone, onNavigateToEmail,
+                                                ) { connectingProfile = profile }
+                                            },
+                                            onRename = { newLabel -> viewModel.saveConnection(profile.copy(label = newLabel)) },
+                                            onEdit = { editingProfileId = profile.id },
+                                            onDelete = { viewModel.deleteConnection(profile.id) },
+                                            onDuplicate = { viewModel.duplicateConnection(profile.id) },
+                                            onDisconnect = { viewModel.disconnect(profile.id) },
+                                            onDeployKey = { deployingProfile = profile },
+                                            onConnectWithPassword = { connectingProfile = profile },
+                                            onForgetPassword = { viewModel.forgetPassword(profile.id) },
+                                            onPortForwards = { portForwardProfile = profile },
+                                            onReauthRclone = { viewModel.reauthRcloneProfile(profile) },
+                                            onCancelOAuth = { viewModel.cancelPendingOAuth(profile) },
+                                            onNewSession = { viewModel.openNewSession(profile.id) },
+                                            enableDrag = !isFiltering,
+                                            dragModifier = if (!isFiltering) Modifier
+                                                .zIndex(if (isDragged) 1f else 0f)
+                                                .offset(
+                                                    y = with(LocalDensity.current) {
+                                                        if (isDragged) dragOffset.roundToInt().toDp() else 0.dp
+                                                    },
+                                                ) else Modifier,
+                                            onDragStart = {
+                                                if (!isFiltering) {
+                                                    draggedId = profile.id
+                                                    dragOffset = 0f
+                                                }
+                                            },
+                                            onDrag = { delta ->
+                                                if (!isFiltering) {
+                                                    dragOffset += delta
+                                                    val fromIdx = reorderedIds.indexOf(profile.id)
+                                                    if (fromIdx < 0) return@ConnectionTreeItem
+                                                    val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
+                                                    val draggedInfo = visibleItems.find { it.key == profile.id }
+                                                        ?: return@ConnectionTreeItem
+                                                    if (dragOffset > 0 && fromIdx < reorderedIds.lastIndex) {
+                                                        val nextInfo = visibleItems.find { it.key == reorderedIds[fromIdx + 1] }
+                                                        if (nextInfo != null) {
+                                                            val dist = nextInfo.offset - draggedInfo.offset
+                                                            if (dragOffset > dist / 2) {
+                                                                reorderedIds.add(fromIdx + 1, reorderedIds.removeAt(fromIdx))
+                                                                dragOffset -= dist
+                                                            }
+                                                        }
+                                                    } else if (dragOffset < 0 && fromIdx > 0) {
+                                                        val prevInfo = visibleItems.find { it.key == reorderedIds[fromIdx - 1] }
+                                                        if (prevInfo != null) {
+                                                            val dist = draggedInfo.offset - prevInfo.offset
+                                                            if (-dragOffset > dist / 2) {
+                                                                reorderedIds.add(fromIdx - 1, reorderedIds.removeAt(fromIdx))
+                                                                dragOffset += dist
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                if (!isFiltering) {
+                                                    draggedId = null
+                                                    commitReorder()
+                                                }
+                                            },
+                                        )
+                                    }
+                                    // Child profiles nested directly under this one
+                                    val dependents = dependentsByParent[profile.id].orEmpty()
+                                        .sortedBy { it.sortOrder }
+                                    if (dependents.isNotEmpty()) {
+                                        val stack = java.util.ArrayDeque<Triple<ConnectionProfile, Int, Boolean>>()
+                                        // Push in reverse order so they pop in correct order
+                                        for (i in dependents.indices.reversed()) {
+                                            stack.addFirst(Triple(dependents[i], 1, i == dependents.lastIndex))
                                         }
-                                    },
-                                    onDrag = { delta ->
-                                        if (!isFiltering) {
-                                            dragOffset += delta
-                                            val fromIdx = reorderedIds.indexOf(profile.id)
-                                            if (fromIdx < 0) return@ConnectionTreeItem
-                                            val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
-                                            val draggedInfo = visibleItems.find { it.key == profile.id }
-                                                ?: return@ConnectionTreeItem
-                                            if (dragOffset > 0 && fromIdx < reorderedIds.lastIndex) {
-                                                val nextInfo = visibleItems.find { it.key == reorderedIds[fromIdx + 1] }
-                                                if (nextInfo != null) {
-                                                    val dist = nextInfo.offset - draggedInfo.offset
-                                                    if (dragOffset > dist / 2) {
-                                                        reorderedIds.add(fromIdx + 1, reorderedIds.removeAt(fromIdx))
-                                                        // Preserve visual continuity: the item's list
-                                                        // position just jumped by `dist`, so subtract
-                                                        // `dist` from dragOffset instead of resetting
-                                                        // to zero — otherwise the visual row leaps a
-                                                        // full row ahead of the finger on each swap.
-                                                        dragOffset -= dist
-                                                    }
-                                                }
-                                            } else if (dragOffset < 0 && fromIdx > 0) {
-                                                val prevInfo = visibleItems.find { it.key == reorderedIds[fromIdx - 1] }
-                                                if (prevInfo != null) {
-                                                    val dist = draggedInfo.offset - prevInfo.offset
-                                                    if (dragOffset < -dist / 2) {
-                                                        reorderedIds.add(fromIdx - 1, reorderedIds.removeAt(fromIdx))
-                                                        // Mirror of the downward case — the item
-                                                        // jumped one row up, so add `dist` back to
-                                                        // dragOffset so visual tracking stays 1:1.
-                                                        dragOffset += dist
-                                                    }
-                                                }
+                                        val ancestorDragged = isDragged
+                                        while (stack.isNotEmpty()) {
+                                            val (dep, depIndent, isLastChild) = stack.removeFirst()
+                                            item(key = dep.id) {
+                                                ConnectionTreeItem(
+                                                    profile = dep,
+                                                    indent = depIndent,
+                                                    isLastChild = isLastChild,
+                                                    profileStatuses = profileStatuses,
+                                                    filesStatuses = filesStatuses,
+                                                    mcpExposure = mcpExposure,
+                                                    agentActiveProfiles = agentActiveProfiles,
+                                                    onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(dep.id, enabled) },
+                                                    onOpenFiles = onOpenFiles,
+                                                    profileColors = profileColors,
+                                                    isConnecting = connectingProfileId == dep.id ||
+                                                        groupLaunchState?.connectingIds?.contains(dep.id) == true,
+                                                    hasKeys = sshKeys.isNotEmpty(),
+                                                    hasDependents = dep.id in dependentsByParent,
+                                                    jumpHostLabel = null,
+                                                    onTap = {
+                                                        val id = effectiveIdentityFor(dep, groupMap, identities)
+                                                        onTapProfile(
+                                                            dep, profileStatuses[dep.id], sshKeys,
+                                                            id != null && (id.keyId != null || id.password != null),
+                                                            viewModel, onNavigateToSmb, onNavigateToRclone, onNavigateToEmail,
+                                                        ) { connectingProfile = dep }
+                                                    },
+                                                    onRename = { newLabel -> viewModel.saveConnection(dep.copy(label = newLabel)) },
+                                                    onEdit = { editingProfileId = dep.id },
+                                                    onDelete = { viewModel.deleteConnection(dep.id) },
+                                                    onDuplicate = { viewModel.duplicateConnection(dep.id) },
+                                                    onDisconnect = { viewModel.disconnect(dep.id) },
+                                                    onDeployKey = { deployingProfile = dep },
+                                                    onConnectWithPassword = { connectingProfile = dep },
+                                                    onForgetPassword = { viewModel.forgetPassword(dep.id) },
+                                                    onPortForwards = { portForwardProfile = dep },
+                                                    onReauthRclone = { viewModel.reauthRcloneProfile(dep) },
+                                                    onCancelOAuth = { viewModel.cancelPendingOAuth(dep) },
+                                                    onNewSession = { viewModel.openNewSession(dep.id) },
+                                                    dragModifier = if (ancestorDragged) Modifier
+                                                        .zIndex(1f)
+                                                        .offset(
+                                                            y = with(LocalDensity.current) {
+                                                                dragOffset.roundToInt().toDp()
+                                                            },
+                                                        ) else Modifier,
+                                                )
+                                            }
+                                            // Push this dep's children at the next indent level.
+                                            val grandKids = dependentsByParent[dep.id].orEmpty()
+                                            for (i in grandKids.indices.reversed()) {
+                                                stack.addFirst(Triple(grandKids[i], depIndent + 1, i == grandKids.lastIndex))
                                             }
                                         }
-                                    },
-                                    onDragEnd = {
-                                        if (!isFiltering) {
-                                            draggedId = null
-                                            dragOffset = 0f
-                                            commitReorder()
-                                        }
-                                    },
-                                )
-                            }
-                            // Dependent children (jump hosts), recursive so chains
-                            // deeper than one level (A → B → C) all render. Iterative
-                            // DFS via a stack so we can stay inside LazyListScope
-                            // without needing to invent a self-recursive lambda.
-                            // Cycle guard: visited set prevents an infinite loop if
-                            // someone manages to create a jumpProfileId cycle. (#116)
-                            val ancestorDragged = draggedId == profile.id
-                            val visited = mutableSetOf<String>(profile.id)
-                            // Triple: (profile, indent, isLastSibling-at-this-level)
-                            val stack = ArrayDeque<Triple<ConnectionProfile, Int, Boolean>>()
-                            val topKids = dependentsByParent[profile.id].orEmpty()
-                            // Push in reverse so the popped order matches sibling order.
-                            for (i in topKids.indices.reversed()) {
-                                stack.addFirst(Triple(topKids[i], 1, i == topKids.lastIndex))
-                            }
-                            while (stack.isNotEmpty()) {
-                                val (dep, depIndent, isLastAtLevel) = stack.removeFirst()
-                                if (!visited.add(dep.id)) continue
-                                item(key = dep.id) {
-                                    ConnectionTreeItem(
-                                        profile = dep,
-                                        indent = depIndent,
-                                        isLastChild = isLastAtLevel,
-                                        profileStatuses = profileStatuses,
-                                        mcpExposure = mcpExposure,
-                                        agentActiveProfiles = agentActiveProfiles,
-                                        onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(dep.id, enabled) },
-                                        profileColors = profileColors,
-                                        isConnecting = connectingProfileId == dep.id ||
-                                            groupLaunchState?.connectingIds?.contains(dep.id) == true,
-                                        hasKeys = sshKeys.isNotEmpty(),
-                                        hasDependents = dep.id in dependentsByParent,
-                                        jumpHostLabel = null,
-                                        onTap = {
-                                            val id = effectiveIdentityFor(dep, groupMap, identities)
-                                            onTapProfile(
-                                                dep, profileStatuses[dep.id], sshKeys,
-                                                id != null && (id.keyId != null || id.password != null),
-                                                viewModel, onNavigateToSmb, onNavigateToRclone, onNavigateToEmail,
-                                            ) { connectingProfile = dep }
-                                        },
-                                        onRename = { newLabel -> viewModel.saveConnection(dep.copy(label = newLabel)) },
-                                        onEdit = { editingProfileId = dep.id },
-                                        onDelete = { viewModel.deleteConnection(dep.id) },
-                                        onDuplicate = { viewModel.duplicateConnection(dep.id) },
-                                        onDisconnect = { viewModel.disconnect(dep.id) },
-                                        onDeployKey = { deployingProfile = dep },
-                                        onConnectWithPassword = { connectingProfile = dep },
-                                        onForgetPassword = { viewModel.forgetPassword(dep.id) },
-                                        onPortForwards = { portForwardProfile = dep },
-                                        onReauthRclone = { viewModel.reauthRcloneProfile(dep) },
-                                        onCancelOAuth = { viewModel.cancelPendingOAuth(dep) },
-                                        onNewSession = { viewModel.openNewSession(dep.id) },
-                                        dragModifier = if (ancestorDragged) Modifier
-                                            .zIndex(1f)
-                                            .offset(
-                                                y = with(LocalDensity.current) {
-                                                    dragOffset.roundToInt().toDp()
-                                                },
-                                            ) else Modifier,
-                                    )
-                                }
-                                // Push this dep's children at the next indent level.
-                                val grandKids = dependentsByParent[dep.id].orEmpty()
-                                for (i in grandKids.indices.reversed()) {
-                                    stack.addFirst(Triple(grandKids[i], depIndent + 1, i == grandKids.lastIndex))
+                                    }
                                 }
                             }
                         }
@@ -1569,7 +1851,9 @@ private fun ConnectionTreeItem(
     indent: Int,
     isLastChild: Boolean,
     profileStatuses: Map<String, ProfileStatus>,
+    filesStatuses: Map<String, ProfileStatus> = emptyMap(),
     mcpExposure: Map<String, McpExposureKind>,
+    onOpenFiles: (ConnectionProfile) -> Unit = {},
     agentActiveProfiles: Map<String, Long>,
     onToggleMcp: (Boolean) -> Unit,
     profileColors: Map<String, Color>,
@@ -1779,16 +2063,23 @@ private fun ConnectionTreeItem(
                     }
                 },
                 trailingContent = {
-                    // The single per-connection MCP element (the old "carries the MCP
-                    // endpoint" badge was dropped in favour of robot-only): a tri-state
-                    // robot — hidden when the agent has never used this connection, a
-                    // slashed grey robot when MCP is disabled for it, and red-eyed while
-                    // the agent is operating on it. Tap toggles MCP access.
-                    ConnectionMcpIndicator(
-                        lastActiveAt = agentActiveProfiles[profile.id],
-                        mcpEnabled = profile.mcpEnabled,
-                        onToggle = { onToggleMcp(!profile.mcpEnabled) },
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (profile.isSsh) {
+                            FilesStatusButton(
+                                status = filesStatuses[profile.id],
+                                isConnecting = isConnecting && filesStatuses[profile.id] == ProfileStatus.CONNECTING,
+                                onClick = { onOpenFiles(profile) },
+                            )
+                        }
+                        ConnectionMcpIndicator(
+                            lastActiveAt = agentActiveProfiles[profile.id],
+                            mcpEnabled = profile.mcpEnabled,
+                            onToggle = { onToggleMcp(!profile.mcpEnabled) },
+                        )
+                    }
                 },
                 modifier = Modifier
                     .weight(1f)
@@ -2241,4 +2532,37 @@ private fun GroupIdentityDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) }
         },
     )
+}
+
+@Composable
+private fun FilesStatusButton(
+    status: ProfileStatus?,
+    isConnecting: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.size(36.dp),
+    ) {
+        if (isConnecting || status == ProfileStatus.CONNECTING || status == ProfileStatus.RECONNECTING) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            val color = when (status) {
+                ProfileStatus.CONNECTED -> Color(0xFF4CAF50)
+                ProfileStatus.ERROR -> Color(0xFFF44336)
+                else -> MaterialTheme.colorScheme.outline
+            }
+            Icon(
+                imageVector = Icons.Filled.Folder,
+                contentDescription = "Files Status",
+                tint = color,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
 }

@@ -37,6 +37,30 @@
     <string name="connections_quick_connect_button">Connect</string>
     <string name="connections_quick_connect_error">Use format: user@host or user@host:port</string>
     <string name="connections_filter_placeholder">Filter connections\u2026</string>
+    <string name="connections_view_mode_list">List</string>
+    <string name="connections_view_mode_grid">Grid</string>
+    <string name="connections_view_mode_card">Card</string>
+    <string name="connections_view_mode_selector_desc">Switch connections view mode</string>
+    <string name="connections_card_no_preview">No Tin preview for this card</string>
+    <string name="connections_grid_no_preview">No preview</string>
+    <string name="connections_grid_empty_filter">No connections match filter</string>
+    <string name="connections_card_empty">No connections available</string>
+    <string name="connections_card_connect_btn">Connect</string>
+    <string name="connections_card_open_terminal_btn">Open Terminal</string>
+    <string name="connections_card_open_files_btn">Open Files</string>
+    <string name="connections_card_kill_desc">Kill tmux session</string>
+    <string name="connections_tin_hub_menu_item">Tin preview hub\u2026</string>
+    <string name="connections_tin_hub_dialog_title">Tin Preview Hub</string>
+    <string name="connections_tin_hub_dialog_label">Hub Base URL</string>
+    <string name="connections_tin_hub_dialog_save">Save</string>
+    <string name="connections_kill_confirm_title">Kill tmux session?</string>
+    <string name="connections_kill_confirm_message">Are you sure you want to kill the tmux session \"%1$s\" on host \"%2$s\"? This is a real tmux session on the fleet machine, it cannot be undone.</string>
+    <string name="connections_kill_force_title">Force kill session?</string>
+    <string name="connections_kill_type_name_title">Type session name to confirm</string>
+    <string name="connections_kill_type_name_label">Type session name</string>
+    <string name="connections_kill_type_name_btn">Confirm Kill</string>
+    <string name="connections_kill_success">Successfully killed session</string>
+    <string name="connections_kill_error">Failed to kill session</string>
     <string name="connections_filter_clear">Clear filter</string>
     <string name="connections_reorder">Reorder</string>
 
@@ -87,6 +111,17 @@
     <string name="connections_mosh_install_commands">\u0020 Ubuntu/Debian:  sudo apt install mosh\n\u0020 Fedora/RHEL:    sudo dnf install mosh\n\u0020 Arch:           sudo pacman -S mosh\n\u0020 macOS:          brew install mosh</string>
     <string name="connections_mosh_firewall_note">UDP port 60001 must be open on the server firewall.</string>
     <string name="connections_mosh_github">Mosh on GitHub</string>
+
+    <!-- Tin setup guide dialog -->
+    <string name="connections_tin_not_found_title">Tin companion not found</string>
+    <string name="connections_tin_not_found_message">The remote host doesn\'t have the tin-companion daemon installed. The companion allows live terminal previews on your connection cards.</string>
+    <string name="connections_tin_install_prompt">Install it on the server:</string>
+    <string name="connections_tin_install_commands">\u0020 curl -fsSL https://raw.githubusercontent.com/kanazawahere/tin-companion/main/install.sh | bash\n\u0020 Prints your access token and hub URL, enter them above.</string>
+    <string name="connections_tin_token_label">Access token (optional)</string>
+    <string name="connections_tin_auth_required">Tin hub requires a token — set it in \u22ee \u2192 Tin preview hub\u2026</string>
+    <string name="connections_tin_setup_hint">Live previews need the Tin companion — set up in \u22ee menu</string>
+    <string name="connections_tin_github">https://github.com/kanazawahere/tin-companion</string>
+    <string name="connections_tin_github_label">GitHub</string>
 
     <!-- Mosh client missing dialog -->
     <string name="connections_mosh_client_missing_title">Mosh client not built</string>

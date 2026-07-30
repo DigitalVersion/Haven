@@ -48,6 +48,7 @@ import sh.haven.core.ssh.sshEngineFromOptionsText
 import sh.haven.core.ssh.SshConnectionService
 import sh.haven.core.ssh.SshKeyExporter
 import sh.haven.core.ssh.SessionManager
+import sh.haven.core.ssh.SilentSshDialer
 import sh.haven.core.ssh.SessionManagerRegistry
 import sh.haven.core.ssh.SshSessionManager
 import sh.haven.core.ssh.SshVerboseLogger
@@ -249,6 +250,7 @@ class ConnectionsViewModel @Inject constructor(
     private val pendingAuthPromptHolder: sh.haven.core.data.agent.PendingAuthPromptHolder,
     private val sessionSelectionHolder: sh.haven.core.data.agent.SessionSelectionHolder,
     private val connectionPreflight: sh.haven.core.data.repository.ConnectionPreflight,
+    private val silentSshDialer: SilentSshDialer,
 ) : ViewModel() {
 
     /**
@@ -458,6 +460,33 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
+    val connectionsViewMode: StateFlow<String> = preferencesRepository.connectionsViewMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "LIST")
+
+    fun setConnectionsViewMode(mode: String) {
+        viewModelScope.launch {
+            preferencesRepository.setConnectionsViewMode(mode)
+        }
+    }
+
+    val tinHubBaseUrl: StateFlow<String> = preferencesRepository.tinHubBaseUrl
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    fun setTinHubBaseUrl(url: String) {
+        viewModelScope.launch {
+            preferencesRepository.setTinHubBaseUrl(url)
+        }
+    }
+
+    val tinHubToken: StateFlow<String> = preferencesRepository.tinHubToken
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    fun setTinHubToken(token: String) {
+        viewModelScope.launch {
+            preferencesRepository.setTinHubToken(token)
+        }
+    }
+
     val sessions: StateFlow<Map<String, SshSessionManager.SessionState>> = sshSessionManager.sessions
 
     /**
@@ -473,6 +502,22 @@ class ConnectionsViewModel @Inject constructor(
     /** Toggle whether the MCP agent may operate on [profileId]. */
     fun toggleMcpEnabled(profileId: String, enabled: Boolean) {
         viewModelScope.launch { repository.updateMcpEnabled(profileId, enabled) }
+    }
+
+    /** Silent connect for Files/SFTP channel. */
+    fun connectFiles(profile: ConnectionProfile) {
+        if (!profile.isSsh) return
+        viewModelScope.launch {
+            _connectingProfileId.value = profile.id
+            try {
+                silentSshDialer.dialFilesSession(profile)
+            } catch (e: Exception) {
+                Log.e(TAG, "connectFiles failed for ${profile.label}: ${e.message}", e)
+                _error.value = "Couldn't open Files for ${profile.label} — Terminal is unaffected.\n${e.message}"
+            } finally {
+                _connectingProfileId.value = null
+            }
+        }
     }
 
     val mcpExposure: StateFlow<Map<String, McpExposureKind>> =
@@ -636,6 +681,25 @@ class ConnectionsViewModel @Inject constructor(
                 }
             }
 
+            result.toMap()
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /** Derive Files-specific statuses for the connections list UI. */
+    val filesStatuses: StateFlow<Map<String, ProfileStatus>> = sshSessionManager.sessions
+        .map { sshMap ->
+            val result = mutableMapOf<String, ProfileStatus>()
+            sshMap.values.filter { it.purpose == SshSessionManager.SessionState.SessionPurpose.FILES }
+                .groupBy { it.profileId }
+                .forEach { (profileId, states) ->
+                    val statuses = states.map { it.status }
+                    result[profileId] = when {
+                        SshSessionManager.SessionState.Status.CONNECTED in statuses -> ProfileStatus.CONNECTED
+                        SshSessionManager.SessionState.Status.RECONNECTING in statuses -> ProfileStatus.RECONNECTING
+                        SshSessionManager.SessionState.Status.CONNECTING in statuses -> ProfileStatus.CONNECTING
+                        SshSessionManager.SessionState.Status.ERROR in statuses -> ProfileStatus.ERROR
+                        else -> ProfileStatus.DISCONNECTED
+                    }
+                }
             result.toMap()
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 

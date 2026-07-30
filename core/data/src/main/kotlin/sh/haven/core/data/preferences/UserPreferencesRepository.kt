@@ -44,6 +44,9 @@ class UserPreferencesRepository @Inject constructor(
     // LANG value exported into the local proot/Android shell (#282).
     private val terminalLocaleKey = stringPreferencesKey("terminal_locale")
     private val themeKey = stringPreferencesKey("theme")
+    private val connectionsViewModeKey = stringPreferencesKey("connections_view_mode")
+    private val tinHubBaseUrlKey = stringPreferencesKey("tin_hub_base_url")
+    private val tinHubTokenKey = stringPreferencesKey("tin_hub_token")
     private val sessionManagerKey = stringPreferencesKey("session_manager")
     private val reticulumRpcKeyKey = stringPreferencesKey("reticulum_rpc_key")
     private val reticulumHostKey = stringPreferencesKey("reticulum_host")
@@ -80,6 +83,8 @@ class UserPreferencesRepository @Inject constructor(
     private val backupSyncProfileIdKey = stringPreferencesKey("backup_sync_profile_id")
     private val backupSyncPathKey = stringPreferencesKey("backup_sync_path")
     private val backupAutoSyncEnabledKey = booleanPreferencesKey("backup_auto_sync_enabled")
+    private val backupAutoPullEnabledKey = booleanPreferencesKey("backup_auto_pull_enabled")
+    private val backupAutoPullIntervalMinutesKey = intPreferencesKey("backup_auto_pull_interval_minutes")
     // CredentialEncryption-wrapped backup passphrase for background pushes (#359).
     private val backupSyncPassphraseKey = stringPreferencesKey("backup_sync_passphrase")
     // Session command for the Custom (X11) desktop (#361).
@@ -342,14 +347,91 @@ class UserPreferencesRepository @Inject constructor(
         val encrypted = if (enabled) passphrase?.let { CredentialEncryption.encrypt(context, it) } else null
         dataStore.edit { prefs ->
             prefs[backupAutoSyncEnabledKey] = enabled
-            if (encrypted == null) prefs.remove(backupSyncPassphraseKey)
-            else prefs[backupSyncPassphraseKey] = encrypted
+            if (enabled) {
+                if (encrypted != null) {
+                    prefs[backupSyncPassphraseKey] = encrypted
+                }
+            } else {
+                val autoPullEnabled = prefs[backupAutoPullEnabledKey] ?: false
+                if (!autoPullEnabled) {
+                    prefs.remove(backupSyncPassphraseKey)
+                }
+            }
         }
     }
 
-    /** The stored auto-sync passphrase, decrypted; null when auto-sync is off. */
+    val backupAutoPullEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[backupAutoPullEnabledKey] ?: false
+    }
+
+    val backupAutoPullIntervalMinutes: Flow<Int> = dataStore.data.map { prefs ->
+        prefs[backupAutoPullIntervalMinutesKey] ?: 1440
+    }
+
+    suspend fun setBackupAutoPull(enabled: Boolean, passphrase: String?) {
+        val encrypted = if (enabled) passphrase?.let { CredentialEncryption.encrypt(context, it) } else null
+        dataStore.edit { prefs ->
+            prefs[backupAutoPullEnabledKey] = enabled
+            if (enabled) {
+                if (encrypted != null) {
+                    prefs[backupSyncPassphraseKey] = encrypted
+                }
+            } else {
+                val autoSyncEnabled = prefs[backupAutoSyncEnabledKey] ?: false
+                if (!autoSyncEnabled) {
+                    prefs.remove(backupSyncPassphraseKey)
+                }
+            }
+        }
+    }
+
+    suspend fun setBackupAutoPullInterval(minutes: Int) {
+        dataStore.edit { prefs ->
+            prefs[backupAutoPullIntervalMinutesKey] = minutes
+        }
+    }
+
+    suspend fun saveBackupSyncPassphrase(passphrase: String) {
+        val encrypted = CredentialEncryption.encrypt(context, passphrase)
+        dataStore.edit { prefs ->
+            prefs[backupSyncPassphraseKey] = encrypted
+        }
+    }
+
+    suspend fun clearBackupSyncPassphrase() {
+        dataStore.edit { prefs ->
+            val autoSyncEnabled = prefs[backupAutoSyncEnabledKey] ?: false
+            val autoPullEnabled = prefs[backupAutoPullEnabledKey] ?: false
+            if (!autoSyncEnabled && !autoPullEnabled) {
+                prefs.remove(backupSyncPassphraseKey)
+            }
+        }
+    }
+
+    val backupSyncPassphraseFlow: Flow<String?> = dataStore.data.map { prefs ->
+        prefs[backupSyncPassphraseKey]?.let { decryptSyncPassphraseOrNull(it) }
+    }
+
+    /** The stored auto-sync passphrase, decrypted; null when auto-sync is off or the
+     *  stored ciphertext can no longer be decrypted (e.g. the Android Keystore key
+     *  didn't survive an app reinstall / device restore — Keystore keys are excluded
+     *  from Android's own backup mechanism by design, so a restored DataStore file
+     *  can carry ciphertext its own Keystore will never decrypt again). */
     suspend fun backupSyncPassphrase(): String? =
-        dataStore.data.first()[backupSyncPassphraseKey]?.let { CredentialEncryption.decrypt(context, it) }
+        dataStore.data.first()[backupSyncPassphraseKey]?.let { decryptSyncPassphraseOrNull(it) }
+
+    private fun decryptSyncPassphraseOrNull(encrypted: String): String? =
+        try {
+            CredentialEncryption.decrypt(context, encrypted)
+        } catch (_: Exception) {
+            // Broad on purpose: a lost Keystore key surfaces as
+            // GeneralSecurityException, a corrupt stored value as
+            // IllegalArgumentException (Base64), and an unparseable restored
+            // Tink keyset as IOException — all mean the same thing here, and
+            // any of them uncaught is the same launch crash-loop. Mirrors
+            // CredentialEncryption.isEncrypted's catch.
+            null
+        }
 
     /**
      * Emits the current state on collect and again on every preferences write —
@@ -1235,6 +1317,36 @@ class UserPreferencesRepository @Inject constructor(
     suspend fun setTheme(mode: ThemeMode) {
         dataStore.edit { prefs ->
             prefs[themeKey] = mode.name
+        }
+    }
+
+    val connectionsViewMode: Flow<String> = dataStore.data.map { prefs ->
+        prefs[connectionsViewModeKey] ?: "LIST"
+    }
+
+    suspend fun setConnectionsViewMode(mode: String) {
+        dataStore.edit { prefs ->
+            prefs[connectionsViewModeKey] = mode
+        }
+    }
+
+    val tinHubBaseUrl: Flow<String> = dataStore.data.map { prefs ->
+        prefs[tinHubBaseUrlKey] ?: ""
+    }
+
+    suspend fun setTinHubBaseUrl(url: String) {
+        dataStore.edit { prefs ->
+            prefs[tinHubBaseUrlKey] = url
+        }
+    }
+
+    val tinHubToken: Flow<String> = dataStore.data.map { prefs ->
+        prefs[tinHubTokenKey] ?: ""
+    }
+
+    suspend fun setTinHubToken(token: String) {
+        dataStore.edit { prefs ->
+            prefs[tinHubTokenKey] = token
         }
     }
 
