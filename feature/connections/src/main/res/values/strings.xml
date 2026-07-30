@@ -112,6 +112,16 @@
     <string name="connections_mosh_firewall_note">UDP port 60001 must be open on the server firewall.</string>
     <string name="connections_mosh_github">Mosh on GitHub</string>
 
+    <!-- Tin setup guide dialog -->
+    <string name="connections_tin_not_found_title">Tin companion not found</string>
+    <string name="connections_tin_not_found_message">The remote host doesn\'t have the tin-companion daemon installed. The companion allows live terminal previews on your connection cards.</string>
+    <string name="connections_tin_install_prompt">Install it on the server:</string>
+    <string name="connections_tin_install_commands">\u0020 Install companion:  pipx install tin-companion\n\u0020 Start companion:    tin-companion start\n\u0020 Show token &amp; URL:   tin-companion info</string>
+    <string name="connections_tin_token_label">Access token (optional)</string>
+    <string name="connections_tin_auth_required">Tin hub requires a token — set it in \u22ee \u2192 Tin preview hub\u2026</string>
+    <string name="connections_tin_setup_hint">Live previews need the Tin companion — set up in \u22ee menu</string>
+    <string name="connections_tin_github">https://github.com/kanazawahere/tin-companion</string>
+
     <!-- Mosh client missing dialog -->
     <string name="connections_mosh_client_missing_title">Mosh client not built</string>
     <string name="connections_mosh_client_missing_message">The mosh-client binary is not included in this build. It needs to be cross-compiled for Android using the NDK.</string>

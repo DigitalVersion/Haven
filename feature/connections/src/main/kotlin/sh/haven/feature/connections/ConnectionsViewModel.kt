@@ -470,11 +470,20 @@ class ConnectionsViewModel @Inject constructor(
     }
 
     val tinHubBaseUrl: StateFlow<String> = preferencesRepository.tinHubBaseUrl
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "https://tin.tail7f125e.ts.net/api")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     fun setTinHubBaseUrl(url: String) {
         viewModelScope.launch {
             preferencesRepository.setTinHubBaseUrl(url)
+        }
+    }
+
+    val tinHubToken: StateFlow<String> = preferencesRepository.tinHubToken
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    fun setTinHubToken(token: String) {
+        viewModelScope.launch {
+            preferencesRepository.setTinHubToken(token)
         }
     }
 

@@ -111,7 +111,7 @@ fun TinderBrowseView(
     ) { pageIndex ->
         val profile = profiles.getOrNull(pageIndex) ?: return@VerticalPager
         val key = TinPreviewClient.tinSessionKeyOf(profile)
-        val card = key?.let { previewState.cards[it] }
+        val card = previewState.getCardForProfile(profile)
 
         Card(
             modifier = Modifier
@@ -152,7 +152,7 @@ fun TinderBrowseView(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (card != null) {
-                        IconButton(onClick = { onRequestKill(key) }) {
+                        IconButton(onClick = { key?.let { onRequestKill(it) } }) {
                             Icon(
                                 imageVector = Icons.Outlined.DeleteForever,
                                 contentDescription = stringResource(R.string.connections_tinder_kill_desc),
@@ -322,22 +322,31 @@ fun TinderBrowseView(
                 }
 
                 // 4. Stale/Fresh label
-                val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-                val timeText = if (previewState.lastFetchAt != null) {
-                    timeFormatter.format(Date(previewState.lastFetchAt))
-                } else ""
-                val staleText = if (previewState.lastFetchOk) {
-                    "Tin: updated $timeText"
+                if (previewState.hubStatus != TinHubStatus.NOT_CONFIGURED) {
+                    val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+                    val timeText = if (previewState.lastFetchAt != null) {
+                        timeFormatter.format(Date(previewState.lastFetchAt))
+                    } else ""
+                    val staleText = if (previewState.lastFetchOk) {
+                        "Tin: updated $timeText"
+                    } else {
+                        if (timeText.isNotEmpty()) "Tin offline — cache $timeText" else "Tin API unreachable"
+                    }
+                    val staleColor = if (previewState.lastFetchOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+                    Text(
+                        text = staleText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = staleColor,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
                 } else {
-                    if (timeText.isNotEmpty()) "Tin offline — cache $timeText" else "Tin API unreachable"
+                    Text(
+                        text = stringResource(R.string.connections_tin_setup_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
                 }
-                val staleColor = if (previewState.lastFetchOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
-                Text(
-                    text = staleText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = staleColor,
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
 
                 // 5. Connect Buttons
                 if (profile.isSsh) {

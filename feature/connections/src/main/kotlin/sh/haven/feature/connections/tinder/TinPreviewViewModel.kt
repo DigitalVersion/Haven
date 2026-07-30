@@ -15,15 +15,47 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import javax.inject.Inject
+
+enum class TinHubStatus {
+    NOT_CONFIGURED,
+    OK,
+    AUTH_REQUIRED,
+    NOT_TIN,
+    UNREACHABLE
+}
 
 data class TinPreviewState(
     val cards: Map<Pair<String, String>, TinShellCard> = emptyMap(),
     val lastFetchAt: Long? = null,
     val lastFetchOk: Boolean = false,
-    val killedKeys: Set<Pair<String, String>> = emptySet()
-)
+    val killedKeys: Set<Pair<String, String>> = emptySet(),
+    val hubConfigured: Boolean = false,
+    val hubStatus: TinHubStatus = TinHubStatus.NOT_CONFIGURED,
+    val hubBaseUrl: String = ""
+) {
+    fun getCardForProfile(profile: ConnectionProfile): TinShellCard? {
+        val key = TinPreviewClient.tinSessionKeyOf(profile) ?: return null
+        val (hostShort, sessionName) = key
+        
+        val cardByHostShort = cards[Pair(hostShort, sessionName)]
+        if (cardByHostShort != null) return cardByHostShort
+        
+        if (hubBaseUrl.isNotEmpty()) {
+            try {
+                val hubHost = java.net.URL(hubBaseUrl).host
+                if (hubHost.isNotEmpty() && hubHost == profile.host) {
+                    return cards.values.find { it.name == sessionName }
+                }
+            } catch (e: Exception) {
+                // ignore
+            }
+        }
+        return null
+    }
+}
 
 sealed interface KillPrompt {
     data class ConfirmKill(val key: Pair<String, String>) : KillPrompt
@@ -46,7 +78,19 @@ class TinPreviewViewModel @Inject constructor(
     private val _errorEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val errorEvents: SharedFlow<String> = _errorEvents.asSharedFlow()
 
+    private val _showTinSetupGuide = MutableStateFlow(false)
+    val showTinSetupGuide: StateFlow<Boolean> = _showTinSetupGuide.asStateFlow()
+
     private var pollingJob: Job? = null
+    private var lastSavedUrl: String? = null
+
+    fun dismissTinSetupGuide() {
+        _showTinSetupGuide.value = false
+    }
+
+    fun triggerTinSetupGuide() {
+        _showTinSetupGuide.value = true
+    }
 
     fun startPolling() {
         if (pollingJob != null) return
@@ -67,23 +111,63 @@ class TinPreviewViewModel @Inject constructor(
         val baseUrl = try {
             preferencesRepository.tinHubBaseUrl.first()
         } catch (e: Exception) {
-            "https://tin.tail7f125e.ts.net/api"
+            ""
         }
+        val token = try {
+            preferencesRepository.tinHubToken.first()
+        } catch (e: Exception) {
+            ""
+        }
+
+        val isUrlChanged = lastSavedUrl != null && lastSavedUrl != baseUrl
+        lastSavedUrl = baseUrl
+
+        if (baseUrl.isBlank()) {
+            _state.update { old ->
+                old.copy(
+                    cards = emptyMap(),
+                    hubConfigured = false,
+                    hubStatus = TinHubStatus.NOT_CONFIGURED,
+                    hubBaseUrl = "",
+                    lastFetchOk = false
+                )
+            }
+            return
+        }
+
         try {
-            val list = client.fetchShells(baseUrl)
+            val list = client.fetchShells(baseUrl, token)
             val mapped = list.associateBy { Pair(it.host, it.name) }
             _state.update { old ->
                 old.copy(
                     cards = mapped,
                     lastFetchAt = System.currentTimeMillis(),
-                    lastFetchOk = true
+                    lastFetchOk = true,
+                    hubConfigured = true,
+                    hubStatus = TinHubStatus.OK,
+                    hubBaseUrl = baseUrl
                 )
             }
         } catch (e: Exception) {
+            val status = when (e) {
+                is TinAuthRequiredException -> {
+                    _errorEvents.tryEmit("Tin hub requires a token — set it in ⋮ → Tin preview hub…")
+                    TinHubStatus.AUTH_REQUIRED
+                }
+                is TinNotTinException -> TinHubStatus.NOT_TIN
+                is TinUnreachableException -> TinHubStatus.UNREACHABLE
+                else -> TinHubStatus.UNREACHABLE
+            }
             _state.update { old ->
                 old.copy(
+                    hubConfigured = true,
+                    hubStatus = status,
+                    hubBaseUrl = baseUrl,
                     lastFetchOk = false
                 )
+            }
+            if (isUrlChanged && status == TinHubStatus.NOT_TIN) {
+                _showTinSetupGuide.value = true
             }
         }
     }
@@ -108,11 +192,16 @@ class TinPreviewViewModel @Inject constructor(
             val baseUrl = try {
                 preferencesRepository.tinHubBaseUrl.first()
             } catch (e: Exception) {
-                "https://tin.tail7f125e.ts.net/api"
+                ""
+            }
+            val token = try {
+                preferencesRepository.tinHubToken.first()
+            } catch (e: Exception) {
+                ""
             }
             
             // Resolve delete base URL
-            val card = _state.value.cards[key]
+            val card = _state.value.cards[key] ?: _state.value.cards.values.find { it.name == key.second }
             val deleteBase = if (card != null) {
                 TinPreviewClient.deleteBaseFor(card, baseUrl)
             } else {
@@ -124,7 +213,8 @@ class TinPreviewViewModel @Inject constructor(
                 deleteBase = deleteBase,
                 name = name,
                 force = accumulatedForce,
-                confirm = accumulatedConfirmName != null
+                confirm = accumulatedConfirmName != null,
+                token = token
             )
 
             when (result) {

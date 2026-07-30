@@ -185,8 +185,10 @@ fun ConnectionsScreen(
     val tinPreviewViewModel: TinPreviewViewModel = hiltViewModel()
     val tinPreviewState by tinPreviewViewModel.state.collectAsState()
     val killPrompt by tinPreviewViewModel.killPrompt.collectAsState()
+    val showTinSetupGuide by tinPreviewViewModel.showTinSetupGuide.collectAsState()
     val connectionsViewMode by viewModel.connectionsViewMode.collectAsState()
     val tinHubBaseUrl by viewModel.tinHubBaseUrl.collectAsState()
+    val tinHubToken by viewModel.tinHubToken.collectAsState()
 
     LaunchedEffect(connectionsViewMode) {
         if (connectionsViewMode == "TINDER" || connectionsViewMode == "GRID") {
@@ -940,6 +942,34 @@ fun ConnectionsScreen(
         )
     }
 
+    if (showTinSetupGuide) {
+        val uriHandler = LocalUriHandler.current
+        AlertDialog(
+            onDismissRequest = { tinPreviewViewModel.dismissTinSetupGuide() },
+            title = { Text(stringResource(R.string.connections_tin_not_found_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.connections_tin_not_found_message))
+                    Text(stringResource(R.string.connections_tin_install_prompt))
+                    Text(
+                        stringResource(R.string.connections_tin_install_commands),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(stringResource(R.string.connections_tin_setup_hint))
+                }
+            },
+            confirmButton = {
+                val githubUrl = stringResource(R.string.connections_tin_github)
+                TextButton(onClick = {
+                    uriHandler.openUri(githubUrl)
+                }) { Text("GitHub") }
+            },
+            dismissButton = {
+                TextButton(onClick = { tinPreviewViewModel.dismissTinSetupGuide() }) { Text(stringResource(R.string.common_ok)) }
+            },
+        )
+    }
+
     if (showMoshClientMissing) {
         val uriHandler = LocalUriHandler.current
         AlertDialog(
@@ -995,21 +1025,33 @@ fun ConnectionsScreen(
 
     if (showTinHubDialog) {
         var tempUrl by remember { mutableStateOf(tinHubBaseUrl) }
+        var tempToken by remember { mutableStateOf(tinHubToken) }
         AlertDialog(
             onDismissRequest = { showTinHubDialog = false },
             title = { Text(stringResource(R.string.connections_tin_hub_dialog_title)) },
             text = {
-                OutlinedTextField(
-                    value = tempUrl,
-                    onValueChange = { tempUrl = it },
-                    label = { Text(stringResource(R.string.connections_tin_hub_dialog_label)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = tempUrl,
+                        onValueChange = { tempUrl = it },
+                        label = { Text(stringResource(R.string.connections_tin_hub_dialog_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = tempToken,
+                        onValueChange = { tempToken = it },
+                        label = { Text(stringResource(R.string.connections_tin_token_label)) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.setTinHubBaseUrl(tempUrl)
+                    viewModel.setTinHubToken(tempToken)
                     showTinHubDialog = false
                 }) {
                     Text(stringResource(R.string.connections_tin_hub_dialog_save))
@@ -1446,7 +1488,7 @@ fun ConnectionsScreen(
                                 canonicalProfiles.filter { p ->
                                     val key = TinPreviewClient.tinSessionKeyOf(p)
                                     if (key in tinPreviewState.killedKeys) return@filter false
-                                    val card = key?.let { tinPreviewState.cards[it] }
+                                    val card = tinPreviewState.getCardForProfile(p)
                                     val previewText = card?.let { "${it.preview ?: ""}\n${it.snapshotPlain ?: ""}" }
                                     matchesConnectionFilter(p, queryLower, previewText)
                                 }

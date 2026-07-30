@@ -11,6 +11,10 @@ import java.net.URL
 import java.net.URLEncoder
 import javax.inject.Inject
 
+class TinAuthRequiredException(message: String) : Exception(message)
+class TinNotTinException(message: String) : Exception(message)
+class TinUnreachableException(message: String) : Exception(message)
+
 data class TinShellCard(
     val host: String,
     val name: String,
@@ -33,22 +37,40 @@ sealed interface TinDeleteResult {
 class TinPreviewClient @Inject constructor() {
 
     /** GET <baseUrl>/shells → list card. Ném exception khi lỗi mạng/HTTP/parse — caller xử. */
-    suspend fun fetchShells(baseUrl: String): List<TinShellCard> = withContext(Dispatchers.IO) {
-        val url = URL(baseUrl.trimEnd('/') + "/shells")
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 10_000
-            readTimeout = 10_000
-            requestMethod = "GET"
-            setRequestProperty("Accept", "application/json")
+    suspend fun fetchShells(baseUrl: String, token: String): List<TinShellCard> = withContext(Dispatchers.IO) {
+        val url = try {
+            URL(baseUrl.trimEnd('/') + "/shells")
+        } catch (e: Exception) {
+            throw TinUnreachableException("Invalid URL: ${e.message}")
+        }
+        val conn = try {
+            (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                requestMethod = "GET"
+                setRequestProperty("Accept", "application/json")
+                if (token.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
+            }
+        } catch (e: Exception) {
+            throw TinUnreachableException("Connection setup failed: ${e.message}")
         }
         try {
             val rc = conn.responseCode
+            if (rc == 401) {
+                throw TinAuthRequiredException("Authentication token required")
+            }
             if (rc !in 200..299) {
                 val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-                throw Exception("HTTP $rc: $err")
+                throw TinNotTinException("HTTP $rc: $err")
             }
             val resp = conn.inputStream.bufferedReader().use { it.readText() }
-            val array = JSONArray(resp)
+            val array = try {
+                JSONArray(resp)
+            } catch (e: Exception) {
+                throw TinNotTinException("Failed to parse JSON array: ${e.message}")
+            }
             val list = mutableListOf<TinShellCard>()
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
@@ -80,6 +102,12 @@ class TinPreviewClient @Inject constructor() {
                 )
             }
             list
+        } catch (e: TinAuthRequiredException) {
+            throw e
+        } catch (e: TinNotTinException) {
+            throw e
+        } catch (e: Exception) {
+            throw TinUnreachableException("Network IO failed: ${e.message}")
         } finally {
             conn.disconnect()
         }
@@ -91,7 +119,8 @@ class TinPreviewClient @Inject constructor() {
         deleteBase: String,
         name: String,
         force: Boolean,
-        confirm: Boolean
+        confirm: Boolean,
+        token: String
     ): TinDeleteResult = withContext(Dispatchers.IO) {
         val encodedName = URLEncoder.encode(name, "UTF-8")
         val params = mutableListOf<String>()
@@ -109,6 +138,9 @@ class TinPreviewClient @Inject constructor() {
             readTimeout = 10_000
             requestMethod = "DELETE"
             setRequestProperty("Accept", "application/json")
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
         }
         
         try {

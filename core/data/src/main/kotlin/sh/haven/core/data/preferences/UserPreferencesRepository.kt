@@ -47,6 +47,7 @@ class UserPreferencesRepository @Inject constructor(
     private val themeKey = stringPreferencesKey("theme")
     private val connectionsViewModeKey = stringPreferencesKey("connections_view_mode")
     private val tinHubBaseUrlKey = stringPreferencesKey("tin_hub_base_url")
+    private val tinHubTokenKey = stringPreferencesKey("tin_hub_token")
     private val sessionManagerKey = stringPreferencesKey("session_manager")
     private val reticulumRpcKeyKey = stringPreferencesKey("reticulum_rpc_key")
     private val reticulumHostKey = stringPreferencesKey("reticulum_host")
@@ -1325,12 +1326,22 @@ class UserPreferencesRepository @Inject constructor(
     }
 
     val tinHubBaseUrl: Flow<String> = dataStore.data.map { prefs ->
-        prefs[tinHubBaseUrlKey] ?: "https://tin.tail7f125e.ts.net/api"
+        prefs[tinHubBaseUrlKey] ?: ""
     }
 
     suspend fun setTinHubBaseUrl(url: String) {
         dataStore.edit { prefs ->
             prefs[tinHubBaseUrlKey] = url
+        }
+    }
+
+    val tinHubToken: Flow<String> = dataStore.data.map { prefs ->
+        prefs[tinHubTokenKey] ?: ""
+    }
+
+    suspend fun setTinHubToken(token: String) {
+        dataStore.edit { prefs ->
+            prefs[tinHubTokenKey] = token
         }
     }
 

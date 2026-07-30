@@ -58,6 +58,7 @@ fun GridBrowseView(
     isFiltering: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val showBanner = previewState.hubStatus != TinHubStatus.NOT_CONFIGURED
     val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val timeText = if (previewState.lastFetchAt != null) {
         timeFormatter.format(Date(previewState.lastFetchAt))
@@ -74,14 +75,14 @@ fun GridBrowseView(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(staleColor.copy(alpha = 0.1f))
+                .background(if (showBanner) staleColor.copy(alpha = 0.1f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.05f))
                 .padding(vertical = 4.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = staleText,
+                text = if (showBanner) staleText else stringResource(R.string.connections_tin_setup_hint),
                 style = MaterialTheme.typography.bodySmall,
-                color = staleColor
+                color = if (showBanner) staleColor else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
         }
 
@@ -130,7 +131,7 @@ fun GridCellItem(
     onRequestKill: (Pair<String, String>) -> Unit
 ) {
     val key = TinPreviewClient.tinSessionKeyOf(profile)
-    val card = key?.let { previewState.cards[it] }
+    val card = previewState.getCardForProfile(profile)
 
     Card(
         modifier = Modifier
@@ -196,7 +197,7 @@ fun GridCellItem(
                 }
                 if (card != null) {
                     IconButton(
-                        onClick = { onRequestKill(key) },
+                        onClick = { key?.let { onRequestKill(it) } },
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
