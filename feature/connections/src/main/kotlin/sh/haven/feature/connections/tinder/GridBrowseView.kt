@@ -92,7 +92,7 @@ fun GridBrowseView(
                     text = if (isFiltering) {
                         stringResource(R.string.connections_grid_empty_filter)
                     } else {
-                        stringResource(R.string.connections_tinder_empty)
+                        stringResource(R.string.connections_card_empty)
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -202,7 +202,7 @@ fun GridCellItem(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.DeleteForever,
-                            contentDescription = stringResource(R.string.connections_tinder_kill_desc),
+                            contentDescription = stringResource(R.string.connections_card_kill_desc),
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(16.dp)
                         )

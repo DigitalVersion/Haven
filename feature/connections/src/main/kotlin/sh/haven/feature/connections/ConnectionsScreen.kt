@@ -191,7 +191,7 @@ fun ConnectionsScreen(
     val tinHubToken by viewModel.tinHubToken.collectAsState()
 
     LaunchedEffect(connectionsViewMode) {
-        if (connectionsViewMode == "TINDER" || connectionsViewMode == "GRID") {
+        if (connectionsViewMode == "CARD" || connectionsViewMode == "GRID") {
             tinPreviewViewModel.startPolling()
         } else {
             tinPreviewViewModel.stopPolling()
@@ -357,7 +357,7 @@ fun ConnectionsScreen(
     }
 
     var showTinHubDialog by rememberSaveable { mutableStateOf(false) }
-    var tinderPageIndex by rememberSaveable { mutableIntStateOf(0) }
+    var cardPageIndex by rememberSaveable { mutableIntStateOf(0) }
     val gridState = rememberLazyGridState()
     val context = LocalContext.current
 
@@ -1192,7 +1192,7 @@ fun ConnectionsScreen(
                         IconButton(onClick = { showModeMenu = true }) {
                             val icon = when (connectionsViewMode) {
                                 "GRID" -> Icons.Filled.GridView
-                                "TINDER" -> Icons.Filled.ViewCarousel
+                                "CARD" -> Icons.Filled.ViewCarousel
                                 else -> Icons.AutoMirrored.Filled.ViewList
                             }
                             Icon(icon, contentDescription = stringResource(R.string.connections_view_mode_selector_desc))
@@ -1208,7 +1208,7 @@ fun ConnectionsScreen(
                                     showModeMenu = false
                                 },
                                 trailingIcon = {
-                                    if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "TINDER")) {
+                                    if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "CARD")) {
                                         Icon(Icons.Filled.Check, contentDescription = null)
                                     }
                                 }
@@ -1226,13 +1226,13 @@ fun ConnectionsScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text(stringResource(R.string.connections_view_mode_tinder)) },
+                                text = { Text(stringResource(R.string.connections_view_mode_card)) },
                                 onClick = {
-                                    viewModel.setConnectionsViewMode("TINDER")
+                                    viewModel.setConnectionsViewMode("CARD")
                                     showModeMenu = false
                                 },
                                 trailingIcon = {
-                                    if (connectionsViewMode == "TINDER") {
+                                    if (connectionsViewMode == "CARD") {
                                         Icon(Icons.Filled.Check, contentDescription = null)
                                     }
                                 }
@@ -1275,7 +1275,7 @@ fun ConnectionsScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "TINDER")) {
+            if (connectionsViewMode == "LIST" || (connectionsViewMode != "GRID" && connectionsViewMode != "CARD")) {
                 FloatingActionButton(onClick = { showAddDialog = true }) {
                     Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.connections_add))
                 }
@@ -1317,7 +1317,7 @@ fun ConnectionsScreen(
 
             // Quick connect bar
             val quickConnectError = stringResource(R.string.connections_quick_connect_error)
-            if (connectionsViewMode != "TINDER") {
+            if (connectionsViewMode != "CARD") {
                 OutlinedTextField(
                     value = quickConnectText,
                     onValueChange = { quickConnectText = it },
@@ -1356,7 +1356,7 @@ fun ConnectionsScreen(
             }
 
             // Filter/search bar
-            if (connections.isNotEmpty() && connectionsViewMode != "TINDER") {
+            if (connections.isNotEmpty() && connectionsViewMode != "CARD") {
                 OutlinedTextField(
                     value = filterText,
                     onValueChange = { filterText = it },
@@ -1508,15 +1508,15 @@ fun ConnectionsScreen(
                             isFiltering = isFiltering
                         )
                     }
-                    "TINDER" -> {
-                        val tinderProfiles = remember(canonicalProfiles, tinPreviewState.killedKeys) {
+                    "CARD" -> {
+                        val cardProfiles = remember(canonicalProfiles, tinPreviewState.killedKeys) {
                             canonicalProfiles.filter { p ->
                                 val key = TinPreviewClient.tinSessionKeyOf(p)
                                 key !in tinPreviewState.killedKeys
                             }
                         }
-                        TinderBrowseView(
-                            profiles = tinderProfiles,
+                        CardBrowseView(
+                            profiles = cardProfiles,
                             previewState = tinPreviewState,
                             profileStatuses = profileStatuses,
                             filesStatuses = filesStatuses,
@@ -1525,8 +1525,8 @@ fun ConnectionsScreen(
                             onRequestKill = { key ->
                                 tinPreviewViewModel.requestKill(key)
                             },
-                            initialPage = tinderPageIndex,
-                            onPageChanged = { tinderPageIndex = it }
+                            initialPage = cardPageIndex,
+                            onPageChanged = { cardPageIndex = it }
                         )
                     }
                     else -> {

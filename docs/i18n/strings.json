@@ -7296,8 +7296,8 @@
      "t": {}
     },
     {
-     "name": "connections_view_mode_tinder",
-     "en": "Tinder",
+     "name": "connections_view_mode_card",
+     "en": "Card",
      "comment": "Connections screen",
      "args": [],
      "t": {}
@@ -7310,7 +7310,7 @@
      "t": {}
     },
     {
-     "name": "connections_tinder_no_preview",
+     "name": "connections_card_no_preview",
      "en": "No Tin preview for this card",
      "comment": "Connections screen",
      "args": [],
@@ -7331,35 +7331,35 @@
      "t": {}
     },
     {
-     "name": "connections_tinder_empty",
+     "name": "connections_card_empty",
      "en": "No connections available",
      "comment": "Connections screen",
      "args": [],
      "t": {}
     },
     {
-     "name": "connections_tinder_connect_btn",
+     "name": "connections_card_connect_btn",
      "en": "Connect",
      "comment": "Connections screen",
      "args": [],
      "t": {}
     },
     {
-     "name": "connections_tinder_open_terminal_btn",
+     "name": "connections_card_open_terminal_btn",
      "en": "Open Terminal",
      "comment": "Connections screen",
      "args": [],
      "t": {}
     },
     {
-     "name": "connections_tinder_open_files_btn",
+     "name": "connections_card_open_files_btn",
      "en": "Open Files",
      "comment": "Connections screen",
      "args": [],
      "t": {}
     },
     {
-     "name": "connections_tinder_kill_desc",
+     "name": "connections_card_kill_desc",
      "en": "Kill tmux session",
      "comment": "Connections screen",
      "args": [],
@@ -8087,7 +8087,7 @@
     },
     {
      "name": "connections_tin_install_commands",
-     "en": "\\u0020 Install companion:  pipx install tin-companion\\n\\u0020 Start companion:    tin-companion start\\n\\u0020 Show token &amp; URL:   tin-companion info",
+     "en": "\\u0020 curl -fsSL https://raw.githubusercontent.com/kanazawahere/tin-companion/main/install.sh | bash\\n\\u0020 Prints your access token and hub URL, enter them above.",
      "comment": "Tin setup guide dialog",
      "args": [],
      "t": {}

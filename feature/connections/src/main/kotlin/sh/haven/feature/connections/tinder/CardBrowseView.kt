@@ -54,7 +54,7 @@ import java.util.Locale
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TinderBrowseView(
+fun CardBrowseView(
     profiles: List<ConnectionProfile>,
     previewState: TinPreviewState,
     profileStatuses: Map<String, ProfileStatus>,
@@ -69,7 +69,7 @@ fun TinderBrowseView(
     if (profiles.isEmpty()) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                text = stringResource(R.string.connections_tinder_empty),
+                text = stringResource(R.string.connections_card_empty),
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -155,7 +155,7 @@ fun TinderBrowseView(
                         IconButton(onClick = { key?.let { onRequestKill(it) } }) {
                             Icon(
                                 imageVector = Icons.Outlined.DeleteForever,
-                                contentDescription = stringResource(R.string.connections_tinder_kill_desc),
+                                contentDescription = stringResource(R.string.connections_card_kill_desc),
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
@@ -310,7 +310,7 @@ fun TinderBrowseView(
                             .fillMaxSize()
                             .verticalScroll(scrollState)
                     ) {
-                        val textToDisplay = card?.snapshotPlain ?: stringResource(R.string.connections_tinder_no_preview)
+                        val textToDisplay = card?.snapshotPlain ?: stringResource(R.string.connections_card_no_preview)
                         Text(
                             text = textToDisplay,
                             fontFamily = FontFamily.Monospace,
@@ -360,13 +360,13 @@ fun TinderBrowseView(
                             onClick = { onConnect(profile) },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(stringResource(R.string.connections_tinder_open_terminal_btn))
+                            Text(stringResource(R.string.connections_card_open_terminal_btn))
                         }
                         Button(
                             onClick = { onOpenFiles(profile) },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(stringResource(R.string.connections_tinder_open_files_btn))
+                            Text(stringResource(R.string.connections_card_open_files_btn))
                         }
                     }
                 } else {
@@ -376,7 +376,7 @@ fun TinderBrowseView(
                             .fillMaxWidth()
                             .padding(top = 8.dp)
                     ) {
-                        Text(stringResource(R.string.connections_tinder_connect_btn))
+                        Text(stringResource(R.string.connections_card_connect_btn))
                     }
                 }
             }
