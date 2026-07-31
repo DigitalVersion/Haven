@@ -1,6 +1,7 @@
 package sh.haven.core.data.backup
 
 import android.util.Base64
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.first
@@ -539,6 +540,14 @@ class BackupService @Inject constructor(
             }
         }
 
+        // Was computed but silently dropped before (#restore-error-visibility): the caller
+        // (SettingsViewModel) only ever showed errors.size in a toast, never the actual reasons,
+        // so a "98 items (2 errors)" result had no way to say WHICH 2 items or WHY. Every
+        // individual message is already labelled by section+index (see the catch blocks above),
+        // so this alone is enough to diagnose future restores from logcat.
+        if (errors.isNotEmpty()) {
+            Log.w(TAG, "import() completed with ${errors.size} error(s): ${errors.joinToString("; ")}")
+        }
         return BackupResult(count, errors)
     }
 
@@ -582,6 +591,8 @@ class BackupService @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "BackupService"
+
         // v2 (2026-04-21): add tunnels section (WireGuard / Tailscale) and the
         // 13 ConnectionProfile fields the v1 schema silently dropped. Files
         // keep the original HAVEN_BACKUP_V1 magic header because the envelope
