@@ -58,8 +58,10 @@ class BackupService @Inject constructor(
         json.put("created", System.currentTimeMillis())
 
         // Connections (decrypted — backup file has its own encryption layer)
+        val allConnections = connectionRepository.getAll()
+        val connectionIds = allConnections.map { it.id }.toSet()
         val connections = JSONArray()
-        connectionRepository.getAll().forEach { p ->
+        allConnections.forEach { p ->
             connections.put(JSONObject().apply {
                 put("id", p.id)
                 put("label", p.label)
@@ -220,9 +222,15 @@ class BackupService @Inject constructor(
         }
         json.put("knownHosts", hosts)
 
-        // Port forward rules
+        // Port forward rules. Filter to rows whose parent connection is actually in this export —
+        // the FK's ON DELETE CASCADE should already keep orphans out of the table, but a live device
+        // was found with 2 rows surviving under a deleted profileId (root cause of #restore-error-
+        // visibility's real "98 items (2 errors)" case) — exporting them produces an unrestorable
+        // backup that fails FOREIGN KEY constraint on import. Filtering here means the export is
+        // never worse than what a fresh restore can actually reconstruct, regardless of how a stray
+        // row got created.
         val forwards = JSONArray()
-        portForwardRuleDao.getAll().forEach { r ->
+        portForwardRuleDao.getAll().filter { it.profileId in connectionIds }.forEach { r ->
             forwards.put(JSONObject().apply {
                 put("id", r.id)
                 put("profileId", r.profileId)
