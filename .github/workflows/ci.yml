@@ -149,6 +149,19 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/arm64/debug/haven-*-arm64-debug.apk
           retention-days: 7
+      - name: Notify ntfy (APK ready)
+        if: success()
+        env:
+          NTFY_TOPIC_URL: ${{ secrets.NTFY_TOPIC_URL }}
+        run: |
+          if [ -z "$NTFY_TOPIC_URL" ]; then
+            echo "NTFY_TOPIC_URL secret not set — skipping notify"
+            exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -H "Title: Haven APK ready" -H "Priority: default" -H "Tags: android" \
+            -d "Build ${{ github.ref_name }} (${{ github.sha }}) done. Tải artifact app-debug (cần login GitHub, repo private): ${RUN_URL}" \
+            "$NTFY_TOPIC_URL" >/dev/null
 
   # Nightly-only: build the ABIs the per-push `build` job skips (x64, armv7)
   # so an x64/armv7-specific compile or native-cross break surfaces within 24h

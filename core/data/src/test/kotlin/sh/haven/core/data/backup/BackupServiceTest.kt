@@ -374,7 +374,13 @@ class BackupServiceTest {
             enabled = true,
         )
 
-        coEvery { connectionRepository.getAll() } returns emptyList()
+        // Export now filters to rows whose profileId matches an exported connection
+        // (#restore-error-visibility) — the entity's own FK requires this on a real
+        // device, so a rule with no matching connection was never a realistic
+        // roundtrip case to begin with.
+        coEvery { connectionRepository.getAll() } returns listOf(
+            ConnectionProfile(id = "conn-1", label = "X", host = "h", username = "u"),
+        )
         coEvery { sshKeyDao.getAll() } returns emptyList()
         coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
         coEvery { knownHostDao.getAll() } returns emptyList()
@@ -411,7 +417,11 @@ class BackupServiceTest {
             enabled = false,
         )
 
-        coEvery { connectionRepository.getAll() } returns emptyList()
+        // See the comment in the previous test — profileId must match an exported
+        // connection now that export filters orphaned rows.
+        coEvery { connectionRepository.getAll() } returns listOf(
+            ConnectionProfile(id = "conn-1", label = "X", host = "h", username = "u"),
+        )
         coEvery { sshKeyDao.getAll() } returns emptyList()
         coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
         coEvery { knownHostDao.getAll() } returns emptyList()
