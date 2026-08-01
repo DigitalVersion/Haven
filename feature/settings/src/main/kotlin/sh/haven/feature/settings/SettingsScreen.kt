@@ -1873,7 +1873,16 @@ fun SettingsScreen(
             },
             onPull = {
                 showBackupSyncDialog = false
-                showBackupPasswordDialog = BackupAction.PullRemote
+                // Skip the password re-prompt when a passphrase is already
+                // saved on-device — "Pull automatically" already requires
+                // storing one (see the dialog's own description text), so
+                // asking again on every manual Pull is pure friction.
+                val savedPassphrase = backupSyncPassphrase
+                if (!savedPassphrase.isNullOrEmpty()) {
+                    viewModel.pullBackupFromRemote(savedPassphrase)
+                } else {
+                    showBackupPasswordDialog = BackupAction.PullRemote
+                }
             },
             onDismiss = { showBackupSyncDialog = false },
         )

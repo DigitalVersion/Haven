@@ -226,6 +226,17 @@ class SettingsViewModel @Inject constructor(
 
     // ── Encrypted backup sync to an existing remote (#323) ────────────────
 
+    // Eagerly, not WhileSubscribed(5000): the Sync-to-remote row only has a
+    // collector while it's on-screen inside the Settings LazyColumn, so
+    // scrolling it out of view (or leaving the dialog closed) for 5+ seconds
+    // let the upstream Flow stop and reset. Reopening the dialog then had to
+    // re-subscribe from scratch, and the very first composition — right when
+    // the user sees the dialog appear — rendered before Room/DataStore's
+    // fresh query landed, showing "Choose a connection..." even though a
+    // destination was saved. Eagerly keeps these warm for the ViewModel's
+    // whole lifetime (cheap: small, rarely-changing preference-backed data),
+    // so the saved destination is already loaded by the time either the
+    // summary row or the dialog reads it.
     /** SFTP/SMB/rclone profiles eligible as a backup destination (id + label). */
     val backupSyncCandidates: StateFlow<List<Pair<String, String>>> =
         connectionRepository.observeAll()
@@ -233,13 +244,13 @@ class SettingsViewModel @Inject constructor(
                 list.filter { it.connectionType in BACKUP_SYNC_TYPES }
                     .map { it.id to it.label }
             }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val backupSyncProfileId: StateFlow<String?> = preferencesRepository.backupSyncProfileId
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val backupSyncPath: StateFlow<String> = preferencesRepository.backupSyncPath
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "haven-backup.enc")
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "haven-backup.enc")
 
     fun setBackupSyncDestination(profileId: String?, path: String) {
         viewModelScope.launch { preferencesRepository.setBackupSyncDestination(profileId, path) }
