@@ -602,7 +602,24 @@ class SshSessionManager @Inject constructor(
             ?: return null
         // Reuse the existing session if still connected
         session.sftpSession?.let { if (it.isConnected) return it }
-        val sftp = dialSftp(session)
+        val sftp = try {
+            dialSftp(session)
+        } catch (e: Exception) {
+            // The bookkept status here can lag the real transport: a socket
+            // dropped silently in the background (NAT/Doze — see
+            // probeAndReconnectStale's doc comment) still reads CONNECTED
+            // until something tries to use it. The first channel dial on
+            // such a session surfaces as a raw library exception (e.g. JSch's
+            // generic "session is down") rather than an empty result, and
+            // retrying the same dead client would just repeat it. Mark the
+            // session dead and kick a reconnect so the caller's no-session
+            // fallback (SilentSshDialer.dialFilesSession) dials a fresh one
+            // instead of surfacing the raw error to the Files tab.
+            Log.w(TAG, "openSftpSession: dial failed for $profileId — marking session dead: ${e.message}")
+            updateStatus(session.sessionId, SessionState.Status.DISCONNECTED)
+            requestReconnect(session.sessionId)
+            return null
+        }
         _sessions.update { map ->
             val existing = map[session.sessionId] ?: return@update map
             map + (session.sessionId to existing.copy(sftpSession = sftp))
