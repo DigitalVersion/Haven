@@ -26794,6 +26794,20 @@
      }
     },
     {
+     "name": "settings_backup_restore_mirror_label",
+     "en": "Also delete connections not in this backup",
+     "comment": "Backup password dialog",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_restore_mirror_description",
+     "en": "Removes any saved connection whose ID isn\\'t in this file. SSH keys, groups, and other settings are left untouched.",
+     "comment": "Backup password dialog",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "settings_about_dialog_title",
      "en": "About Haven",
      "comment": "About dialog",
