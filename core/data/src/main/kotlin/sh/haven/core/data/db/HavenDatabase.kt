@@ -54,7 +54,7 @@ import sh.haven.core.data.db.entities.WorkspaceProfile
         AgeIdentityEntity::class,
         SshIdentity::class,
     ],
-    version = 80,
+    version = 81,
     exportSchema = true,
 )
 abstract class HavenDatabase : RoomDatabase() {
@@ -1289,6 +1289,21 @@ abstract class HavenDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 addColumnIfMissing(db, "connection_profiles", "remoteCommand", "TEXT DEFAULT NULL")
                 addColumnIfMissing(db, "connection_profiles", "requestPty", "INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        /**
+         * #426: Clean up orphan database rows left behind due to SQLite foreign key
+         * constraints not being enforced in older Room versions (2.6.x and earlier).
+         */
+        val MIGRATION_80_81 = object : Migration(80, 81) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Delete orphan port forward rules
+                db.execSQL("DELETE FROM port_forward_rules WHERE profileId NOT IN (SELECT id FROM connection_profiles)")
+                // Delete orphan connection logs
+                db.execSQL("DELETE FROM connection_logs WHERE profileId NOT IN (SELECT id FROM connection_profiles)")
+                // Set NULL for workspace items pointing to deleted connection profiles
+                db.execSQL("UPDATE workspace_item SET connectionProfileId = NULL WHERE connectionProfileId IS NOT NULL AND connectionProfileId NOT IN (SELECT id FROM connection_profiles)")
             }
         }
 
