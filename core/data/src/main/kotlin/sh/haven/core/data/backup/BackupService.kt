@@ -50,7 +50,7 @@ class BackupService @Inject constructor(
     private val sshIdentityRepository: sh.haven.core.data.repository.SshIdentityRepository,
     private val dataStore: DataStore<Preferences>,
 ) {
-    data class BackupResult(val count: Int, val errors: List<String> = emptyList())
+    data class BackupResult(val count: Int, val errors: List<String> = emptyList(), val prunedCount: Int = 0)
 
     suspend fun export(password: String): ByteArray {
         val json = JSONObject()
@@ -262,7 +262,21 @@ class BackupService @Inject constructor(
         return encrypt(json.toString().toByteArray(Charsets.UTF_8), password)
     }
 
-    suspend fun import(data: ByteArray, password: String): BackupResult {
+    /**
+     * @param mirrorConnections When true, after upserting every connection in
+     * [data], also delete any saved connection whose id is NOT in this
+     * backup's connections section. Import has always been a pure upsert —
+     * restoring a smaller/older backup never removed rows added since, so a
+     * device's live connection list and any given backup file can drift
+     * apart indefinitely with no way to reconcile them back to the file's
+     * exact contents. Off by default; scoped to connections only — keys,
+     * groups, tunnels, and identities are left untouched even in mirror
+     * mode, since deleting those carries a much bigger blast radius (e.g.
+     * an SSH private key) than the connection-list drift this addresses.
+     * No-ops (never deletes) when the backup carries no "connections" key at
+     * all, so an old/partial-format file can't wipe the whole list.
+     */
+    suspend fun import(data: ByteArray, password: String, mirrorConnections: Boolean = false): BackupResult {
         val plaintext = decrypt(data, password)
         val json = JSONObject(String(plaintext, Charsets.UTF_8))
         val version = json.optInt("version", 1)
@@ -372,13 +386,16 @@ class BackupService @Inject constructor(
 
         // Connections
         val connections = json.optJSONArray("connections")
+        val importedConnectionIds = mutableSetOf<String>()
         if (connections != null) {
             for (i in 0 until connections.length()) {
                 try {
                     val c = connections.getJSONObject(i)
+                    val connectionId = c.getString("id")
+                    importedConnectionIds.add(connectionId)
                     connectionRepository.save(
                         ConnectionProfile(
-                            id = c.getString("id"),
+                            id = connectionId,
                             label = c.getString("label"),
                             host = c.getString("host"),
                             port = c.getInt("port"),
@@ -473,6 +490,19 @@ class BackupService @Inject constructor(
             }
         }
 
+        var pruned = 0
+        if (mirrorConnections && connections != null) {
+            val staleIds = connectionRepository.getAll().map { it.id } - importedConnectionIds
+            for (staleId in staleIds) {
+                try {
+                    connectionRepository.delete(staleId)
+                    pruned++
+                } catch (e: Exception) {
+                    errors.add("Mirror-prune $staleId: ${e.message}")
+                }
+            }
+        }
+
         // Known hosts
         val hosts = json.optJSONArray("knownHosts")
         if (hosts != null) {
@@ -556,7 +586,10 @@ class BackupService @Inject constructor(
         if (errors.isNotEmpty()) {
             Log.w(TAG, "import() completed with ${errors.size} error(s): ${errors.joinToString("; ")}")
         }
-        return BackupResult(count, errors)
+        if (pruned > 0) {
+            Log.i(TAG, "import(): mirror mode removed $pruned connection(s) not present in the backup")
+        }
+        return BackupResult(count, errors, pruned)
     }
 
     private fun encrypt(plaintext: ByteArray, password: String): ByteArray {

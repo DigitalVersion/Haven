@@ -184,7 +184,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun importBackup(uri: Uri, password: String) {
+    fun importBackup(uri: Uri, password: String, mirrorConnections: Boolean = false) {
         viewModelScope.launch {
             _backupStatus.value = BackupStatus.InProgress
             try {
@@ -197,10 +197,13 @@ class SettingsViewModel @Inject constructor(
                 val result = withContext(Dispatchers.IO) {
                     val data = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Could not open input stream")
-                    backupService.import(data, password)
+                    backupService.import(data, password, mirrorConnections)
                 }
-                val msg = "Restored ${result.count} items" +
-                    if (result.errors.isNotEmpty()) " (${result.errors.size} errors)" else ""
+                val msg = buildString {
+                    append("Restored ${result.count} items")
+                    if (result.prunedCount > 0) append(", removed ${result.prunedCount} old connection(s)")
+                    if (result.errors.isNotEmpty()) append(" (${result.errors.size} errors)")
+                }
                 _backupStatus.value = BackupStatus.Success(msg)
             } catch (e: javax.crypto.AEADBadTagException) {
                 _backupStatus.value = BackupStatus.Error("Wrong password")

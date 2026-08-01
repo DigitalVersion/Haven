@@ -195,6 +195,8 @@
     <string name="settings_backup_confirm_password_label">Confirm password</string>
     <string name="settings_backup_export_button">Export</string>
     <string name="settings_backup_restore_button">Restore</string>
+    <string name="settings_backup_restore_mirror_label">Also delete connections not in this backup</string>
+    <string name="settings_backup_restore_mirror_description">Removes any saved connection whose ID isn\'t in this file. SSH keys, groups, and other settings are left untouched.</string>
 
     <!-- About dialog -->
     <string name="settings_about_dialog_title">About Haven</string>

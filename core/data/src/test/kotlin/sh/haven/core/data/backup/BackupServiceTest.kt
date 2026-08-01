@@ -286,6 +286,77 @@ class BackupServiceTest {
         assertEquals(true, imported.vncSshForward) // default
     }
 
+    // -- Mirror-mode restore (opt-in, deletes stale connections) --
+
+    @Test
+    fun `mirror restore deletes connections not in the backup`() = runTest {
+        val keep = ConnectionProfile(id = "conn-keep", label = "Keep", host = "h", username = "u")
+        val stale1 = ConnectionProfile(id = "conn-stale-1", label = "Stale 1", host = "h", username = "u")
+        val stale2 = ConnectionProfile(id = "conn-stale-2", label = "Stale 2", host = "h", username = "u")
+
+        // Backup was taken when only `keep` existed...
+        coEvery { connectionRepository.getAll() } returns listOf(keep)
+        coEvery { sshKeyDao.getAll() } returns emptyList()
+        coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
+        coEvery { knownHostDao.getAll() } returns emptyList()
+        coEvery { portForwardRuleDao.getAll() } returns emptyList()
+        val encrypted = service.export("pw")
+
+        // ...but by the time it's restored, the device has accumulated two more
+        // connections the backup never saw (the #47-vs-13 drift scenario).
+        coEvery { connectionRepository.getAll() } returns listOf(keep, stale1, stale2)
+
+        val result = service.import(encrypted, "pw", mirrorConnections = true)
+
+        coVerify(exactly = 1) { connectionRepository.delete("conn-stale-1") }
+        coVerify(exactly = 1) { connectionRepository.delete("conn-stale-2") }
+        coVerify(exactly = 0) { connectionRepository.delete("conn-keep") }
+        assertEquals(2, result.prunedCount)
+    }
+
+    @Test
+    fun `plain restore (mirror off) never deletes connections`() = runTest {
+        val keep = ConnectionProfile(id = "conn-keep", label = "Keep", host = "h", username = "u")
+        val stale = ConnectionProfile(id = "conn-stale", label = "Stale", host = "h", username = "u")
+
+        coEvery { connectionRepository.getAll() } returns listOf(keep)
+        coEvery { sshKeyDao.getAll() } returns emptyList()
+        coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
+        coEvery { knownHostDao.getAll() } returns emptyList()
+        coEvery { portForwardRuleDao.getAll() } returns emptyList()
+        val encrypted = service.export("pw")
+
+        coEvery { connectionRepository.getAll() } returns listOf(keep, stale)
+
+        // Default (no mirrorConnections arg) — must match today's merge-only behaviour.
+        val result = service.import(encrypted, "pw")
+
+        coVerify(exactly = 0) { connectionRepository.delete(any()) }
+        assertEquals(0, result.prunedCount)
+    }
+
+    @Test
+    fun `mirror restore is a no-op when the backup carries no connections section`() = runTest {
+        // Hand-built backup with no "connections" key at all (e.g. a
+        // malformed/partial file) — mirror mode must never treat an absent
+        // section as "the truth is zero connections" and wipe everything.
+        val plainJson = JSONObject().apply {
+            put("version", 2)
+            put("created", 1700000000000L)
+        }
+        val encrypted = encryptLegacy(plainJson.toString().toByteArray(Charsets.UTF_8), "pw")
+
+        coEvery { connectionRepository.getAll() } returns listOf(
+            ConnectionProfile(id = "conn-a", label = "A", host = "h", username = "u"),
+            ConnectionProfile(id = "conn-b", label = "B", host = "h", username = "u"),
+        )
+
+        val result = service.import(encrypted, "pw", mirrorConnections = true)
+
+        coVerify(exactly = 0) { connectionRepository.delete(any()) }
+        assertEquals(0, result.prunedCount)
+    }
+
     // -- SSH key roundtrip --
 
     @Test

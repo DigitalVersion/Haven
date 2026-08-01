@@ -46,8 +46,13 @@ class BackupSyncManager @Inject constructor(
     }
 
     /** Read [remotePath] from [profileId], decrypt, and restore it. */
-    suspend fun pull(profileId: String, remotePath: String, password: String): BackupService.BackupResult {
+    suspend fun pull(
+        profileId: String,
+        remotePath: String,
+        password: String,
+        mirrorConnections: Boolean = false,
+    ): BackupService.BackupResult {
         val data = remoteBackupIo.readBackup(profileId, remotePath)
-        return backupService.import(data, password)
+        return backupService.import(data, password, mirrorConnections)
     }
 }

@@ -1794,8 +1794,9 @@ fun SettingsScreen(
                 else -> null
             },
             initialPassword = backupSyncPassphrase ?: "",
+            showMirrorOption = action is BackupAction.Restore,
             onDismiss = { showBackupPasswordDialog = null },
-            onConfirm = { password, remember ->
+            onConfirm = { password, remember, mirrorConnections ->
                 showBackupPasswordDialog = null
                 when (action) {
                     is BackupAction.Export -> {
@@ -1808,7 +1809,7 @@ fun SettingsScreen(
                         } else {
                             viewModel.clearBackupSyncPassphrase()
                         }
-                        viewModel.importBackup(action.uri, password)
+                        viewModel.importBackup(action.uri, password, mirrorConnections)
                     }
                     is BackupAction.PushRemote -> {
                         viewModel.pushBackupToRemote(password)
@@ -2150,14 +2151,20 @@ private fun BackupSyncDialog(
 private fun BackupPasswordDialog(
     isExport: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (String, Boolean) -> Unit,
+    onConfirm: (String, Boolean, Boolean) -> Unit,
     titleOverride: String? = null,
     descriptionOverride: String? = null,
     initialPassword: String = "",
+    showMirrorOption: Boolean = false,
 ) {
     var password by remember(initialPassword) { mutableStateOf(initialPassword) }
     var confirmPassword by remember { mutableStateOf("") }
     var rememberPassword by remember(initialPassword) { mutableStateOf(initialPassword.isNotEmpty()) }
+    // Opt-in, off by default (#restore-mirror): a plain Restore only ever adds/
+    // updates connections from the file, it never removes ones the device
+    // already has. This lets the user explicitly ask for the file's
+    // connection list to become authoritative instead.
+    var mirrorConnections by remember { mutableStateOf(false) }
     val title = titleOverride
         ?: stringResource(if (isExport) R.string.settings_backup_export_dialog_title else R.string.settings_backup_restore_dialog_title)
     val passwordError = if (isExport && password.length in 1..5) stringResource(R.string.settings_backup_password_min_length) else null
@@ -2219,11 +2226,39 @@ private fun BackupPasswordDialog(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    if (showMirrorOption) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { mirrorConnections = !mirrorConnections }
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Checkbox(
+                                checked = mirrorConnections,
+                                onCheckedChange = { mirrorConnections = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.settings_backup_restore_mirror_label),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        if (mirrorConnections) {
+                            Text(
+                                text = stringResource(R.string.settings_backup_restore_mirror_description),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(start = 40.dp, end = 8.dp),
+                            )
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(password, rememberPassword) }, enabled = canConfirm) {
+            TextButton(onClick = { onConfirm(password, rememberPassword, mirrorConnections) }, enabled = canConfirm) {
                 Text(stringResource(if (isExport) R.string.settings_backup_export_button else R.string.settings_backup_restore_button))
             }
         },
