@@ -1,6 +1,7 @@
 package sh.haven.core.data.backup
 
 import android.util.Base64
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.flow.first
@@ -57,8 +58,10 @@ class BackupService @Inject constructor(
         json.put("created", System.currentTimeMillis())
 
         // Connections (decrypted — backup file has its own encryption layer)
+        val allConnections = connectionRepository.getAll()
+        val connectionIds = allConnections.map { it.id }.toSet()
         val connections = JSONArray()
-        connectionRepository.getAll().forEach { p ->
+        allConnections.forEach { p ->
             connections.put(JSONObject().apply {
                 put("id", p.id)
                 put("label", p.label)
@@ -219,9 +222,15 @@ class BackupService @Inject constructor(
         }
         json.put("knownHosts", hosts)
 
-        // Port forward rules
+        // Port forward rules. Filter to rows whose parent connection is actually in this export —
+        // the FK's ON DELETE CASCADE should already keep orphans out of the table, but a live device
+        // was found with 2 rows surviving under a deleted profileId (root cause of #restore-error-
+        // visibility's real "98 items (2 errors)" case) — exporting them produces an unrestorable
+        // backup that fails FOREIGN KEY constraint on import. Filtering here means the export is
+        // never worse than what a fresh restore can actually reconstruct, regardless of how a stray
+        // row got created.
         val forwards = JSONArray()
-        portForwardRuleDao.getAll().forEach { r ->
+        portForwardRuleDao.getAll().filter { it.profileId in connectionIds }.forEach { r ->
             forwards.put(JSONObject().apply {
                 put("id", r.id)
                 put("profileId", r.profileId)
@@ -539,6 +548,14 @@ class BackupService @Inject constructor(
             }
         }
 
+        // Was computed but silently dropped before (#restore-error-visibility): the caller
+        // (SettingsViewModel) only ever showed errors.size in a toast, never the actual reasons,
+        // so a "98 items (2 errors)" result had no way to say WHICH 2 items or WHY. Every
+        // individual message is already labelled by section+index (see the catch blocks above),
+        // so this alone is enough to diagnose future restores from logcat.
+        if (errors.isNotEmpty()) {
+            Log.w(TAG, "import() completed with ${errors.size} error(s): ${errors.joinToString("; ")}")
+        }
         return BackupResult(count, errors)
     }
 
@@ -582,6 +599,8 @@ class BackupService @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "BackupService"
+
         // v2 (2026-04-21): add tunnels section (WireGuard / Tailscale) and the
         // 13 ConnectionProfile fields the v1 schema silently dropped. Files
         // keep the original HAVEN_BACKUP_V1 magic header because the envelope
