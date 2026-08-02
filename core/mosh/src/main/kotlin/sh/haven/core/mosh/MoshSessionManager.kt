@@ -42,17 +42,32 @@ class MoshSessionManager @Inject constructor(
     var onSessionDied: ((profileId: String, sessionId: String) -> Unit)? = null
 
     /**
-     * Whether the device currently has a network that is validated for internet
-     * access. Used to gate the transport's #421 dead-session escalation, so a
+     * Whether the device currently has a network capable of carrying our
+     * traffic. Used to gate the transport's #421 dead-session escalation, so a
      * genuinely offline phone still resumes its session on return (the #92
      * regression) and only an online-but-silent session is given up on.
+     *
+     * Deliberately does NOT require [android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED]:
+     * that flag reflects Android's own connectivity-check probe (an HTTP request
+     * to a Google/carrier endpoint) succeeding on the *active* network, which is
+     * a stricter and slower condition than "can this app reach its own server."
+     * A Tailscale/WireGuard-routed connection — the exact case Mosh-over-VPN is
+     * built for — can sit un-validated indefinitely (captive-portal detection
+     * quirks, a validation probe blocked while the tunnel itself works fine,
+     * or the OS simply never re-running the check), which silently disabled the
+     * #421 escape hatch forever: [hasNetwork] stayed false, so
+     * [sh.haven.mosh.transport.MoshTransport.shouldDeclareDead] could never
+     * fire, so the "No server contact — retrying" banner counted up with no
+     * ceiling and no path back except the user manually closing the tab. Only
+     * [android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET] is required —
+     * it still correctly reports false when the phone has no active network at
+     * all (`activeNetwork` is null in airplane mode / no signal), which is the
+     * actual condition #92 needed to guard against.
      */
     internal fun hasNetwork(): Boolean = try {
         val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
         val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
-        caps != null &&
-            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
     } catch (e: Exception) {
         // Treat an unreadable connectivity state as "offline" so we fall back to
         // the conservative never-give-up behaviour rather than killing a session.
