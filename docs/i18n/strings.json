@@ -16456,6 +16456,31 @@
       "ru": "Подключиться",
       "zh": "连接"
      }
+    },
+    {
+     "name": "connections_deeplink_create_confirm_title",
+     "en": "Create connection?",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "connections_deeplink_create_confirm_message",
+     "en": "A link wants to create “%1$s” (%2$s) using key “%3$s” and connect.",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [
+      "%1$s",
+      "%2$s",
+      "%3$s"
+     ],
+     "t": {}
+    },
+    {
+     "name": "connections_deeplink_create_confirm_connect",
+     "en": "Create &amp; Connect",
+     "comment": "#210 i18n sweep: VM-setup copy toasts and code-block copy action.",
+     "args": [],
+     "t": {}
     }
    ]
   },
