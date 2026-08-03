@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.InstallMobile
@@ -1259,6 +1260,7 @@ fun SettingsScreen(
             val syncCandidates by viewModel.backupSyncCandidates.collectAsState()
             val syncProfileId by viewModel.backupSyncProfileId.collectAsState()
             val syncPath by viewModel.backupSyncPath.collectAsState()
+            val syncPassphrase by viewModel.backupSyncPassphrase.collectAsState()
             val destLabel = syncCandidates.firstOrNull { it.first == syncProfileId }?.second
             SettingsItem(
                 icon = Icons.Filled.Sync,
@@ -1269,6 +1271,24 @@ fun SettingsScreen(
                     stringResource(R.string.settings_backup_sync_subtitle_unset)
                 },
                 onClick = { showBackupSyncDialog = true },
+            )
+            // One-tap pull with the already-saved destination + passphrase — the
+            // "Sync to a remote" row above requires opening its full config
+            // dialog just to reach the Pull button every time. Falls back to
+            // that same dialog when destination or passphrase isn't saved yet,
+            // rather than failing silently (Batin 2026-08-03).
+            SettingsItem(
+                icon = Icons.Filled.CloudSync,
+                title = stringResource(R.string.settings_backup_sync_now_title),
+                subtitle = stringResource(R.string.settings_backup_sync_now_subtitle),
+                onClick = {
+                    val savedPassphrase = syncPassphrase
+                    if (syncProfileId != null && !savedPassphrase.isNullOrEmpty()) {
+                        viewModel.pullBackupFromRemote(savedPassphrase)
+                    } else {
+                        showBackupSyncDialog = true
+                    }
+                },
             )
         }
 

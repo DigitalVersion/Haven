@@ -25907,6 +25907,20 @@
      }
     },
     {
+     "name": "settings_backup_sync_now_title",
+     "en": "Sync now",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_sync_now_subtitle",
+     "en": "Pull the latest backup using the saved destination and passphrase — opens setup above if either isn\\'t saved yet",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "settings_backup_sync_description",
      "en": "Push or pull the encrypted backup to a connection you already have. The file is AES-256-GCM encrypted with your passphrase before it leaves the device — the remote never sees your config in the clear.",
      "comment": "Backup section",
