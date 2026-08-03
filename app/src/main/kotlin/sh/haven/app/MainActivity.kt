@@ -357,13 +357,15 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Parse a `haven://connect?host=…&user=…&port=…&transport=…&session=…`
-     * deep link (#305) and re-publish a connect/prefill command onto the UI
-     * bus. A host matching exactly one saved profile connects (routed through
-     * a confirm in ConnectionsViewModel, since a BROWSABLE link can be fired
-     * by a web page); no/ambiguous match opens the New-Connection editor
-     * pre-filled. The saved-profile lookup is async (Room), which also defers
-     * the emit past `setContent` so the always-composed ConnectionsViewModel
-     * is collecting by the time it lands.
+     * deep link (#305) and re-publish a connect/create/prefill command onto
+     * the UI bus. A host matching exactly one saved profile connects
+     * immediately (single-user personal device — see ConnectionsViewModel);
+     * no match but a `keyId` already present on this device (via
+     * [sshKeyRepository]) builds-and-connects a new profile, gated behind a
+     * one-tap confirm since a BROWSABLE link can be fired by a web page;
+     * otherwise the New-Connection editor opens pre-filled. The lookups are
+     * async (Room), which also defers the emit past `setContent` so the
+     * always-composed ConnectionsViewModel is collecting by the time it lands.
      */
     private fun handleConnectDeepLink(intent: Intent?) {
         val data = intent?.data ?: return
@@ -372,7 +374,12 @@ class MainActivity : AppCompatActivity() {
         intent.data = null
         Log.d("MainActivity", "connect deep link host=${params.host} transport=${params.transport}")
         MainScope().launch {
-            agentUiCommandBus.emit(ConnectDeepLink.resolve(connectionRepository.getAll(), params))
+            val profiles = connectionRepository.getAll()
+            // Resolved once, synchronously, up front — resolve()'s keyExists
+            // param stays a plain lambda (no coroutines) so ConnectDeepLink
+            // keeps its pure-JVM-testable shape.
+            val keyExists = params.keyId?.let { sshKeyRepository.getById(it) != null } ?: false
+            agentUiCommandBus.emit(ConnectDeepLink.resolve(profiles, params, keyExists = { keyExists }))
         }
     }
 

@@ -390,6 +390,10 @@ fun HavenNavHost(
                     // haven://connect with no saved match: open the New
                     // Connection editor (on the Connections tab) pre-filled.
                     Screen.Connections
+                is sh.haven.core.data.agent.AgentUiCommand.CreateAndConnectFromDeepLink ->
+                    // haven://connect with no saved match but a usable keyId:
+                    // show the Connections tab for the create-confirm sheet.
+                    Screen.Connections
                 is sh.haven.core.data.agent.AgentUiCommand.AnswerAuthPrompt ->
                     // Answering the password/passphrase fallback re-drives the
                     // connect — same as ConnectProfile, show the Connections tab.

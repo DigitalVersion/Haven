@@ -215,6 +215,27 @@ sealed class AgentUiCommand {
     ) : AgentUiCommand()
 
     /**
+     * Build, save, and connect a new profile from a `haven://connect` deep
+     * link whose host matched no saved profile, but which carried a
+     * [keyId] referencing a key already on this device (#305 follow-up).
+     * Because the link can't smuggle credential material — only point at a
+     * key the user separately trusted onto the device — this still runs
+     * through a one-tap confirm in [ConnectionsViewModel] before the profile
+     * is persisted, for the same drive-by-link reason as [ConnectFromDeepLink].
+     * [transport] is one of `ssh` / `mosh` / `et`.
+     */
+    data class CreateAndConnectFromDeepLink(
+        val host: String,
+        val username: String,
+        val port: Int,
+        val transport: String,
+        val session: String?,
+        val command: String?,
+        val keyId: String,
+        val label: String,
+    ) : AgentUiCommand()
+
+    /**
      * Answer the password / key-passphrase prompt currently shown by
      * ConnectionsViewModel (its `_passwordFallback` dialog): supply the secret
      * a human would type, then re-drive the stalled connect through the same
