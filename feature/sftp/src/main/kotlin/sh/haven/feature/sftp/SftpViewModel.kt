@@ -37,6 +37,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import sh.haven.core.data.db.entities.ConnectionLog
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.preferences.UserPreferencesRepository
@@ -4809,6 +4810,22 @@ class SftpViewModel @Inject constructor(
                 // SftpSession.home(); when SFTP is unavailable (SCP-only
                 // servers) we shell out to `echo "$HOME"` over exec instead.
                 // Fall back to "/" as a last resort.
+                // Files tab opened right after tapping Terminal connect (or the
+                // Connections-list Files icon reusing a just-started session,
+                // #agy8-repro): the SSH/ET handshake may still be CONNECTING,
+                // and openSftpSession() only reuses a session already
+                // CONNECTED. Failing fast here surfaced a scary "Session not
+                // connected" for what a moment later — after a manual Refresh
+                // re-ran this same function — turned out to be a live
+                // session. Wait briefly for the handshake to resolve (either
+                // way) before falling through to the existing fallback chain.
+                withTimeoutOrNull(5_000) {
+                    sessionManager.sessions.first { sessions ->
+                        sessions.values.filter { it.profileId == profileId }
+                            .let { forProfile -> forProfile.isEmpty() || forProfile.any { it.status != SessionState.Status.CONNECTING } }
+                    }
+                }
+
                 val home: String = withContext(Dispatchers.IO) {
                     var sftpSessionForHome = sessionManager.openSftpSession(profileId)
                         ?: openMoshSftpSession(profileId)
