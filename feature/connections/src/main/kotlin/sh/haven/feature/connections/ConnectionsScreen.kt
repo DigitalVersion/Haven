@@ -161,6 +161,7 @@ fun ConnectionsScreen(
     // composed (fixes Retry / connect_profile reliability, #121).
     onNavigateToSmb: (profileId: String) -> Unit = {},
     onNavigateToRclone: (profileId: String) -> Unit = {},
+    onNavigateToSftp: (profileId: String) -> Unit = {},
     onNavigateToEmail: (profileId: String) -> Unit = {},
     onNavigateToWayland: () -> Unit = {},
     onNavigateToConnections: () -> Unit = {},
@@ -196,6 +197,14 @@ fun ConnectionsScreen(
     }
     // (showDesktopsScreen removed in 3c — Desktops UI moved to top-level Desktop tab.)
     val profileStatuses by viewModel.profileStatuses.collectAsState()
+    val filesStatuses by viewModel.filesStatuses.collectAsState()
+    val onOpenFiles = { profile: ConnectionProfile ->
+        val currentStatus = filesStatuses[profile.id]
+        if (currentStatus != ProfileStatus.CONNECTED) {
+            viewModel.connectFiles(profile)
+        }
+        onNavigateToSftp(profile.id)
+    }
     val mcpExposure by viewModel.mcpExposure.collectAsState()
     val agentActiveProfiles by viewModel.agentActiveProfiles.collectAsState()
     val sessions by viewModel.sessions.collectAsState()
@@ -1338,6 +1347,7 @@ fun ConnectionsScreen(
                                     indent = 0,
                                     isLastChild = false,
                                     profileStatuses = profileStatuses,
+                                    filesStatuses = filesStatuses,
                                     mcpExposure = mcpExposure,
                                     agentActiveProfiles = agentActiveProfiles,
                                     onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(profile.id, enabled) },
@@ -1347,6 +1357,7 @@ fun ConnectionsScreen(
                                     hasKeys = sshKeys.isNotEmpty(),
                                     hasDependents = profile.id in dependentsByParent,
                                     jumpHostLabel = profile.jumpProfileId?.let { profileMap[it]?.label },
+                                    onOpenFiles = onOpenFiles,
                                     onTap = {
                                         val id = effectiveIdentityFor(profile, groupMap, identities)
                                         onTapProfile(
@@ -1459,6 +1470,7 @@ fun ConnectionsScreen(
                                         indent = depIndent,
                                         isLastChild = isLastAtLevel,
                                         profileStatuses = profileStatuses,
+                                        filesStatuses = filesStatuses,
                                         mcpExposure = mcpExposure,
                                         agentActiveProfiles = agentActiveProfiles,
                                         onToggleMcp = { enabled -> viewModel.toggleMcpEnabled(dep.id, enabled) },
@@ -1468,6 +1480,7 @@ fun ConnectionsScreen(
                                         hasKeys = sshKeys.isNotEmpty(),
                                         hasDependents = dep.id in dependentsByParent,
                                         jumpHostLabel = null,
+                                        onOpenFiles = onOpenFiles,
                                         onTap = {
                                             val id = effectiveIdentityFor(dep, groupMap, identities)
                                             onTapProfile(
@@ -1643,7 +1656,9 @@ private fun ConnectionTreeItem(
     indent: Int,
     isLastChild: Boolean,
     profileStatuses: Map<String, ProfileStatus>,
+    filesStatuses: Map<String, ProfileStatus> = emptyMap(),
     mcpExposure: Map<String, McpExposureKind>,
+    onOpenFiles: (ConnectionProfile) -> Unit = {},
     agentActiveProfiles: Map<String, Long>,
     onToggleMcp: (Boolean) -> Unit,
     profileColors: Map<String, Color>,
@@ -1864,16 +1879,28 @@ private fun ConnectionTreeItem(
                     }
                 },
                 trailingContent = {
-                    // The single per-connection MCP element (the old "carries the MCP
-                    // endpoint" badge was dropped in favour of robot-only): a tri-state
-                    // robot — hidden when the agent has never used this connection, a
-                    // slashed grey robot when MCP is disabled for it, and red-eyed while
-                    // the agent is operating on it. Tap toggles MCP access.
-                    ConnectionMcpIndicator(
-                        lastActiveAt = agentActiveProfiles[profile.id],
-                        mcpEnabled = profile.mcpEnabled,
-                        onToggle = { onToggleMcp(!profile.mcpEnabled) },
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (profile.isSsh) {
+                            FilesStatusButton(
+                                status = filesStatuses[profile.id],
+                                isConnecting = isConnecting && filesStatuses[profile.id] == ProfileStatus.CONNECTING,
+                                onClick = { onOpenFiles(profile) },
+                            )
+                        }
+                        // The single per-connection MCP element (the old "carries the MCP
+                        // endpoint" badge was dropped in favour of robot-only): a tri-state
+                        // robot — hidden when the agent has never used this connection, a
+                        // slashed grey robot when MCP is disabled for it, and red-eyed while
+                        // the agent is operating on it. Tap toggles MCP access.
+                        ConnectionMcpIndicator(
+                            lastActiveAt = agentActiveProfiles[profile.id],
+                            mcpEnabled = profile.mcpEnabled,
+                            onToggle = { onToggleMcp(!profile.mcpEnabled) },
+                        )
+                    }
                 },
                 modifier = Modifier
                     .weight(1f)
@@ -2470,4 +2497,42 @@ private fun GroupIdentityDialog(
             TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) }
         },
     )
+}
+
+/**
+ * Folder icon in a tree row's trailing content: tap connects (if needed) and
+ * navigates to the Files/SFTP tab for that profile. Color reflects the Files
+ * transport's own status (separate from the row's SSH terminal status).
+ */
+@Composable
+private fun FilesStatusButton(
+    status: ProfileStatus?,
+    isConnecting: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.size(36.dp),
+    ) {
+        if (isConnecting || status == ProfileStatus.CONNECTING || status == ProfileStatus.RECONNECTING) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            val color = when (status) {
+                ProfileStatus.CONNECTED -> Color(0xFF4CAF50)
+                ProfileStatus.ERROR -> Color(0xFFF44336)
+                else -> MaterialTheme.colorScheme.outline
+            }
+            Icon(
+                imageVector = Icons.Filled.Folder,
+                contentDescription = "Files Status",
+                tint = color,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
 }
