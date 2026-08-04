@@ -564,9 +564,18 @@ class ConnectionsViewModel @Inject constructor(
         viewModelScope.launch { repository.updateMcpEnabled(profileId, enabled) }
     }
 
-    /** Silent connect for Files/SFTP channel. */
+    /**
+     * Silent connect for Files/SFTP channel. No-ops when a Terminal (or an
+     * existing Files) session for this profile is already CONNECTED — the
+     * SSH connection multiplexes an SFTP channel on top of an already
+     * authenticated session ([SshSessionManager.openSftpSession] already does
+     * this reuse for the main Files tab); dialing a second, independent
+     * session here was the actual cause of "Files needs its own connect"
+     * even when Terminal was live.
+     */
     fun connectFiles(profile: ConnectionProfile) {
         if (!profile.isSsh) return
+        if (sshSessionManager.isProfileConnected(profile.id)) return
         viewModelScope.launch {
             _connectingProfileId.value = profile.id
             try {
@@ -744,11 +753,20 @@ class ConnectionsViewModel @Inject constructor(
             result.toMap()
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    /** Derive Files-specific statuses for the connections list UI. */
+    /**
+     * Derive Files-specific statuses for the connections list UI. A live
+     * Terminal (INTERACTIVE) session counts as Files-ready too — the SSH
+     * connection multiplexes an SFTP channel on top of it (same reuse
+     * [SshSessionManager.openSftpSession] does for the main Files tab), so
+     * this icon shouldn't demand its own separate connect.
+     */
     val filesStatuses: StateFlow<Map<String, ProfileStatus>> = sshSessionManager.sessions
         .map { sshMap ->
             val result = mutableMapOf<String, ProfileStatus>()
-            sshMap.values.filter { it.purpose == SshSessionManager.SessionState.SessionPurpose.FILES }
+            sshMap.values.filter {
+                it.purpose == SshSessionManager.SessionState.SessionPurpose.FILES ||
+                    it.purpose == SshSessionManager.SessionState.SessionPurpose.INTERACTIVE
+            }
                 .groupBy { it.profileId }
                 .forEach { (profileId, states) ->
                     val statuses = states.map { it.status }
