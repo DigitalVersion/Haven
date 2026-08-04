@@ -99,6 +99,45 @@ class BackupServiceTest {
         assertTrue(result.errors.isEmpty())
     }
 
+    // -- replaceConnections (#backup-replace) --
+    //
+    // Default import() is a merge/upsert: a backup with 0 connections leaves
+    // every existing local connection/group untouched, since there's
+    // nothing in the file to upsert against. replaceConnections=true wipes
+    // local connections/groups first so the device ends up with EXACTLY
+    // what the file has — a real restore.
+
+    @Test
+    fun `import with replaceConnections=false never touches deleteAll (default merge)`() = runTest {
+        coEvery { connectionRepository.getAll() } returns emptyList()
+        coEvery { sshKeyDao.getAll() } returns emptyList()
+        coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
+        coEvery { knownHostDao.getAll() } returns emptyList()
+        coEvery { portForwardRuleDao.getAll() } returns emptyList()
+
+        val encrypted = service.export("pw")
+        service.import(encrypted, "pw")
+
+        coVerify(exactly = 0) { connectionDao.deleteAll() }
+        coVerify(exactly = 0) { connectionGroupDao.deleteAll() }
+    }
+
+    @Test
+    fun `import with replaceConnections=true wipes connections and groups before restoring`() = runTest {
+        coEvery { connectionRepository.getAll() } returns emptyList()
+        coEvery { sshKeyDao.getAll() } returns emptyList()
+        coEvery { sshKeyRepository.getAllDecrypted() } returns emptyList()
+        coEvery { knownHostDao.getAll() } returns emptyList()
+        coEvery { portForwardRuleDao.getAll() } returns emptyList()
+
+        val encrypted = service.export("pw")
+        val result = service.import(encrypted, "pw", replaceConnections = true)
+
+        coVerify(exactly = 1) { connectionDao.deleteAll() }
+        coVerify(exactly = 1) { connectionGroupDao.deleteAll() }
+        assertTrue(result.errors.isEmpty())
+    }
+
     @Test
     fun `float preferences survive export-import as Float, not Int (#323 brick)`() = runTest {
         coEvery { connectionRepository.getAll() } returns emptyList()

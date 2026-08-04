@@ -262,12 +262,27 @@ class BackupService @Inject constructor(
         return encrypt(json.toString().toByteArray(Charsets.UTF_8), password)
     }
 
-    suspend fun import(data: ByteArray, password: String): BackupResult {
+    /**
+     * @param replaceConnections When true, every local connection and group
+     * is deleted before this backup's connections/groups are written, so the
+     * device ends up with EXACTLY what the file has (a real restore) instead
+     * of the default merge/upsert (which only ever adds/updates — a backup
+     * with 0 connections leaves every existing local card untouched, since
+     * there's nothing in the file to upsert against). Default false so the
+     * unattended [sh.haven.app.backup.BackupAutoPullWorker] path keeps its
+     * existing merge behavior unless a caller opts in explicitly.
+     */
+    suspend fun import(data: ByteArray, password: String, replaceConnections: Boolean = false): BackupResult {
         val plaintext = decrypt(data, password)
         val json = JSONObject(String(plaintext, Charsets.UTF_8))
         val version = json.optInt("version", 1)
         if (version > BACKUP_VERSION) {
             return BackupResult(0, listOf("Backup version $version is newer than supported ($BACKUP_VERSION)"))
+        }
+
+        if (replaceConnections) {
+            connectionDao.deleteAll()
+            connectionGroupDao.deleteAll()
         }
 
         var count = 0

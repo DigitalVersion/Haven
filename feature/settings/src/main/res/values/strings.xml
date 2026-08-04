@@ -155,6 +155,8 @@
     <string name="settings_backup_auto_pull_interval_6h">6 hours</string>
     <string name="settings_backup_auto_pull_interval_24h">24 hours</string>
     <string name="settings_backup_remember_password_label">Remember this password</string>
+    <string name="settings_backup_replace_all_label">Replace all connections</string>
+    <string name="settings_backup_replace_all_description">Delete every existing connection and group first, so the app ends up with exactly what\'s in this backup — not just merged in.</string>
     <string name="settings_export_backup_title">Export backup</string>
     <string name="settings_export_backup_subtitle">Keys, connections, and settings</string>
     <string name="settings_restore_backup_title">Restore backup</string>

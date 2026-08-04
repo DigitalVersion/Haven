@@ -1816,8 +1816,9 @@ fun SettingsScreen(
                 else -> null
             },
             initialPassword = backupSyncPassphrase ?: "",
+            showReplaceOption = action is BackupAction.Restore || action is BackupAction.PullRemote,
             onDismiss = { showBackupPasswordDialog = null },
-            onConfirm = { password, remember ->
+            onConfirm = { password, remember, replaceAll ->
                 showBackupPasswordDialog = null
                 when (action) {
                     is BackupAction.Export -> {
@@ -1830,7 +1831,7 @@ fun SettingsScreen(
                         } else {
                             viewModel.clearBackupSyncPassphrase()
                         }
-                        viewModel.importBackup(action.uri, password)
+                        viewModel.importBackup(action.uri, password, replaceAll)
                     }
                     is BackupAction.PushRemote -> {
                         viewModel.pushBackupToRemote(password)
@@ -1841,7 +1842,7 @@ fun SettingsScreen(
                         } else {
                             viewModel.clearBackupSyncPassphrase()
                         }
-                        viewModel.pullBackupFromRemote(password)
+                        viewModel.pullBackupFromRemote(password, replaceAll)
                     }
                     is BackupAction.EnableAutoSync -> {
                         viewModel.setBackupAutoSync(true, password)
@@ -2172,14 +2173,22 @@ private fun BackupSyncDialog(
 private fun BackupPasswordDialog(
     isExport: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (String, Boolean) -> Unit,
+    onConfirm: (String, Boolean, Boolean) -> Unit,
     titleOverride: String? = null,
     descriptionOverride: String? = null,
     initialPassword: String = "",
+    /**
+     * Restore/Pull only: offers "Replace all connections" — wipes every
+     * local connection+group before writing the backup's, instead of the
+     * default merge (which only ever adds/updates, so a near-empty backup
+     * silently leaves every existing card untouched).
+     */
+    showReplaceOption: Boolean = false,
 ) {
     var password by remember(initialPassword) { mutableStateOf(initialPassword) }
     var confirmPassword by remember { mutableStateOf("") }
     var rememberPassword by remember(initialPassword) { mutableStateOf(initialPassword.isNotEmpty()) }
+    var replaceAll by remember { mutableStateOf(false) }
     val title = titleOverride
         ?: stringResource(if (isExport) R.string.settings_backup_export_dialog_title else R.string.settings_backup_restore_dialog_title)
     val passwordError = if (isExport && password.length in 1..5) stringResource(R.string.settings_backup_password_min_length) else null
@@ -2241,11 +2250,37 @@ private fun BackupPasswordDialog(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    if (showReplaceOption) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { replaceAll = !replaceAll }
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Checkbox(
+                                checked = replaceAll,
+                                onCheckedChange = { replaceAll = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = stringResource(R.string.settings_backup_replace_all_label),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = stringResource(R.string.settings_backup_replace_all_description),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(password, rememberPassword) }, enabled = canConfirm) {
+            TextButton(onClick = { onConfirm(password, rememberPassword, replaceAll) }, enabled = canConfirm) {
                 Text(stringResource(if (isExport) R.string.settings_backup_export_button else R.string.settings_backup_restore_button))
             }
         },

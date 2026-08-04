@@ -32,6 +32,10 @@ interface ConnectionDao {
     @Query("DELETE FROM connection_profiles WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    /** Full-replace restore (#backup-replace): wipes every connection, cascading port-forward rules with it. */
+    @Query("DELETE FROM connection_profiles")
+    suspend fun deleteAll()
+
     @Query("UPDATE connection_profiles SET lastConnected = :timestamp WHERE id = :id")
     suspend fun updateLastConnected(id: String, timestamp: Long = System.currentTimeMillis())
 

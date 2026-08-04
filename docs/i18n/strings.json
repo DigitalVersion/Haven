@@ -26647,6 +26647,20 @@
      }
     },
     {
+     "name": "settings_backup_replace_all_label",
+     "en": "Replace all connections",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "settings_backup_replace_all_description",
+     "en": "Delete every existing connection and group first, so the app ends up with exactly what\\'s in this backup — not just merged in.",
+     "comment": "Backup section",
+     "args": [],
+     "t": {}
+    },
+    {
      "name": "settings_export_backup_title",
      "en": "Export backup",
      "comment": "Backup section",
