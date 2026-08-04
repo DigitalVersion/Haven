@@ -230,10 +230,12 @@ fun ConnectionsScreen(
     val launchingDesktop by viewModel.launchingDesktop.collectAsState()
     val error by viewModel.error.collectAsState()
     val warning by viewModel.warning.collectAsState()
-    // haven://connect deep link (#305): confirm sheet for a matched profile,
-    // and a pre-fill request for the New-Connection editor on no match.
-    val connectConfirm by viewModel.connectConfirm.collectAsState()
+    // haven://connect deep link (#305): a matched profile connects straight
+    // away (no confirm — see ConnectionsViewModel), a pre-fill request opens
+    // the New-Connection editor on no match, and a create-confirm sheet
+    // gates a link that carries enough to build a brand-new profile.
     val prefillNewConnection by viewModel.prefillNewConnection.collectAsState()
+    val createConnectConfirm by viewModel.createConnectConfirm.collectAsState()
     val navigateToTerminal by viewModel.navigateToTerminal.collectAsState()
     val navigateToSmb by viewModel.navigateToSmb.collectAsState()
     val navigateToRclone by viewModel.navigateToRclone.collectAsState()
@@ -527,33 +529,32 @@ fun ConnectionsScreen(
         )
     }
 
-    // haven://connect matched a saved profile (#305): confirm before
-    // connecting, since a BROWSABLE link can be fired by a web page.
-    connectConfirm?.let { confirm ->
+    // haven://connect with no saved match but a keyId already on this device
+    // (#305 follow-up): confirm before creating + connecting a brand-new
+    // profile, since a BROWSABLE link can be fired by a web page.
+    createConnectConfirm?.let { confirm ->
         val target = confirm.profile.label.ifBlank { confirm.profile.host }
+        val keyLabel = sshKeys.find { it.id == confirm.profile.keyId }?.label ?: confirm.profile.keyId.orEmpty()
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDeepLinkConnect() },
-            title = { Text(stringResource(R.string.connections_deeplink_confirm_title)) },
+            onDismissRequest = { viewModel.dismissCreateAndConnect() },
+            title = { Text(stringResource(R.string.connections_deeplink_create_confirm_title)) },
             text = {
                 Text(
-                    if (confirm.sessionName != null) {
-                        stringResource(
-                            R.string.connections_deeplink_confirm_session,
-                            target,
-                            confirm.sessionName,
-                        )
-                    } else {
-                        stringResource(R.string.connections_deeplink_confirm_message, target)
-                    },
+                    stringResource(
+                        R.string.connections_deeplink_create_confirm_message,
+                        target,
+                        "${confirm.profile.username}@${confirm.profile.host}",
+                        keyLabel,
+                    ),
                 )
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmDeepLinkConnect() }) {
-                    Text(stringResource(R.string.connections_deeplink_confirm_connect))
+                TextButton(onClick = { viewModel.confirmCreateAndConnect() }) {
+                    Text(stringResource(R.string.connections_deeplink_create_confirm_connect))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.dismissDeepLinkConnect() }) {
+                TextButton(onClick = { viewModel.dismissCreateAndConnect() }) {
                     Text(stringResource(R.string.common_cancel))
                 }
             },

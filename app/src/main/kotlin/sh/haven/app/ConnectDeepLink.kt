@@ -10,10 +10,14 @@ import sh.haven.core.data.db.entities.ConnectionProfile
  * unit-testable on the JVM.
  *
  * Behaviour: a link identifies a host (plus optional user/port/transport).
- * If exactly one saved profile matches, we connect it (via a confirm step);
- * otherwise — no match or ambiguous — we open the New-Connection editor
- * pre-filled, since a deep link can't carry credentials and shouldn't
- * silently create a profile.
+ * If exactly one saved profile matches, we connect it; otherwise, when the
+ * link also carries a [Params.keyId] referencing a key already present on
+ * this device (so no credential material travels through the link itself),
+ * we offer to create a new profile from the link's fields and connect it —
+ * gated behind a one-tap confirm, same as the matched-profile path, since a
+ * `BROWSABLE` link can be fired by any app or web page. A link that carries
+ * neither a match nor a `keyId` falls back to the pre-filled New-Connection
+ * editor, unchanged from before.
  */
 object ConnectDeepLink {
 
@@ -27,6 +31,10 @@ object ConnectDeepLink {
         /** Optional remote command (Tin attach / clean tmux). `command` or `startupCommand` query. */
         val command: String? = null,
         val id: String? = null,
+        /** References an existing on-device key (see [ConnectDeepLink] doc) — never key material itself. */
+        val keyId: String? = null,
+        /** Display label for an auto-created profile; falls back to [host] when absent. */
+        val label: String? = null,
     )
 
     /**
@@ -46,6 +54,8 @@ object ConnectDeepLink {
             session = query("session")?.trim()?.takeIf { it.isNotEmpty() },
             command = (query("command") ?: query("startupCommand"))?.trim()?.takeIf { it.isNotEmpty() },
             id = id,
+            keyId = query("keyId")?.trim()?.takeIf { it.isNotEmpty() },
+            label = query("label")?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
 
@@ -102,15 +112,43 @@ object ConnectDeepLink {
     }
 
     /**
-     * The command to emit for [p]: connect a single matched profile, otherwise
-     * (zero or ambiguous matches) open the pre-filled New-Connection editor.
+     * Whether [p] carries enough to build a working profile without any
+     * manual edit: a host, a username, and a [Params.keyId] that [keyExists]
+     * confirms is already on this device. The key check is what keeps this
+     * from being "a link creates a profile out of thin air" — the link only
+     * ever *references* a key the user already trusted onto the device by
+     * some other, credential-carrying path (import, generate, paste).
      */
-    fun resolve(profiles: List<ConnectionProfile>, p: Params): AgentUiCommand {
+    fun canAutoCreate(p: Params, keyExists: (String) -> Boolean): Boolean =
+        p.host.isNotEmpty() && p.username != null && p.keyId != null && keyExists(p.keyId)
+
+    /**
+     * The command to emit for [p]: connect a single matched profile; else,
+     * when [canAutoCreate] holds, build-and-connect a new one (still gated by
+     * a one-tap confirm upstream, same as the matched path); else fall back
+     * to the pre-filled New-Connection editor.
+     */
+    fun resolve(
+        profiles: List<ConnectionProfile>,
+        p: Params,
+        keyExists: (String) -> Boolean = { false },
+    ): AgentUiCommand {
         val match = matches(profiles, p).singleOrNull()
-        return if (match != null) {
-            AgentUiCommand.ConnectFromDeepLink(match.id, p.session, p.command)
-        } else {
-            AgentUiCommand.PrefillNewConnection(p.host, p.username, p.port, p.transport ?: "ssh", p.session)
+        if (match != null) {
+            return AgentUiCommand.ConnectFromDeepLink(match.id, p.session, p.command)
         }
+        if (canAutoCreate(p, keyExists)) {
+            return AgentUiCommand.CreateAndConnectFromDeepLink(
+                host = p.host,
+                username = requireNotNull(p.username),
+                port = p.port ?: 22,
+                transport = p.transport ?: "ssh",
+                session = p.session,
+                command = p.command,
+                keyId = requireNotNull(p.keyId),
+                label = p.label ?: p.host,
+            )
+        }
+        return AgentUiCommand.PrefillNewConnection(p.host, p.username, p.port, p.transport ?: "ssh", p.session)
     }
 }
