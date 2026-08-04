@@ -37,6 +37,10 @@ import sh.haven.core.security.KeystoreFlag
 import sh.haven.core.security.KeystoreStore
 import sh.haven.core.security.SshKeyGenerator
 import sh.haven.core.ssh.SshCertificateParser
+import sh.haven.core.ssh.openkeychain.OpenKeychainApi
+import sh.haven.core.ssh.openkeychain.OpenKeychainClient
+import sh.haven.core.ssh.openkeychain.OpenKeychainKeyData
+import sh.haven.core.ssh.openkeychain.OpenKeychainProvider
 import sh.haven.core.ssh.SshKeyExporter
 import sh.haven.core.ssh.SshKeyImporter
 import sh.haven.core.stepca.StepCaSignFlow
@@ -79,6 +83,7 @@ class KeysViewModel @Inject constructor(
     private val stepCaConfigRepository: StepCaConfigRepository,
     private val stepCaSignFlow: StepCaSignFlow,
     private val fidoAuthenticator: sh.haven.core.fido.FidoAuthenticator,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: Context,
     private val totpSecretRepository: sh.haven.core.data.repository.TotpSecretRepository,
     private val ageIdentityRepository: sh.haven.core.data.repository.AgeIdentityRepository,
     private val sshIdentityRepository: sh.haven.core.data.repository.SshIdentityRepository,
@@ -157,21 +162,74 @@ class KeysViewModel @Inject constructor(
         viewModelScope.launch { sshIdentityRepository.delete(id) }
     }
 
+    /** How the list is sorted (#460). [KeySort.MANUAL] = the #238 order. */
+    val sortMode: StateFlow<KeySort> = preferencesRepository.keysSortMode
+        .map { KeySort.parse(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), KeySort.MANUAL)
+
+    fun setSortMode(sort: KeySort) {
+        viewModelScope.launch { preferencesRepository.setKeysSortMode(sort.name) }
+    }
+
     val keys: StateFlow<List<SshKey>> = combine(
         repository.observeAll(),
         preferencesRepository.sshKeyOrder,
-    ) { list, order ->
-        sh.haven.core.data.preferences.KeyOrdering.applyOrder(list, order) { it.id }
+        preferencesRepository.keysSortMode,
+    ) { list, order, sortName ->
+        // Manual order first, then the sort as a view on top of it (#460) —
+        // KeySort.MANUAL is the identity, so the #238 order is what shows
+        // when no sort is chosen.
+        sortKeys(
+            sh.haven.core.data.preferences.KeyOrdering.applyOrder(list, order) { it.id },
+            KeySort.parse(sortName),
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /** Move a key one step up/down in the user-defined order (#238). */
+    /**
+     * Move a key one step up/down in the user-defined order (#238).
+     *
+     * Refuses under a non-manual sort: [keys] is then a computed view, so
+     * persisting its order as the manual order would overwrite the user's
+     * arrangement with the sort's — and the move itself would be invisible.
+     * The UI hides the actions in that mode; this is the backstop.
+     */
     fun moveKey(keyId: String, up: Boolean) {
+        if (sortMode.value != KeySort.MANUAL) return
         viewModelScope.launch {
             val currentIds = keys.value.map { it.id }
             val newOrder = sh.haven.core.data.preferences.KeyOrdering.move(currentIds, keyId, up)
             if (newOrder != currentIds) preferencesRepository.setSshKeyOrder(newOrder)
         }
     }
+
+    /** Section ids the user has collapsed on this screen (#460). */
+    val collapsedSections: StateFlow<Set<String>> = preferencesRepository.keysCollapsedSections
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    fun toggleSection(id: String) {
+        viewModelScope.launch {
+            val current = collapsedSections.value
+            preferencesRepository.setKeysCollapsedSections(
+                if (id in current) current - id else current + id,
+            )
+        }
+    }
+
+    /**
+     * Ids of keys some saved connection authenticates with — so the
+     * multi-select delete confirmation can name them instead of quietly
+     * breaking those profiles (#460). Reads [ConnectionProfile.authMethodSpecs],
+     * which folds in the legacy `authType`/`keyId` pair for pre-#166 rows.
+     */
+    val keysInUse: StateFlow<Set<String>> = connectionRepository.observeAll()
+        .map { profiles ->
+            profiles.flatMap { profile ->
+                profile.authMethodSpecs
+                    .filterIsInstance<sh.haven.core.data.db.entities.ConnectionProfile.AuthMethodSpec.Key>()
+                    .mapNotNull { it.keyId?.takeIf(String::isNotBlank) }
+            }.toSet()
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
     /**
      * Per-SK-key verify-required (PIN) state, for the Keys-tab toggle. Derived
@@ -520,6 +578,65 @@ class KeysViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Apps installed right now that can hold SSH keys on Haven's behalf
+     * (#487) — OpenKeychain and anything else implementing the SSH
+     * Authentication API. Empty when none is installed, which is what hides
+     * the option rather than offering something that cannot work.
+     */
+    fun openKeychainProviders(): List<OpenKeychainProvider> = OpenKeychainApi.providers(appContext)
+
+    /**
+     * Add a key held by [providerPackage], via its own key chooser.
+     *
+     * Haven stores the public key, the provider's name for it, and enough to
+     * ask that provider for a signature later. There is no private key to
+     * store — that is the point of the feature.
+     *
+     * Silent when the user backs out of the chooser: cancelling is not an
+     * error, and saying so would be noise on a deliberate action.
+     */
+    fun addProviderKey(providerPackage: String) {
+        viewModelScope.launch {
+            try {
+                val added = withContext(Dispatchers.IO) {
+                    val client = OpenKeychainClient(appContext, providerPackage)
+                    try {
+                        val selection = client.selectKey() ?: return@withContext null
+                        val publicKey = client.fetchPublicKey(selection.keyId)
+                        val data = OpenKeychainKeyData(
+                            providerPackage = providerPackage,
+                            keyId = selection.keyId,
+                            algorithm = publicKey.algorithm,
+                            publicKeyBlob = publicKey.blob,
+                            description = selection.description,
+                        )
+                        repository.save(
+                            SshKey(
+                                label = selection.description.ifBlank { "Key in $providerPackage" },
+                                keyType = OpenKeychainKeyData.KEY_TYPE,
+                                privateKeyBytes = OpenKeychainKeyData.serialize(data),
+                                publicKeyOpenSsh = "${publicKey.algorithm} " +
+                                    java.util.Base64.getEncoder().encodeToString(publicKey.blob),
+                                fingerprintSha256 = SkKeyParser.fingerprintSha256(publicKey.blob),
+                            ),
+                        )
+                        data
+                    } finally {
+                        client.close()
+                    }
+                }
+                if (added != null) {
+                    _message.value = "Added ${added.algorithm} key from the provider"
+                    Log.d("KeysViewModel", "Provider key added: ${added.algorithm} via $providerPackage")
+                }
+            } catch (e: Exception) {
+                Log.e("KeysViewModel", "Provider key import failed", e)
+                _error.value = "Could not add the key: ${e.message}"
+            }
+        }
+    }
+
     private suspend fun saveSkKey(skData: SkKeyData, label: String = "FIDO2: ${skData.application}") {
         val entity = SshKey(
             label = label,
@@ -859,6 +976,17 @@ class KeysViewModel @Inject constructor(
     fun deleteKey(id: String) {
         viewModelScope.launch {
             repository.delete(id)
+        }
+    }
+
+    /**
+     * Delete a multi-select selection (#460). Sequential, in one coroutine —
+     * Room emits per delete, so the list shrinks a row at a time rather than
+     * all at once.
+     */
+    fun deleteKeys(ids: Set<String>) {
+        viewModelScope.launch {
+            ids.forEach { repository.delete(it) }
         }
     }
 

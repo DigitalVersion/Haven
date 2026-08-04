@@ -647,6 +647,25 @@ class DesktopViewModel @Inject constructor(
     /** Launch a discovered app in a cage window, recording it as a saved def. */
     fun launchInstalledApp(app: InstalledApp, fullscreen: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
+            // A saved def with the same label is the CONFIGURED way to run
+            // this app — a pack (or the user) may have set the command
+            // (xcb platform), multiWindow, and placement rules there. The
+            // guest .desktop scan knows none of that (its exec is the raw
+            // desktop-file command, e.g. `qmmp-1`), so launching it
+            // generically gives a broken variant of an app the user
+            // already configured — the two "Qmmp" rows behaving
+            // differently was reported as a bug. Delegate on label match.
+            val configured = preferencesRepository.appWindowDefs.first()
+                .items.find { it.label.equals(app.name, ignoreCase = true) }
+            if (configured != null) {
+                _launchingIds.update { it + configured.id }
+                try {
+                    appWindowLauncher.launch(configured)?.let { _userMessages.emit(it) }
+                } finally {
+                    _launchingIds.update { it - configured.id }
+                }
+                return@launch
+            }
             if (!desktopManager.isCageRuntimeReady()) {
                 _userMessages.emit("Installing the cage runtime (sway/wayvnc) — this can take a minute…")
                 if (!desktopManager.ensureCageRuntime()) {
@@ -1529,10 +1548,19 @@ class DesktopViewModel @Inject constructor(
                 val verboseEnabled = preferencesRepository.verboseLoggingEnabled.first()
                 val verboseBuffer = if (verboseEnabled) ConcurrentLinkedQueue<String>() else null
 
+                // Was hardcoded to the RdpSession defaults (1920x1080) with no
+                // way to change it, so a server drawing anything else had its
+                // updates discarded (#422 — VirtualBox defaults to 2560x1600
+                // and never announces a resize).
+                val rdpWidth = preferencesRepository.rdpDesktopWidth.first()
+                val rdpHeight = preferencesRepository.rdpDesktopHeight.first()
+
                 val session = RdpSession(
                     sessionId = "rdp-$tabId",
                     host = actualHost,
                     port = actualPort,
+                    width = rdpWidth,
+                    height = rdpHeight,
                     username = username,
                     password = password,
                     domain = domain,

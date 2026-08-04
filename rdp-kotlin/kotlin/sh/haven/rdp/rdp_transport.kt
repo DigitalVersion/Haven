@@ -841,6 +841,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_rdp_transport_checksum_method_pointercallback_on_pointer_position(
     ): Int
+    external fun uniffi_rdp_transport_checksum_method_rdpclient_bitmap_bridge_id(
+    ): Int
     external fun uniffi_rdp_transport_checksum_method_rdpclient_connect(
     ): Int
     external fun uniffi_rdp_transport_checksum_method_rdpclient_disconnect(
@@ -848,6 +850,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_rdp_transport_checksum_method_rdpclient_get_dirty_rects(
     ): Int
     external fun uniffi_rdp_transport_checksum_method_rdpclient_get_framebuffer(
+    ): Int
+    external fun uniffi_rdp_transport_checksum_method_rdpclient_get_framebuffer_region(
     ): Int
     external fun uniffi_rdp_transport_checksum_method_rdpclient_is_connected(
     ): Int
@@ -952,6 +956,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_rdp_transport_fn_constructor_rdpclient_new(`config`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_rdp_transport_fn_method_rdpclient_bitmap_bridge_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
     external fun uniffi_rdp_transport_fn_method_rdpclient_connect(`ptr`: Long,`host`: RustBuffer.ByValue,`port`: Short,`socksProxy`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_rdp_transport_fn_method_rdpclient_disconnect(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -959,6 +965,8 @@ internal object UniffiLib {
     external fun uniffi_rdp_transport_fn_method_rdpclient_get_dirty_rects(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_rdp_transport_fn_method_rdpclient_get_framebuffer(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_rdp_transport_fn_method_rdpclient_get_framebuffer_region(`ptr`: Long,`x`: Short,`y`: Short,`w`: Short,`h`: Short,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_rdp_transport_fn_method_rdpclient_is_connected(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
@@ -1141,6 +1149,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_rdp_transport_checksum_method_pointercallback_on_pointer_position() != 11369) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_rdp_transport_checksum_method_rdpclient_bitmap_bridge_id() != 60513) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_rdp_transport_checksum_method_rdpclient_connect() != 62634) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1151,6 +1162,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_rdp_transport_checksum_method_rdpclient_get_framebuffer() != 63545) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_rdp_transport_checksum_method_rdpclient_get_framebuffer_region() != 57500) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_rdp_transport_checksum_method_rdpclient_is_connected() != 48249) {
@@ -1489,6 +1503,29 @@ public object FfiConverterUInt: FfiConverter<UInt, Int> {
 
     override fun write(value: UInt, buf: ByteBuffer) {
         buf.putInt(value.toInt())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
+
+    override fun lower(value: Long): Long {
+        return value
+    }
+
+    override fun allocationSize(value: Long) = 8UL
+
+    override fun write(value: Long, buf: ByteBuffer) {
+        buf.putLong(value)
     }
 }
 
@@ -3128,6 +3165,14 @@ public object FfiConverterTypePointerCallback: FfiConverter<PointerCallback, Lon
 
 public interface RdpClientInterface {
     
+    /**
+     * Key for the JNI bitmap bridge (#466). Kotlin passes this to
+     * `RdpBitmapBridge.blitRegion` so a raw JNI call can find this session's
+     * framebuffer; UniFFI objects are opaque handles and cannot be reached
+     * from hand-written JNI any other way.
+     */
+    fun `bitmapBridgeId`(): kotlin.Long
+    
     fun `connect`(`host`: kotlin.String, `port`: kotlin.UShort, `socksProxy`: SocksProxyConfig?)
     
     fun `disconnect`()
@@ -3135,6 +3180,18 @@ public interface RdpClientInterface {
     fun `getDirtyRects`(): List<RdpRect>
     
     fun `getFramebuffer`(): FrameData?
+    
+    /**
+     * Tightly-packed RGBA for just `(x, y, w, h)` of the framebuffer.
+     *
+     * #422: the host repaints only the region the server changed, but had to
+     * fetch the WHOLE framebuffer to get at it — on a 1920x1080 session that
+     * is an 8.29 MB copy per update, for a median update of about 41 KB.
+     * The rect is clipped to the framebuffer; `None` means there is nothing
+     * to copy (no framebuffer, or an empty/out-of-bounds rect) and the caller
+     * should fall back to a full repaint.
+     */
+    fun `getFramebufferRegion`(`x`: kotlin.UShort, `y`: kotlin.UShort, `w`: kotlin.UShort, `h`: kotlin.UShort): FrameData?
     
     fun `isConnected`(): kotlin.Boolean
     
@@ -3279,6 +3336,25 @@ open class RdpClient: Disposable, AutoCloseable, RdpClientInterface
     }
 
     
+    /**
+     * Key for the JNI bitmap bridge (#466). Kotlin passes this to
+     * `RdpBitmapBridge.blitRegion` so a raw JNI call can find this session's
+     * framebuffer; UniFFI objects are opaque handles and cannot be reached
+     * from hand-written JNI any other way.
+     */override fun `bitmapBridgeId`(): kotlin.Long {
+            return FfiConverterLong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_rdp_transport_fn_method_rdpclient_bitmap_bridge_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(RdpException::class)override fun `connect`(`host`: kotlin.String, `port`: kotlin.UShort, `socksProxy`: SocksProxyConfig?)
         = 
     callWithHandle {
@@ -3326,6 +3402,33 @@ open class RdpClient: Disposable, AutoCloseable, RdpClientInterface
     UniffiLib.uniffi_rdp_transport_fn_method_rdpclient_get_framebuffer(
         it,
         _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Tightly-packed RGBA for just `(x, y, w, h)` of the framebuffer.
+     *
+     * #422: the host repaints only the region the server changed, but had to
+     * fetch the WHOLE framebuffer to get at it — on a 1920x1080 session that
+     * is an 8.29 MB copy per update, for a median update of about 41 KB.
+     * The rect is clipped to the framebuffer; `None` means there is nothing
+     * to copy (no framebuffer, or an empty/out-of-bounds rect) and the caller
+     * should fall back to a full repaint.
+     */override fun `getFramebufferRegion`(`x`: kotlin.UShort, `y`: kotlin.UShort, `w`: kotlin.UShort, `h`: kotlin.UShort): FrameData? {
+            return FfiConverterOptionalTypeFrameData.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_rdp_transport_fn_method_rdpclient_get_framebuffer_region(
+        it,
+        
+        FfiConverterUShort.lower(`x`),
+        FfiConverterUShort.lower(`y`),
+        FfiConverterUShort.lower(`w`),
+        FfiConverterUShort.lower(`h`),_status)
 }
     }
     )

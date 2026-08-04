@@ -46,3 +46,26 @@ DEV.local.md
 # Kotlin daemon scratch dir — incremental-compile cache + crash logs.
 # Slipped into rc14 by accident.
 .kotlin/
+
+# Native binaries are BUILT FROM SOURCE, never committed (F-Droid requires
+# every binary in the APK to be reproducible from source in their builder;
+# a committed .so also goes stale silently — #469). Each path below has a
+# Gradle task wired into the build that regenerates it.
+# build-proot/build.sh via :core:local:buildProot
+core/local/src/main/jniLibs/
+# cargo-ndk via rdp-kotlin:buildRdpNative
+rdp-kotlin/jniLibs/
+# Build outputs of wayland-android/build-native-helpers.sh (submodule-local,
+# but listed here too so a stray copy into the parent tree is never staged).
+wayland-android/jniLibs/
+
+# Wayland native binaries — built from the wayland-android submodule by
+# core/wayland's buildWaylandNatives task (#493). Committed copies went three
+# versions stale and broke every app-window feature (#469); nothing may put
+# them back in the tree.
+core/wayland/src/main/jniLibs/*/*.so
+
+# FFmpeg binaries — built from pinned source by core/ffmpeg's
+# buildFfmpegNatives task (#493). 172 MB of committed blobs that nothing
+# rebuilt; F-Droid always built them from source, our releases never did.
+core/ffmpeg/src/main/jniLibs/*/*.so

@@ -23,6 +23,24 @@ android {
         unitTests.isReturnDefaultValues = true
     }
 
+    // The SSH Authentication API is a bound AIDL service (#487). The
+    // interface is vendored rather than pulled from JitPack, but the binder
+    // still resolves it by its original name, so it has to be compiled here.
+    buildFeatures {
+        aidl = true
+    }
+}
+
+// CI runs the sshlib contract tests in their own non-gating step, because the
+// opt-in preview engine inherits an upstream race in sshlib 0.4.1 that drops a
+// command's output at random (connectbot/cbssh#245, tracked in #448). Passing
+// -PexcludeSshlibContractTests=true takes them out of the gating run; a plain
+// local `test` still runs everything, so the exclusion cannot hide anything
+// from someone working on this module.
+if (providers.gradleProperty("excludeSshlibContractTests").orNull == "true") {
+    tasks.withType<Test>().configureEach {
+        exclude("sh/haven/core/ssh/sshlib/**")
+    }
 }
 
 dependencies {
