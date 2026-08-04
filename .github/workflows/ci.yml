@@ -154,7 +154,12 @@ jobs:
   lint:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30m was measured pre-upstream-sync (2026-08-04); the from-source
+    # ffmpeg/wayland/RDP native builds that landed with that sync push
+    # setup-toolchain (which every job here pays) close to the `build`
+    # job's own 45m budget by itself, so lint's ~13m on top blew straight
+    # through 30m on every run after the sync — 3 for 3, warm cache or not.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -250,7 +255,9 @@ jobs:
   release-r8-smoke:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # See the lint job's comment above — same setup-toolchain cost now eats
+    # most of the old 30m budget before R8 even starts. 55m to match.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
