@@ -38,6 +38,25 @@ echo "ABI:        $ABI"
 echo "API level:  $API"
 echo "FFmpeg ref: $FFMPEG_REF"
 
+# Skip entirely if the final outputs already exist and are newer than this
+# script — unlike each build_<dep> function (which has its own marker-file
+# check), the final ffmpeg configure/make has none, so re-running this
+# script always redoes that last step even when nothing changed. This
+# matters because Gradle's own buildFfmpegNatives task calls this script
+# directly (see core/ffmpeg/build.gradle.kts) — including from INSIDE the
+# amd64 build container, where `uname -m` reports x86_64 (the container's
+# own arch, not seer's real aarch64), so the native-host branch below would
+# be wrongly skipped and NDK's x86_64 clang invoked under qemu again for
+# just this one step. Building once on the real aarch64 host first, then
+# letting a container-side Gradle re-run see this and skip, avoids that.
+_out_bin="$PWD/build-$ABI/install/bin"
+if [ -f "$_out_bin/libffmpeg.so" ] && [ -f "$_out_bin/libffprobe.so" ] \
+   && [ -f "$_out_bin/libc++_shared.so" ] \
+   && [ -z "$(find "$0" -newer "$_out_bin/libffmpeg.so")" ]; then
+    echo "==> $_out_bin already has fresh libffmpeg.so/libffprobe.so/libc++_shared.so — skipping"
+    exit 0
+fi
+
 # --- NDK auto-detect (copied from build-proot/build.sh) ------------------
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
     for NDK_BASE in "$HOME/Android/Sdk/ndk" "${ANDROID_HOME:-/nonexistent}/ndk" "${ANDROID_SDK_ROOT:-/nonexistent}/ndk"; do
