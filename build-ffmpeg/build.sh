@@ -88,14 +88,79 @@ case "$ABI" in
         ;;
 esac
 
-CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
-CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
-AR="$TOOLCHAIN/bin/llvm-ar"
-RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-STRIP="$TOOLCHAIN/bin/llvm-strip"
-NM="$TOOLCHAIN/bin/llvm-nm"
+# On aarch64 hosts (seer): the NDK only ships an x86_64 Linux build of its
+# own clang/llvm-* tools, so running THEM needs qemu-user — and qemu-user
+# cannot run amd64 code reliably under the fork/pipe-heavy load autoconf-
+# style `./configure` scripts generate (segfaults inside plain coreutils
+# during test-compile loops, not just NDK's clang — same TCG process-
+# lifecycle fragility class as the rustc-under-qemu issue documented in
+# Central_Command's android-lab SKILL.md, just probabilistic per-fork
+# instead of deterministic). Fix: use the HOST's OWN native clang (`apt
+# install clang lld`) + native llvm-18 binutils, borrowing only DATA from
+# the NDK: sysroot (headers/.so stubs, arch-independent) + 2 static
+# archives (compiler-rt builtins, libunwind) passed as DIRECT FILE PATHS at
+# LINK time only — never `-resource-dir=<NDK clang dir>`. That flag also
+# swaps in NDK clang-21's OWN <arm_neon.h>/intrinsic headers, which don't
+# match host clang-18's builtin ABI: fine for libs whose NEON is
+# hand-written asm (x264 — no C intrinsics involved), but libvpx enables
+# neon/neon_dotprod/neon_i8mm INTRINSICS (<arm_neon.h> C code) and breaks
+# with "incompatible constant for this __builtin_neon function" — the same
+# failure Rust's aws-lc-sys hit, documented above. Passing the .a files
+# directly sidesteps this: host clang-18 uses its OWN self-consistent
+# headers/builtins for compiling (correct NEON codegen either way — it's
+# the NDK's clang-21 HEADER TEXT that's incompatible, not aarch64/NEON
+# support in general), and only pulls Android-target-specific runtime
+# archives from the NDK at the link step, where header versions don't
+# matter. `-rtlib=compiler-rt` alone still fails even without
+# -resource-dir: it derives an absolute path from resource-dir (host's OWN,
+# lacking an Android variant) and hard-requires that exact file exist,
+# regardless of anything else on the command line. Only `-nodefaultlibs`
+# (same trick rustc itself always uses) stops clang from injecting ANY
+# default runtime selection — then everything must be supplied by hand:
+# the 2 NDK archives + libc/libm/dl (Android's bionic bundles pthread/rt
+# into libc, unlike glibc — no separate -lpthread/-lrt needed) + libc++/
+# libc++abi for C++.
+NDK_CLANG_RESDIR="$(find "$TOOLCHAIN/lib/clang" -maxdepth 1 -mindepth 1 -type d | head -1)"
+if [ "$(uname -m)" = "aarch64" ] && command -v clang >/dev/null 2>&1; then
+    echo "NativeHost: aarch64 detected — using host clang/llvm-18, not NDK's (no qemu)"
+    _WRAPDIR="$(mktemp -d)"
+    trap '[ -n "${_WRAPDIR:-}" ] && rm -rf "$_WRAPDIR"' EXIT
+    # Extra link args are LINK-only; passing them alongside `-c`
+    # (compile-only) makes clang try to treat the .a files as extra
+    # translation units and error out. Only add them when NOT compiling-only.
+    cat > "$_WRAPDIR/cc" <<EOF
+#!/bin/bash
+extra=()
+[[ " \$* " != *" -c "* ]] && extra=(-nodefaultlibs "$NDK_CLANG_RESDIR/lib/linux/libclang_rt.builtins-$ARCH-android.a" "$NDK_CLANG_RESDIR/lib/linux/$ARCH/libunwind.a" -lc -lm -ldl)
+exec clang "\$@" --target=${TARGET}${API} --sysroot="$TOOLCHAIN/sysroot" "\${extra[@]}"
+EOF
+    cat > "$_WRAPDIR/cxx" <<EOF
+#!/bin/bash
+extra=()
+[[ " \$* " != *" -c "* ]] && extra=(-nodefaultlibs "$NDK_CLANG_RESDIR/lib/linux/libclang_rt.builtins-$ARCH-android.a" "$NDK_CLANG_RESDIR/lib/linux/$ARCH/libunwind.a" -lc -lm -ldl -lc++ -lc++abi)
+exec clang++ "\$@" --target=${TARGET}${API} --sysroot="$TOOLCHAIN/sysroot" "\${extra[@]}"
+EOF
+    chmod +x "$_WRAPDIR/cc" "$_WRAPDIR/cxx"
+    CC="$_WRAPDIR/cc"
+    CXX="$_WRAPDIR/cxx"
+    AR="$(command -v llvm-ar-18 || command -v llvm-ar)"
+    RANLIB="$(command -v llvm-ranlib-18 || command -v llvm-ranlib)"
+    STRIP="$(command -v llvm-strip-18 || command -v llvm-strip)"
+    NM="$(command -v llvm-nm-18 || command -v llvm-nm)"
+    STRINGS="$(command -v llvm-strings-18 || command -v llvm-strings)"
+    USE_NATIVE_HOST=1
+else
+    CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
+    CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
+    AR="$TOOLCHAIN/bin/llvm-ar"
+    RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+    STRIP="$TOOLCHAIN/bin/llvm-strip"
+    NM="$TOOLCHAIN/bin/llvm-nm"
+    STRINGS="$TOOLCHAIN/bin/llvm-strings"
+    USE_NATIVE_HOST=0
+fi
 
-for tool in "$CC" "$CXX" "$AR" "$RANLIB" "$STRIP" "$NM"; do
+for tool in "$CC" "$CXX" "$AR" "$RANLIB" "$STRIP" "$NM" "$STRINGS"; do
     [ -x "$tool" ] || { echo "ERROR: toolchain tool missing: $tool" >&2; exit 1; }
 done
 
@@ -113,6 +178,46 @@ CMAKE_BIN="$(ls -d "$SDK_ROOT"/cmake/3.31.*/bin/cmake "$SDK_ROOT"/cmake/3.22.*/b
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
 echo "CMake:      $CMAKE_BIN ($("$CMAKE_BIN" --version 2>/dev/null | head -1))"
 
+# NDK's own android.toolchain.cmake hardcodes ITS OWN CMAKE_C_COMPILER/CXX
+# based on ANDROID_NDK_HOME (via `set(... CACHE ... FORCE)`), silently
+# overriding any -DCMAKE_C_COMPILER=... passed on the command line — so on
+# an aarch64 host it just puts the NDK's own x86_64 clang back, undoing the
+# whole point of $CC above (confirmed: x265's CMake configure invoked
+# "$TOOLCHAIN/bin/clang" directly despite -DCMAKE_C_COMPILER="$CC").
+# Bypass that file entirely on aarch64 hosts and use CMake's OWN built-in
+# Android cross-compile support (CMAKE_SYSTEM_NAME=Android, no toolchain
+# file) instead, which does respect an explicit CMAKE_C_COMPILER.
+if [ "$USE_NATIVE_HOST" = "1" ]; then
+    # CMAKE_SYSTEM_NAME=Android (with or without CMAKE_ANDROID_NDK) triggers
+    # CMake's OWN built-in Android platform module
+    # (Modules/Platform/Android*.cmake) — which computes its OWN NDK-clang
+    # path independently and overrides CMAKE_C_COMPILER/CXX regardless of
+    # what's passed on the command line, even with CMAKE_C_COMPILER_FORCED
+    # (confirmed both ways: ended up pointing at a nonexistent linux-x86/
+    # path). x265/mbedtls's own CMakeLists don't check the `ANDROID`
+    # variable anywhere (grepped both), so there's nothing lost by avoiding
+    # the platform module entirely: CMAKE_SYSTEM_NAME=Generic treats this as
+    # a plain cross-compile CMake has no Android-specific opinions about,
+    # and actually respects CMAKE_C_COMPILER as given.
+    _CMAKE_ANDROID_ARGS=(
+        -DCMAKE_SYSTEM_NAME=Generic
+        -DCMAKE_SYSROOT="$TOOLCHAIN/sysroot"
+        -DCMAKE_C_COMPILER="$CC"
+        -DCMAKE_CXX_COMPILER="$CXX"
+        -DCMAKE_AR="$AR"
+        -DCMAKE_RANLIB="$RANLIB"
+        -DCMAKE_STRIP="$STRIP"
+        -DCMAKE_C_COMPILER_WORKS=1
+        -DCMAKE_CXX_COMPILER_WORKS=1
+    )
+else
+    _CMAKE_ANDROID_ARGS=(
+        -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+        -DANDROID_ABI="$ABI"
+        -DANDROID_PLATFORM="android-$API"
+    )
+fi
+
 # --- Paths + shared env for dep builds -----------------------------------
 # All external libs (libx264, libx265, libvpx, opus, vorbis, lame, libass,
 # freetype, gnutls, …) install into this sysroot. FFmpeg's configure picks
@@ -124,7 +229,7 @@ mkdir -p "$DEPS_SYSROOT"/{lib/pkgconfig,include} "$DL_DIR" "$SRC_DIR"
 
 export PKG_CONFIG_LIBDIR="$DEPS_SYSROOT/lib/pkgconfig"
 export PKG_CONFIG_PATH="$DEPS_SYSROOT/lib/pkgconfig"
-export CC CXX AR RANLIB STRIP NM
+export CC CXX AR RANLIB STRIP NM STRINGS
 
 # --- Dep build helpers ---------------------------------------------------
 #
@@ -436,10 +541,8 @@ build_mbedtls() {
     (
         cd "$BUILD"
         "$CMAKE_BIN" "$SRC" \
+            "${_CMAKE_ANDROID_ARGS[@]}" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" \
-            -DANDROID_PLATFORM="android-$API" \
             -DCMAKE_INSTALL_PREFIX="$DEPS_SYSROOT" \
             -DUSE_SHARED_MBEDTLS_LIBRARY=OFF \
             -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
@@ -477,10 +580,8 @@ build_x265() {
     (
         cd "$BUILD"
         "$CMAKE_BIN" "$SRC/source" \
+            "${_CMAKE_ANDROID_ARGS[@]}" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" \
-            -DANDROID_PLATFORM="android-$API" \
             -DCMAKE_INSTALL_PREFIX="$DEPS_SYSROOT" \
             -DENABLE_SHARED=OFF \
             -DENABLE_CLI=OFF \
