@@ -25,16 +25,9 @@ if [ -z "${ANDROID_NDK_HOME:-}" ]; then
     fi
 fi
 
+"$SCRIPT_DIR/build-rust-android-libs.sh" "$ANDROID_NDK_HOME"
+
 cd "$RUST_DIR"
-
-echo "==> Building for arm64-v8a..."
-cargo ndk -t arm64-v8a -o "$OUT_DIR" build --release
-
-echo "==> Building for x86_64..."
-cargo ndk -t x86_64 -o "$OUT_DIR" build --release
-
-echo "==> Building for armeabi-v7a..."
-cargo ndk -t armeabi-v7a -o "$OUT_DIR" build --release
 
 echo "==> Generating Kotlin bindings..."
 mkdir -p "$KOTLIN_DIR"
