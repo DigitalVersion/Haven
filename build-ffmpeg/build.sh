@@ -38,6 +38,25 @@ echo "ABI:        $ABI"
 echo "API level:  $API"
 echo "FFmpeg ref: $FFMPEG_REF"
 
+# Skip entirely if the final outputs already exist and are newer than this
+# script — unlike each build_<dep> function (which has its own marker-file
+# check), the final ffmpeg configure/make has none, so re-running this
+# script always redoes that last step even when nothing changed. This
+# matters because Gradle's own buildFfmpegNatives task calls this script
+# directly (see core/ffmpeg/build.gradle.kts) — including from INSIDE the
+# amd64 build container, where `uname -m` reports x86_64 (the container's
+# own arch, not seer's real aarch64), so the native-host branch below would
+# be wrongly skipped and NDK's x86_64 clang invoked under qemu again for
+# just this one step. Building once on the real aarch64 host first, then
+# letting a container-side Gradle re-run see this and skip, avoids that.
+_out_bin="$PWD/build-$ABI/install/bin"
+if [ -f "$_out_bin/libffmpeg.so" ] && [ -f "$_out_bin/libffprobe.so" ] \
+   && [ -f "$_out_bin/libc++_shared.so" ] \
+   && [ -z "$(find "$0" -newer "$_out_bin/libffmpeg.so")" ]; then
+    echo "==> $_out_bin already has fresh libffmpeg.so/libffprobe.so/libc++_shared.so — skipping"
+    exit 0
+fi
+
 # --- NDK auto-detect (copied from build-proot/build.sh) ------------------
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
     for NDK_BASE in "$HOME/Android/Sdk/ndk" "${ANDROID_HOME:-/nonexistent}/ndk" "${ANDROID_SDK_ROOT:-/nonexistent}/ndk"; do
@@ -88,14 +107,79 @@ case "$ABI" in
         ;;
 esac
 
-CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
-CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
-AR="$TOOLCHAIN/bin/llvm-ar"
-RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-STRIP="$TOOLCHAIN/bin/llvm-strip"
-NM="$TOOLCHAIN/bin/llvm-nm"
+# On aarch64 hosts (seer): the NDK only ships an x86_64 Linux build of its
+# own clang/llvm-* tools, so running THEM needs qemu-user — and qemu-user
+# cannot run amd64 code reliably under the fork/pipe-heavy load autoconf-
+# style `./configure` scripts generate (segfaults inside plain coreutils
+# during test-compile loops, not just NDK's clang — same TCG process-
+# lifecycle fragility class as the rustc-under-qemu issue documented in
+# Central_Command's android-lab SKILL.md, just probabilistic per-fork
+# instead of deterministic). Fix: use the HOST's OWN native clang (`apt
+# install clang lld`) + native llvm-18 binutils, borrowing only DATA from
+# the NDK: sysroot (headers/.so stubs, arch-independent) + 2 static
+# archives (compiler-rt builtins, libunwind) passed as DIRECT FILE PATHS at
+# LINK time only — never `-resource-dir=<NDK clang dir>`. That flag also
+# swaps in NDK clang-21's OWN <arm_neon.h>/intrinsic headers, which don't
+# match host clang-18's builtin ABI: fine for libs whose NEON is
+# hand-written asm (x264 — no C intrinsics involved), but libvpx enables
+# neon/neon_dotprod/neon_i8mm INTRINSICS (<arm_neon.h> C code) and breaks
+# with "incompatible constant for this __builtin_neon function" — the same
+# failure Rust's aws-lc-sys hit, documented above. Passing the .a files
+# directly sidesteps this: host clang-18 uses its OWN self-consistent
+# headers/builtins for compiling (correct NEON codegen either way — it's
+# the NDK's clang-21 HEADER TEXT that's incompatible, not aarch64/NEON
+# support in general), and only pulls Android-target-specific runtime
+# archives from the NDK at the link step, where header versions don't
+# matter. `-rtlib=compiler-rt` alone still fails even without
+# -resource-dir: it derives an absolute path from resource-dir (host's OWN,
+# lacking an Android variant) and hard-requires that exact file exist,
+# regardless of anything else on the command line. Only `-nodefaultlibs`
+# (same trick rustc itself always uses) stops clang from injecting ANY
+# default runtime selection — then everything must be supplied by hand:
+# the 2 NDK archives + libc/libm/dl (Android's bionic bundles pthread/rt
+# into libc, unlike glibc — no separate -lpthread/-lrt needed) + libc++/
+# libc++abi for C++.
+NDK_CLANG_RESDIR="$(find "$TOOLCHAIN/lib/clang" -maxdepth 1 -mindepth 1 -type d | head -1)"
+if [ "$(uname -m)" = "aarch64" ] && command -v clang >/dev/null 2>&1; then
+    echo "NativeHost: aarch64 detected — using host clang/llvm-18, not NDK's (no qemu)"
+    _WRAPDIR="$(mktemp -d)"
+    trap '[ -n "${_WRAPDIR:-}" ] && rm -rf "$_WRAPDIR"' EXIT
+    # Extra link args are LINK-only; passing them alongside `-c`
+    # (compile-only) makes clang try to treat the .a files as extra
+    # translation units and error out. Only add them when NOT compiling-only.
+    cat > "$_WRAPDIR/cc" <<EOF
+#!/bin/bash
+extra=()
+[[ " \$* " != *" -c "* ]] && extra=(-nodefaultlibs "$NDK_CLANG_RESDIR/lib/linux/libclang_rt.builtins-$ARCH-android.a" "$NDK_CLANG_RESDIR/lib/linux/$ARCH/libunwind.a" -lc -lm -ldl)
+exec clang "\$@" --target=${TARGET}${API} --sysroot="$TOOLCHAIN/sysroot" "\${extra[@]}"
+EOF
+    cat > "$_WRAPDIR/cxx" <<EOF
+#!/bin/bash
+extra=()
+[[ " \$* " != *" -c "* ]] && extra=(-nodefaultlibs "$NDK_CLANG_RESDIR/lib/linux/libclang_rt.builtins-$ARCH-android.a" "$NDK_CLANG_RESDIR/lib/linux/$ARCH/libunwind.a" -lc -lm -ldl -lc++ -lc++abi)
+exec clang++ "\$@" --target=${TARGET}${API} --sysroot="$TOOLCHAIN/sysroot" "\${extra[@]}"
+EOF
+    chmod +x "$_WRAPDIR/cc" "$_WRAPDIR/cxx"
+    CC="$_WRAPDIR/cc"
+    CXX="$_WRAPDIR/cxx"
+    AR="$(command -v llvm-ar-18 || command -v llvm-ar)"
+    RANLIB="$(command -v llvm-ranlib-18 || command -v llvm-ranlib)"
+    STRIP="$(command -v llvm-strip-18 || command -v llvm-strip)"
+    NM="$(command -v llvm-nm-18 || command -v llvm-nm)"
+    STRINGS="$(command -v llvm-strings-18 || command -v llvm-strings)"
+    USE_NATIVE_HOST=1
+else
+    CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
+    CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
+    AR="$TOOLCHAIN/bin/llvm-ar"
+    RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+    STRIP="$TOOLCHAIN/bin/llvm-strip"
+    NM="$TOOLCHAIN/bin/llvm-nm"
+    STRINGS="$TOOLCHAIN/bin/llvm-strings"
+    USE_NATIVE_HOST=0
+fi
 
-for tool in "$CC" "$CXX" "$AR" "$RANLIB" "$STRIP" "$NM"; do
+for tool in "$CC" "$CXX" "$AR" "$RANLIB" "$STRIP" "$NM" "$STRINGS"; do
     [ -x "$tool" ] || { echo "ERROR: toolchain tool missing: $tool" >&2; exit 1; }
 done
 
@@ -113,6 +197,46 @@ CMAKE_BIN="$(ls -d "$SDK_ROOT"/cmake/3.31.*/bin/cmake "$SDK_ROOT"/cmake/3.22.*/b
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
 echo "CMake:      $CMAKE_BIN ($("$CMAKE_BIN" --version 2>/dev/null | head -1))"
 
+# NDK's own android.toolchain.cmake hardcodes ITS OWN CMAKE_C_COMPILER/CXX
+# based on ANDROID_NDK_HOME (via `set(... CACHE ... FORCE)`), silently
+# overriding any -DCMAKE_C_COMPILER=... passed on the command line — so on
+# an aarch64 host it just puts the NDK's own x86_64 clang back, undoing the
+# whole point of $CC above (confirmed: x265's CMake configure invoked
+# "$TOOLCHAIN/bin/clang" directly despite -DCMAKE_C_COMPILER="$CC").
+# Bypass that file entirely on aarch64 hosts and use CMake's OWN built-in
+# Android cross-compile support (CMAKE_SYSTEM_NAME=Android, no toolchain
+# file) instead, which does respect an explicit CMAKE_C_COMPILER.
+if [ "$USE_NATIVE_HOST" = "1" ]; then
+    # CMAKE_SYSTEM_NAME=Android (with or without CMAKE_ANDROID_NDK) triggers
+    # CMake's OWN built-in Android platform module
+    # (Modules/Platform/Android*.cmake) — which computes its OWN NDK-clang
+    # path independently and overrides CMAKE_C_COMPILER/CXX regardless of
+    # what's passed on the command line, even with CMAKE_C_COMPILER_FORCED
+    # (confirmed both ways: ended up pointing at a nonexistent linux-x86/
+    # path). x265/mbedtls's own CMakeLists don't check the `ANDROID`
+    # variable anywhere (grepped both), so there's nothing lost by avoiding
+    # the platform module entirely: CMAKE_SYSTEM_NAME=Generic treats this as
+    # a plain cross-compile CMake has no Android-specific opinions about,
+    # and actually respects CMAKE_C_COMPILER as given.
+    _CMAKE_ANDROID_ARGS=(
+        -DCMAKE_SYSTEM_NAME=Generic
+        -DCMAKE_SYSROOT="$TOOLCHAIN/sysroot"
+        -DCMAKE_C_COMPILER="$CC"
+        -DCMAKE_CXX_COMPILER="$CXX"
+        -DCMAKE_AR="$AR"
+        -DCMAKE_RANLIB="$RANLIB"
+        -DCMAKE_STRIP="$STRIP"
+        -DCMAKE_C_COMPILER_WORKS=1
+        -DCMAKE_CXX_COMPILER_WORKS=1
+    )
+else
+    _CMAKE_ANDROID_ARGS=(
+        -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+        -DANDROID_ABI="$ABI"
+        -DANDROID_PLATFORM="android-$API"
+    )
+fi
+
 # --- Paths + shared env for dep builds -----------------------------------
 # All external libs (libx264, libx265, libvpx, opus, vorbis, lame, libass,
 # freetype, gnutls, …) install into this sysroot. FFmpeg's configure picks
@@ -124,25 +248,57 @@ mkdir -p "$DEPS_SYSROOT"/{lib/pkgconfig,include} "$DL_DIR" "$SRC_DIR"
 
 export PKG_CONFIG_LIBDIR="$DEPS_SYSROOT/lib/pkgconfig"
 export PKG_CONFIG_PATH="$DEPS_SYSROOT/lib/pkgconfig"
-export CC CXX AR RANLIB STRIP NM
+export CC CXX AR RANLIB STRIP NM STRINGS
 
 # --- Dep build helpers ---------------------------------------------------
+#
+# Everything fetched here is PINNED AND VERIFIED, because everything fetched
+# here is compiled into a binary that ships in the APK.
+#
+# F-Droid's rule is that a binary in the APK must be reproducible from source in
+# their builder; the accepted recipes pin their sources to do it (mpv-android:
+# `srclibs: FFmpeg@a7425f7`, and for a plain download
+# `curl -Lo lua.tar.gz … ; echo "<sha256>  lua.tar.gz" | sha256sum -c -`).
+# Fetching an unpinned tarball over HTTPS satisfies neither half: TLS says who
+# served the bytes, never which bytes, and an unpinned ref says nothing at all.
+#
+# The hashes below were recorded from each project's canonical HTTPS URL and
+# cross-checked against an independent re-download. They are trust-on-first-use
+# pins, NOT verification against upstream signatures — they prove the source has
+# not changed since it was pinned, which is what catches a substitution or a
+# silently re-rolled release. Verifying signatures would be strictly better and
+# is not what is implemented here.
+#
+# To bump a dependency: change the version, run the build, take the hash from
+# the failure message, and check it against upstream before committing it.
+
 fetch_git_tag() {
-    # fetch_git_tag <name> <repo> <tag>
-    local name="$1" repo="$2" tag="$3"
+    # fetch_git_tag <name> <repo> <ref> <expected-commit-sha>
+    local name="$1" repo="$2" ref="$3" want="$4"
     local dst="$SRC_DIR/$name"
     if [ ! -d "$dst/.git" ]; then
-        echo "  [fetch] $name @ $tag"
+        echo "  [fetch] $name @ $ref"
         rm -rf "$dst"
-        git clone --depth 1 --branch "$tag" "$repo" "$dst" 2>&1 | tail -3
+        git clone --depth 1 --branch "$ref" "$repo" "$dst" 2>&1 | tail -3
     else
         echo "  [cached] $name"
+    fi
+    # Verify the commit, not the ref name. A tag can be moved and a branch moves
+    # by definition — x264 was tracked at `stable`, a branch, so every build was
+    # free to compile different source with nothing to notice it by.
+    local got
+    got="$(cd "$dst" && git rev-parse HEAD)"
+    if [ "$got" != "$want" ]; then
+        echo "ERROR: $name is at $got, expected $want" >&2
+        echo "       ($repo @ $ref)" >&2
+        echo "       The ref moved. Confirm the new commit is legitimate, then update the pin." >&2
+        exit 1
     fi
 }
 
 fetch_tarball() {
-    # fetch_tarball <name> <url> <tarball-filename> <extracted-dir>
-    local name="$1" url="$2" tarball="$3" extracted="$4"
+    # fetch_tarball <name> <url> <tarball-filename> <extracted-dir> <sha256>
+    local name="$1" url="$2" tarball="$3" extracted="$4" sha="$5"
     local dst="$SRC_DIR/$name"
     if [ -d "$dst" ]; then echo "  [cached] $name"; return; fi
     [ -f "$DL_DIR/$tarball" ] || {
@@ -156,11 +312,23 @@ fetch_tarball() {
             --connect-timeout 15 --max-time 600 \
             -o "$DL_DIR/$tarball" "$url"
     }
+    # Checked on every run, not just after a download: a cached tarball from an
+    # earlier build is exactly as unverified as a fresh one.
+    local got
+    got="$(sha256sum "$DL_DIR/$tarball" | cut -d' ' -f1)"
+    if [ "$got" != "$sha" ]; then
+        echo "ERROR: $tarball sha256 mismatch" >&2
+        echo "       expected $sha" >&2
+        echo "       got      $got" >&2
+        echo "       Refusing to build. Delete $DL_DIR/$tarball to re-download," >&2
+        echo "       or update the pin if the release was legitimately re-rolled." >&2
+        exit 1
+    fi
     tar -xf "$DL_DIR/$tarball" -C "$SRC_DIR"
     if [ "$extracted" != "$name" ]; then
         mv "$SRC_DIR/$extracted" "$dst"
     fi
-    echo "  [fetched] $name"
+    echo "  [fetched+verified] $name"
 }
 
 # Common flags used by every autotools dep.
@@ -207,7 +375,10 @@ build_x264() {
     fi
     echo "=== Building libx264 for $ABI ==="
     # x264 moves slowly; "stable" branch is the recommended line for embedded.
-    fetch_git_tag "$name" "https://code.videolan.org/videolan/x264.git" "stable"
+    # NB: `stable` is a BRANCH — it moves. The pin is what makes this
+    # reproducible; without it every build could compile different x264.
+    fetch_git_tag "$name" "https://code.videolan.org/videolan/x264.git" "stable" \
+        "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
 
     local SRC="$SRC_DIR/$name"
     local LOG="$SCRIPT_DIR/dep-$name.log"
@@ -245,7 +416,8 @@ build_x264() {
 build_mp3lame() {
     fetch_tarball lame \
         "https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz" \
-        "lame-3.100.tar.gz" "lame-3.100"
+        "lame-3.100.tar.gz" "lame-3.100" \
+        "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
     build_autotools lame "$DEPS_SYSROOT/lib/libmp3lame.a" \
         --disable-frontend --disable-decoder
 }
@@ -253,7 +425,8 @@ build_mp3lame() {
 build_opus() {
     fetch_tarball opus \
         "https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz" \
-        "opus-1.5.2.tar.gz" "opus-1.5.2"
+        "opus-1.5.2.tar.gz" "opus-1.5.2" \
+        "65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
     build_autotools opus "$DEPS_SYSROOT/lib/libopus.a" \
         --disable-doc --disable-extra-programs
 }
@@ -261,14 +434,16 @@ build_opus() {
 build_libogg() {
     fetch_tarball ogg \
         "https://downloads.xiph.org/releases/ogg/libogg-1.3.5.tar.gz" \
-        "libogg-1.3.5.tar.gz" "libogg-1.3.5"
+        "libogg-1.3.5.tar.gz" "libogg-1.3.5" \
+        "0eb4b4b9420a0f51db142ba3f9c64b333f826532dc0f48c6410ae51f4799b664"
     build_autotools ogg "$DEPS_SYSROOT/lib/libogg.a"
 }
 
 build_libvorbis() {
     fetch_tarball vorbis \
         "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz" \
-        "libvorbis-1.3.7.tar.gz" "libvorbis-1.3.7"
+        "libvorbis-1.3.7.tar.gz" "libvorbis-1.3.7" \
+        "0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab"
     build_autotools vorbis "$DEPS_SYSROOT/lib/libvorbis.a" \
         --with-ogg="$DEPS_SYSROOT" --disable-examples
 }
@@ -280,7 +455,7 @@ build_vpx() {
         return
     fi
     echo "=== Building libvpx for $ABI ==="
-    fetch_git_tag vpx "https://chromium.googlesource.com/webm/libvpx" "v1.14.1"
+    fetch_git_tag vpx "https://chromium.googlesource.com/webm/libvpx" "v1.14.1" "12f3a2ac603e8f10742105519e0cd03c3b8f71dd"
     local SRC="$SRC_DIR/vpx"
     local LOG="$SCRIPT_DIR/dep-vpx.log"
     local VPX_TARGET VPX_AS
@@ -337,7 +512,8 @@ build_vpx() {
 build_freetype() {
     fetch_tarball freetype \
         "https://downloads.sourceforge.net/project/freetype/freetype2/2.13.3/freetype-2.13.3.tar.xz" \
-        "freetype-2.13.3.tar.xz" "freetype-2.13.3"
+        "freetype-2.13.3.tar.xz" "freetype-2.13.3" \
+        "0550350666d427c74daeb85d5ac7bb353acba5f76956395995311a9c6f063289"
     build_autotools freetype "$DEPS_SYSROOT/lib/libfreetype.a" \
         --without-harfbuzz --without-bzip2 --without-png \
         --without-brotli --without-zlib
@@ -346,7 +522,8 @@ build_freetype() {
 build_fribidi() {
     fetch_tarball fribidi \
         "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz" \
-        "fribidi-1.0.16.tar.xz" "fribidi-1.0.16"
+        "fribidi-1.0.16.tar.xz" "fribidi-1.0.16" \
+        "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c"
     build_autotools fribidi "$DEPS_SYSROOT/lib/libfribidi.a" \
         --disable-docs --disable-tests
 }
@@ -357,7 +534,8 @@ build_harfbuzz() {
     # Freetype must already be built so harfbuzz can find it via pkg-config.
     fetch_tarball harfbuzz \
         "https://github.com/harfbuzz/harfbuzz/releases/download/8.5.0/harfbuzz-8.5.0.tar.xz" \
-        "harfbuzz-8.5.0.tar.xz" "harfbuzz-8.5.0"
+        "harfbuzz-8.5.0.tar.xz" "harfbuzz-8.5.0" \
+        "77e4f7f98f3d86bf8788b53e6832fb96279956e1c3961988ea3d4b7ca41ddc27"
     build_autotools harfbuzz "$DEPS_SYSROOT/lib/libharfbuzz.a" \
         --with-freetype --without-glib --without-icu --without-cairo \
         --disable-introspection
@@ -372,7 +550,8 @@ build_mbedtls() {
     echo "=== Building mbedtls for $ABI ==="
     fetch_tarball mbedtls \
         "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2" \
-        "mbedtls-3.6.2.tar.bz2" "mbedtls-3.6.2"
+        "mbedtls-3.6.2.tar.bz2" "mbedtls-3.6.2" \
+        "8b54fb9bcf4d5a7078028e0520acddefb7900b3e66fec7f7175bb5b7d85ccdca"
     local SRC="$SRC_DIR/mbedtls"
     local LOG="$SCRIPT_DIR/dep-mbedtls.log"
     local BUILD="$SCRIPT_DIR/build-$ABI/deps/mbedtls"
@@ -381,10 +560,8 @@ build_mbedtls() {
     (
         cd "$BUILD"
         "$CMAKE_BIN" "$SRC" \
+            "${_CMAKE_ANDROID_ARGS[@]}" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" \
-            -DANDROID_PLATFORM="android-$API" \
             -DCMAKE_INSTALL_PREFIX="$DEPS_SYSROOT" \
             -DUSE_SHARED_MBEDTLS_LIBRARY=OFF \
             -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
@@ -400,7 +577,8 @@ build_mbedtls() {
 build_libass() {
     fetch_tarball libass \
         "https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz" \
-        "libass-0.17.3.tar.xz" "libass-0.17.3"
+        "libass-0.17.3.tar.xz" "libass-0.17.3" \
+        "eae425da50f0015c21f7b3a9c7262a910f0218af469e22e2931462fed3c50959"
     build_autotools libass "$DEPS_SYSROOT/lib/libass.a" \
         --disable-require-system-font-provider
 }
@@ -412,7 +590,7 @@ build_x265() {
         return
     fi
     echo "=== Building libx265 for $ABI ==="
-    fetch_git_tag x265 "https://bitbucket.org/multicoreware/x265_git.git" "4.1"
+    fetch_git_tag x265 "https://bitbucket.org/multicoreware/x265_git.git" "4.1" "1d117bed4747758b51bd2c124d738527e30392cb"
     local SRC="$SRC_DIR/x265"
     local LOG="$SCRIPT_DIR/dep-x265.log"
     local BUILD="$SCRIPT_DIR/build-$ABI/deps/x265"
@@ -421,10 +599,8 @@ build_x265() {
     (
         cd "$BUILD"
         "$CMAKE_BIN" "$SRC/source" \
+            "${_CMAKE_ANDROID_ARGS[@]}" \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ABI" \
-            -DANDROID_PLATFORM="android-$API" \
             -DCMAKE_INSTALL_PREFIX="$DEPS_SYSROOT" \
             -DENABLE_SHARED=OFF \
             -DENABLE_CLI=OFF \
@@ -466,13 +642,46 @@ build_mbedtls
 mkdir -p "$SCRIPT_DIR/src"
 FFMPEG_SRC="$SCRIPT_DIR/src/ffmpeg"
 if [ ! -d "$FFMPEG_SRC/.git" ]; then
-    echo "=== Cloning FFmpeg $FFMPEG_REF ==="
+    # git.ffmpeg.org is a single point of failure for the whole release: it
+    # timed out from the F-Droid buildserver (134s, port 443) and failed the
+    # 5.83.12 build, which is why F-Droid users sat on 5.81.7 while a dozen
+    # releases went out. Try the official GitHub mirror first and fall back.
+    # Both serve n8.0 at a4044e04 (verified), so which one answers changes
+    # nothing about what gets built.
+    FFMPEG_MIRRORS="${FFMPEG_MIRRORS:-https://github.com/FFmpeg/FFmpeg.git https://git.ffmpeg.org/ffmpeg.git}"
     rm -rf "$FFMPEG_SRC"
-    git clone --depth 1 --branch "$FFMPEG_REF" \
-        https://git.ffmpeg.org/ffmpeg.git "$FFMPEG_SRC"
+    for repo in $FFMPEG_MIRRORS; do
+        echo "=== Cloning FFmpeg $FFMPEG_REF from $repo ==="
+        if git clone --depth 1 --branch "$FFMPEG_REF" "$repo" "$FFMPEG_SRC"; then
+            break
+        fi
+        echo "  clone from $repo failed — trying the next mirror" >&2
+        rm -rf "$FFMPEG_SRC"
+    done
+    if [ ! -d "$FFMPEG_SRC/.git" ]; then
+        echo "FFmpeg clone failed from every mirror: $FFMPEG_MIRRORS" >&2
+        exit 1
+    fi
 else
     echo "=== FFmpeg source already present at $FFMPEG_SRC ==="
     (cd "$FFMPEG_SRC" && git fetch --depth 1 origin "$FFMPEG_REF" 2>/dev/null || true)
+fi
+
+# Verify the commit, not the tag. FFmpeg is the largest thing compiled into the
+# APK, and until now the only thing identifying it was a tag name — which a
+# repository can move, and which two mirrors need not agree on. Checked here
+# rather than inside the clone loop so a cached tree from an earlier build is
+# verified too. Skipped when FFMPEG_REF is overridden, so a developer can test
+# another release without editing the pin.
+FFMPEG_COMMIT="${FFMPEG_COMMIT:-140fd653aed8cad774f991ba083e2d01e86420c7}"   # n8.0
+if [ "$FFMPEG_REF" = "n8.0" ]; then
+    got="$(cd "$FFMPEG_SRC" && git rev-parse HEAD)"
+    if [ "$got" != "$FFMPEG_COMMIT" ]; then
+        echo "ERROR: FFmpeg $FFMPEG_REF is at $got, expected $FFMPEG_COMMIT" >&2
+        echo "       The tag moved, or a mirror disagrees. Verify before updating the pin." >&2
+        exit 1
+    fi
+    echo "=== FFmpeg commit verified: $got ==="
 fi
 
 # --- Configure + build ---------------------------------------------------

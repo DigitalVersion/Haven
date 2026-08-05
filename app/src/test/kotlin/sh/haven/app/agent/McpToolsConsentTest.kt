@@ -96,7 +96,9 @@ class McpToolsConsentTest {
             havenUiBridge = mockk(relaxed = true),
             standingPolicyRepository = mockk(relaxed = true),
             mcpTunnelManager = mockk(relaxed = true),
-            mcpStatusHolder = mockk(relaxed = true),
+            // Real holder: get_app_info reads typed StateFlow values a relaxed
+            // mock answers with bare Objects (ClassCastException).
+            mcpStatusHolder = sh.haven.core.data.agent.McpStatusHolder(),
             reticulumSessionManager = mockk(relaxed = true),
             reticulumForwardServer = mockk(relaxed = true),
             mailRuleRepository = mockk(relaxed = true),
@@ -517,7 +519,7 @@ class McpToolsConsentTest {
                 listOf("mail")),
             Section("linux", "Linux guest (proot) & desktops", 2,
                 "The on-device Linux distros, their desktop environments and windows, guest services, the audio bridge, and guest-file access.",
-                listOf("proot", "distro", "desktop", "guest", "system_vm", "audio_bridge", "gl_smoke", "custom_binds", "app_window", "launch_app_in_desktop", "inspect_proot")),
+                listOf("proot", "distro", "desktop", "guest", "system_vm", "audio_bridge", "gl_smoke", "custom_binds", "app_window", "app_pack", "launch_app_in_desktop", "inspect_proot")),
             Section("networking", "Networking — tunnels & port forwarding", 5,
                 "SSH tunnels, port forwards, the serial↔TCP bridge, and the port-knock / single-packet-auth gates.",
                 listOf("tunnel", "port_forward", "_forward", "port_knock", "knock", "_spa", "profile_routing", "serial")),
@@ -924,5 +926,24 @@ class McpToolsConsentTest {
         // Dispatch via McpTools.call is proven by the five other provider
         // dispatch tests; the mail reads hit a Flow/session a relaxed mock
         // can't satisfy, so this asserts registration + consent.
+    }
+
+    /** #469: get_app_info must report the REAL Wayland-bridge state, not a
+     *  hardcoded capability — the loadError is the only remotely-reachable
+     *  diagnostic when liblabwc_android.so fails to load (logcat needs
+     *  Shizuku). On the host JVM the lib never loads, which exercises
+     *  exactly the unavailable branch. Lives here for the newTools harness,
+     *  not because it's a consent behaviour. */
+    @Test
+    fun `get_app_info reports wayland unavailable with the load error`() {
+        val tools = newTools()
+        val out = runBlocking { tools.call("get_app_info", JSONObject()) }
+        val caps = (0 until out.getJSONArray("capabilities").length())
+            .map { out.getJSONArray("capabilities").getString(it) }
+        assertFalse("wayland must not be advertised when the lib didn't load", "wayland" in caps)
+        assertTrue(
+            "waylandLoadError must carry the loadLibrary failure reason",
+            out.getString("waylandLoadError").isNotBlank(),
+        )
     }
 }

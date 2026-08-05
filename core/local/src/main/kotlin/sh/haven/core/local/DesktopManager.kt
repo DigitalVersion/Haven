@@ -1039,17 +1039,23 @@ class DesktopManager @Inject constructor(
         // Haven's own process where libEGL reaches Mali). Idempotent — the JNI
         // tracks a single global server, so this shares the one already used by
         // the native compositor. Gated on the .so being present (only arm64
-        // ships it); on x86_64 it skips and the cage stays on llvmpipe. The
-        // compositor itself stays on pixman; only the app's GL is accelerated.
+        // ships it) AND on the labwc JNI lib having loaded — calling the
+        // native method without it throws UnsatisfiedLinkError and killed
+        // the whole cage/present_app start (#469). Either way the skip is
+        // soft: the cage stays on llvmpipe. The compositor itself stays on
+        // pixman; only the app's GL is accelerated.
         val virglBin = File(
             context.applicationInfo.nativeLibraryDir, "libvirgl_test_server.so",
         )
-        val virglEnv = if (virglBin.canExecute()) {
+        val virglEnv = if (WaylandBridge.available && virglBin.canExecute()) {
             WaylandBridge.nativeStartVirglServer(
                 virglBin.absolutePath, File(context.cacheDir, ".virgl_test").absolutePath,
             )
             gpuPassthroughEnv(" ; ")
         } else {
+            if (!WaylandBridge.available) {
+                Log.w(TAG, "virgl skipped — labwc lib unavailable (${WaylandBridge.loadError}); cage app stays on llvmpipe")
+            }
             ""
         }
 
@@ -1286,6 +1292,8 @@ class DesktopManager @Inject constructor(
         resolution: String = "auto",
         scale: Float = 1f,
         runAsRoot: Boolean = false,
+        multiWindow: Boolean = false,
+        swayRules: List<String> = emptyList(),
         timeoutMs: Long = 15_000,
     ): AppWindowSession {
 
@@ -1314,6 +1322,15 @@ class DesktopManager @Inject constructor(
         // runs the app fullscreen with no chrome and exits sway when the app
         // closes, matching cage's lifecycle. sway also starts Xwayland, so X11
         // GUIs work too. The config lives under cacheDir (bound to /tmp).
+        // The app + exit hook go through a launcher script, not inline in the
+        // config: sway's parser splits an `exec a; b` line at the ';' and
+        // rejected `swaymsg exit` as an unknown config command (#471) — the
+        // app half still ran, so nobody noticed that exit-on-app-close never
+        // registered and every self-closing app leaked its kiosk. A script
+        // also sidesteps quoting arbitrary commands. SWAYSOCK is inherited
+        // from sway, so swaymsg reaches the right compositor.
+        val kioskRun = File(context.cacheDir, "haven-kiosk-$display.run")
+        kioskRun.writeText("$execCommand\nswaymsg exit\n")
         val kioskConfig = File(context.cacheDir, "haven-kiosk-$display.config")
         kioskConfig.writeText(
             """
@@ -1325,9 +1342,29 @@ class DesktopManager @Inject constructor(
             |hide_edge_borders both
             |gaps inner 0
             |gaps outer 0
-            |for_window [app_id=".*"] fullscreen enable
-            |for_window [class=".*"] fullscreen enable
-            |exec $execCommand; swaymsg exit
+            |${
+                // Single-window apps get kiosk-style forced fullscreen. A
+                // multi-window app (qmmp's skinned main/EQ/playlist deck)
+                // must float instead: fullscreen-everything stacks its
+                // windows so only the last-raised one is visible, while
+                // floating honours the app's own placement (Winamp docking).
+                if (multiWindow) {
+                    """for_window [app_id=".*"] floating enable
+                      |for_window [class=".*"] floating enable""".trimMargin()
+                } else {
+                    """for_window [app_id=".*"] fullscreen enable
+                      |for_window [class=".*"] fullscreen enable""".trimMargin()
+                }
+            }
+            |${
+                // App-specific placement (pack/def-provided): sway centers
+                // every floating window, so a multi-window deck maps stacked;
+                // per-title `move position` rules place each window at map.
+                // Newlines are stripped per rule so a rule can't smuggle in
+                // extra config lines.
+                swayRules.joinToString("\n") { it.replace('\n', ' ') }
+            }
+            |exec sh /tmp/haven-kiosk-$display.run
             |""".trimMargin(),
         )
         val compositorCmd = "sway -c /tmp/haven-kiosk-$display.config"

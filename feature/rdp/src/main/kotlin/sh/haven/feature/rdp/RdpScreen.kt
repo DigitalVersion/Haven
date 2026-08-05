@@ -66,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -106,6 +107,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.hilt.navigation.compose.hiltViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import sh.haven.core.data.preferences.ToolbarKey
 import sh.haven.core.data.preferences.ToolbarLayout
@@ -123,6 +125,12 @@ import kotlin.math.abs
 fun RdpSessionContent(
     connected: StateFlow<Boolean>,
     frame: StateFlow<Bitmap?>,
+    /**
+     * #422: [frame] now carries a single bitmap that is mutated in place, so its
+     * identity stops changing per update and nothing downstream would repaint.
+     * This counter is what invalidates the draw.
+     */
+    frameSeq: StateFlow<Long> = NO_FRAME_SEQ,
     error: StateFlow<String?>,
     toolbarLayout: ToolbarLayout = ToolbarLayout.DEFAULT,
     onTap: (Int, Int) -> Unit,
@@ -197,9 +205,12 @@ fun RdpSessionContent(
         }
     }
 
+    val frameSeqState = frameSeq.collectAsState()
+
     if (connectedState && frameState != null) {
         RdpViewer(
             frame = frameState!!,
+            frameSeq = frameSeqState,
             fullscreen = fullscreen,
             toolbarLayout = toolbarLayout,
             onTap = onTap,
@@ -301,6 +312,7 @@ fun RdpScreen(
     RdpSessionContent(
         connected = viewModel.connected,
         frame = viewModel.frame,
+        frameSeq = viewModel.frameSeq,
         error = viewModel.error,
         toolbarLayout = toolbarLayout,
         onTap = { x, y -> viewModel.sendClick(x, y) },
@@ -452,12 +464,24 @@ private fun DesktopPlaceholder(
     }
 }
 
+/**
+ * Default for callers whose frames still arrive as a fresh bitmap each update —
+ * SPICE reuses this renderer — where the changing identity already invalidates
+ * the draw and no counter is needed (#422).
+ */
+private val NO_FRAME_SEQ: StateFlow<Long> = MutableStateFlow(0L)
+
 // --- RDP Desktop Viewer ---
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RdpViewer(
     frame: Bitmap,
+    /**
+     * Read ONLY inside the draw scope, so an in-place bitmap change invalidates
+     * the draw phase without recomposing this whole subtree every frame (#422).
+     */
+    frameSeq: State<Long>,
     fullscreen: Boolean,
     toolbarLayout: ToolbarLayout = ToolbarLayout.DEFAULT,
     onTap: (Int, Int) -> Unit,
@@ -757,6 +781,11 @@ private fun RdpViewer(
                         clip = true
                     },
             ) {
+                // The bitmap is mutated in place, so its identity cannot signal a
+                // change; this read is what invalidates the draw. Removing it
+                // freezes the picture on the first frame.
+                @Suppress("UNUSED_EXPRESSION")
+                frameSeq.value
                 drawRemoteFrame(imageBitmap, frame.width, frame.height)
                 // Server cursor overlay (#212). Draw at the touchpad-tracked
                 // virtual cursor in TOUCHPAD mode (the position the user is
@@ -1454,26 +1483,39 @@ private fun androidKeyToScancode(key: Key): Int? = when (key) {
 }
 
 
-// Windows scancodes (Set 1 / AT keyboard)
-private const val SC_ESCAPE = 0x01
-private const val SC_BACKSPACE = 0x0E
-private const val SC_TAB = 0x0F
-private const val SC_RETURN = 0x1C
-private const val SC_CTRL_L = 0x1D
-private const val SC_SHIFT_L = 0x2A
-private const val SC_ALT_L = 0x38
-private const val SC_DELETE = 0x53
-private const val SC_INSERT = 0x52
-private const val SC_HOME = 0x47
-private const val SC_END = 0x4F
-private const val SC_PGUP = 0x49
-private const val SC_PGDN = 0x51
-private const val SC_UP = 0x48
-private const val SC_DOWN = 0x50
-private const val SC_LEFT = 0x4B
-private const val SC_RIGHT = 0x4D
-private const val SC_WIN_L = 0x5B
-private const val SC_F1 = 0x3B
+// Windows scancodes (Set 1 / AT keyboard).
+//
+// Keys in the navigation cluster and the Windows key are E0-prefixed on a
+// real keyboard; the bare codes below 0xE000 are their *numpad* twins. The
+// native layer reads the 0xE000 marker (ironrdp Scancode::from_u16 treats
+// `code & 0xE000 == 0xE000` as extended) and sets KBDFLAGS_EXTENDED, so
+// sending the bare value silently presses the wrong key.
+//
+// NB (#422): the marker fixes which key is pressed, but it was NOT what made
+// VirtualBox drop connections — VRDP rejects any lone fast-path scancode PDU
+// ("Network packet length is incorrect 0x0004" in VBox.log) because it never
+// advertises fast-path input. The native layer now falls back to slow-path
+// TS_INPUT_PDUs for such servers.
+internal const val EXT = 0xE000
+internal const val SC_ESCAPE = 0x01
+internal const val SC_BACKSPACE = 0x0E
+internal const val SC_TAB = 0x0F
+internal const val SC_RETURN = 0x1C
+internal const val SC_CTRL_L = 0x1D
+internal const val SC_SHIFT_L = 0x2A
+internal const val SC_ALT_L = 0x38
+internal const val SC_DELETE = EXT or 0x53
+internal const val SC_INSERT = EXT or 0x52
+internal const val SC_HOME = EXT or 0x47
+internal const val SC_END = EXT or 0x4F
+internal const val SC_PGUP = EXT or 0x49
+internal const val SC_PGDN = EXT or 0x51
+internal const val SC_UP = EXT or 0x48
+internal const val SC_DOWN = EXT or 0x50
+internal const val SC_LEFT = EXT or 0x4B
+internal const val SC_RIGHT = EXT or 0x4D
+internal const val SC_WIN_L = EXT or 0x5B
+internal const val SC_F1 = 0x3B
 private const val SC_F2 = 0x3C
 private const val SC_F3 = 0x3D
 private const val SC_F4 = 0x3E
@@ -1484,7 +1526,7 @@ private const val SC_F8 = 0x42
 private const val SC_F9 = 0x43
 private const val SC_F10 = 0x44
 private const val SC_F11 = 0x57
-private const val SC_F12 = 0x58
+internal const val SC_F12 = 0x58
 
 /** A friendly diagnosis layered on top of an opaque server error string. */
 internal data class RdpErrorHint(
@@ -1527,6 +1569,21 @@ internal fun rdpErrorHint(error: String): RdpErrorHint? = when {
     "no shared TLS parameters" in error || "PeerIncompatible" in error -> RdpErrorHint(
         titleRes = R.string.rdp_hint_tls_ciphers_title,
         bodyRes = R.string.rdp_hint_tls_ciphers_body,
+    )
+    // RDP_NEG_FAILURE HYBRID_REQUIRED_BY_SERVER (MS-RDPBCGR 2.2.1.2.2): the
+    // server insists on NLA and this profile has it off (#461).
+    "FailureCode(5)" in error -> RdpErrorHint(
+        titleRes = R.string.rdp_hint_nla_required_title,
+        bodyRes = R.string.rdp_hint_nla_required_body,
+    )
+    // sspi-rs Username parser: MicrosoftAccount\you@example.com is refused as
+    // MixedFormat, and a bare email is truncated at the @ (#461,
+    // Devolutions/sspi-rs#718). Only NLA goes through that parser.
+    "MixedFormat" in error || "invalid username" in error -> RdpErrorHint(
+        titleRes = R.string.rdp_hint_mixed_username_title,
+        bodyRes = R.string.rdp_hint_mixed_username_body,
+        linkLabelRes = R.string.rdp_hint_mixed_username_link,
+        linkUrl = "https://github.com/GlassHaven/Haven/issues/461",
     )
     else -> null
 }

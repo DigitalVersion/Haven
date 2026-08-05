@@ -65,6 +65,7 @@ class ConnectionsViewModelSessionTest {
     private lateinit var desktopManager: DesktopManager
     private lateinit var sessionManagerRegistry: SessionManagerRegistry
     private lateinit var sshKeyRepository: SshKeyRepository
+    private lateinit var silentSshDialer: sh.haven.core.ssh.SilentSshDialer
     private lateinit var viewModel: ConnectionsViewModel
 
     @Before
@@ -134,12 +135,17 @@ class ConnectionsViewModelSessionTest {
         sshKeyRepository = mockk(relaxed = true) {
             every { observeAll() } returns flowOf(emptyList())
         }
+        silentSshDialer = mockk(relaxed = true)
 
         viewModel = ConnectionsViewModel(
             appContext = appContext,
             repository = repository,
             portForwardRepository = portForwardRepository,
             sshSessionManager = sshSessionManager,
+            // Relaxed: looksLikeBackgroundRestriction() returns false, so the
+            // #495 attribution path stays quiet and these tests keep asserting
+            // ordinary session behaviour.
+            backgroundDisconnectDetector = mockk(relaxed = true),
             sshSessionAttacher = mockk(relaxed = true),
             reticulumSessionManager = reticulumSessionManager,
             moshSessionManager = moshSessionManager,
@@ -217,7 +223,7 @@ class ConnectionsViewModelSessionTest {
                     sh.haven.core.data.repository.ConnectionPreflight.Result.Proceed(firstArg())
                 }
             },
-            silentSshDialer = mockk(relaxed = true),
+            silentSshDialer = silentSshDialer,
         )
     }
 
@@ -269,6 +275,38 @@ class ConnectionsViewModelSessionTest {
 
         verify { desktopManager.stopAll() }
         coVerify { repository.delete("profile1") }
+    }
+
+    // Files icon on the connections list shouldn't demand its own connect
+    // when Terminal is already live — the SSH connection multiplexes an
+    // SFTP channel on it, the same reuse SshSessionManager.openSftpSession
+    // already does for the main Files tab. Dialing a second, independent
+    // Files session unconditionally was the actual cause of "Session not
+    // connected" even when Terminal was CONNECTED.
+    @Test
+    fun `connectFiles no-ops when the profile already has a live session`() = runTest {
+        val profile = ConnectionProfile(
+            id = "p1", label = "p1", host = "h", username = "u", connectionType = "SSH",
+        )
+        every { sshSessionManager.isProfileConnected("p1") } returns true
+
+        viewModel.connectFiles(profile)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 0) { silentSshDialer.dialFilesSession(any()) }
+    }
+
+    @Test
+    fun `connectFiles dials a Files session when the profile has no live session`() = runTest {
+        val profile = ConnectionProfile(
+            id = "p2", label = "p2", host = "h", username = "u", connectionType = "SSH",
+        )
+        every { sshSessionManager.isProfileConnected("p2") } returns false
+
+        viewModel.connectFiles(profile)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify { silentSshDialer.dialFilesSession(profile) }
     }
 
     private fun jumpProfile(authMethods: String) = ConnectionProfile(

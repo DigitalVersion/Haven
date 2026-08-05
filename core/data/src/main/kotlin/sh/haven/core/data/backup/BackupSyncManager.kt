@@ -45,9 +45,19 @@ class BackupSyncManager @Inject constructor(
         remoteBackupIo.writeBackup(profileId, remotePath, data)
     }
 
-    /** Read [remotePath] from [profileId], decrypt, and restore it. */
-    suspend fun pull(profileId: String, remotePath: String, password: String): BackupService.BackupResult {
+    /**
+     * Read [remotePath] from [profileId], decrypt, and restore it.
+     * [replaceConnections] defaults false — see [BackupService.import] — so
+     * [sh.haven.app.backup.BackupAutoPullWorker]'s unattended background
+     * calls keep merging, never wiping, unless a caller opts in explicitly.
+     */
+    suspend fun pull(
+        profileId: String,
+        remotePath: String,
+        password: String,
+        replaceConnections: Boolean = false,
+    ): BackupService.BackupResult {
         val data = remoteBackupIo.readBackup(profileId, remotePath)
-        return backupService.import(data, password)
+        return backupService.import(data, password, replaceConnections)
     }
 }

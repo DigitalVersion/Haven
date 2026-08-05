@@ -49,9 +49,21 @@ class SshConnectionService : Service() {
     @Inject
     lateinit var reviveHooks: Set<@JvmSuppressWildcards ForegroundReviveHook>
 
+    /**
+     * Runs the same hooks on a timer, because both of the triggers above need
+     * something an on-device MCP client never produces — a return to the
+     * foreground, or a network transition (#494).
+     */
+    @Inject
+    lateinit var reviveTicker: ForegroundReviveTicker
+
     /** Live MCP activity, folded into the ongoing notification (#239). */
     @Inject
     lateinit var mcpStatusHolder: McpStatusHolder
+
+    /** Stamps process background/foreground so a drop can be attributed (#495). */
+    @Inject
+    lateinit var backgroundDisconnectDetector: BackgroundDisconnectDetector
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -66,10 +78,18 @@ class SshConnectionService : Service() {
      */
     private val foregroundObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
+            backgroundDisconnectDetector.onForegrounded()
             serviceScope.launch { sessionManager.probeAndReconnectStale() }
             // probeAndReconnectStale skips headless transports (the MCP tunnel);
             // give them their own immediate kick rather than the deferrable watchdog.
             reviveHooks.forEach { it.reviveNow() }
+        }
+
+        // Stamped here rather than in MainActivity.onPause because this is the
+        // *process* going background, which is what a ROM's background policy
+        // acts on — an Activity pause also fires for a permission dialog (#495).
+        override fun onStop(owner: LifecycleOwner) {
+            backgroundDisconnectDetector.onBackgrounded()
         }
     }
 
@@ -101,6 +121,7 @@ class SshConnectionService : Service() {
         // Service.onCreate runs on the main thread, where ProcessLifecycleOwner
         // observers must be added.
         ProcessLifecycleOwner.get().lifecycle.addObserver(foregroundObserver)
+        reviveTicker.start()
         serviceScope.launch {
             networkMonitor.events
                 .debounce(2_000) // network changes fire rapidly during handoff
@@ -168,6 +189,7 @@ class SshConnectionService : Service() {
 
     override fun onDestroy() {
         ProcessLifecycleOwner.get().lifecycle.removeObserver(foregroundObserver)
+        reviveTicker.stop()
         networkMonitor.stop()
         serviceScope.cancel()
         super.onDestroy()

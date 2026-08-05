@@ -57,7 +57,16 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: on 4e06876c this job did 30m07s of real work against a 30m
+    # cap and was stamped `cancelled` two seconds into cleanup — with every
+    # step green and "BUILD SUCCESSFUL in 15m 14s" already in the log. That
+    # reads as a red main for a run that actually passed. The spend is
+    # genuine, not a hang: ~10.5m initialising submodules (the wayland tree
+    # alone is a dozen nested repos), ~3.5m toolchain, ~15m tests. Observed
+    # totals range 14m-30m depending on Gradle cache hits, so the cap has to
+    # clear the top of that spread, not sit on it. Cutting the submodule cost
+    # is the real fix; this stops it failing releases meanwhile.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -69,7 +78,37 @@ jobs:
         # matches no :app task and silently skips the agent/MCP unit tests.
         # Name the flavor task explicitly (arm64 only — unit tests are
         # flavor-agnostic) so they actually run in CI.
-        run: ./gradlew testDebugUnitTest :app:testArm64DebugUnitTest
+        #
+        # The sshlib contract tests are excluded here and run in their own
+        # non-gating step below. They exercise the opt-in preview SSH engine
+        # against an upstream race in sshlib 0.4.1 — its output pump is
+        # cancelled on CHANNEL_CLOSE and drops whatever it is still holding, so
+        # a command's stdout or stderr comes back empty or truncated at random
+        # (connectbot/cbssh#245, tracked in #448). Haven narrows the window but
+        # cannot close it from outside the library, and 0.4.1 is the latest
+        # release. Three failures in one day, on three different assertions,
+        # blocked a release that changed nothing in core/ssh — so this engine's
+        # known flakiness no longer gates shipping for the default JSch engine.
+        # Restore it here the moment a fixed sshlib is out.
+        run: >-
+          ./gradlew testDebugUnitTest :app:testArm64DebugUnitTest
+          -PexcludeSshlibContractTests=true
+          -PskipWaylandNatives=true
+          -PskipFfmpegNatives=true
+      - name: Run sshlib contract tests (non-gating, connectbot/cbssh#245)
+        # Reported, never silent: a failure here is visible in the job summary
+        # and the uploaded results, it just does not fail the build. If these
+        # start failing *every* run rather than intermittently, that is a real
+        # regression and not the upstream race — check before dismissing it.
+        #
+        # That last sentence used to be the reader's job. Since #475 the
+        # test-retry plugin gives SshlibExecContractTest three attempts (and
+        # only that class — verified by making a test in another core:ssh class
+        # fail and watching it run once), so a red step here already means
+        # "failed three times in a row" rather than "flaked once". The signal
+        # is now worth acting on instead of squinting at.
+        continue-on-error: true
+        run: ./gradlew :core:ssh:testDebugUnitTest --tests 'sh.haven.core.ssh.sshlib.*' -PskipWaylandNatives=true -PskipFfmpegNatives=true
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -93,6 +132,13 @@ jobs:
         run: ./scripts/check-changelog.sh
       - name: Check for hardcoded UI strings (#210)
         run: ./scripts/check-i18n-hardcoded.sh
+      - name: Check committed native libs resolve their stubs (#469)
+        run: ./scripts/check-native-libs.sh
+      - name: Check no new binaries are committed
+        # Binaries are unauditable in review and go stale silently (#469).
+        # Blocks any NEW one; the pre-existing set is grandfathered in the
+        # script and that list can only shrink.
+        run: ./scripts/check-no-committed-binaries.sh
       - name: Check translation export is current
         # docs/i18n/strings.json feeds the Pages translation page. Regenerate
         # and fail if it drifted from the strings.xml sources (rerun
@@ -108,7 +154,12 @@ jobs:
   lint:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30m was measured pre-upstream-sync (2026-08-04); the from-source
+    # ffmpeg/wayland/RDP native builds that landed with that sync push
+    # setup-toolchain (which every job here pays) close to the `build`
+    # job's own 45m budget by itself, so lint's ~13m on top blew straight
+    # through 30m on every run after the sync — 3 for 3, warm cache or not.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -141,7 +192,10 @@ jobs:
       # and Play Store fat distribution, not smoke-testing main. Cuts build
       # work roughly in half vs :app:assembleDebug (which expands to both).
       - name: Build arm64 debug APK
-        run: ./gradlew :app:assembleArm64Debug
+        # -PtargetAbi drives core/wayland's buildWaylandNatives, which builds the
+        # five arm64-only wayland binaries from the submodule instead of shipping
+        # committed copies. This job is what proves they still compile (#493).
+        run: ./gradlew :app:assembleArm64Debug -PtargetAbi=arm64
       - name: Upload debug APK
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -184,7 +238,7 @@ jobs:
       - uses: ./.github/actions/init-submodules-with-retry
       - uses: ./.github/actions/setup-toolchain
       - name: Build ${{ matrix.abi }} debug APK
-        run: ./gradlew :app:assemble${{ matrix.variant }}Debug
+        run: ./gradlew :app:assemble${{ matrix.variant }}Debug -PtargetAbi=${{ matrix.abi }}
 
   # Debug builds don't run R8, so an R8 rename of a reflectively-loaded class
   # can ship a feature 100% broken in release while every debug check stays
@@ -201,7 +255,9 @@ jobs:
   release-r8-smoke:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # See the lint job's comment above — same setup-toolchain cost now eats
+    # most of the old 30m budget before R8 even starts. 55m to match.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

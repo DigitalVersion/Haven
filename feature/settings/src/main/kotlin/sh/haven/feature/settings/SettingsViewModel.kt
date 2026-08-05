@@ -184,7 +184,15 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun importBackup(uri: Uri, password: String) {
+    /**
+     * @param replaceAll When true, this restore wipes every local connection
+     * and group before writing the file's — a real restore instead of the
+     * default merge (which never removes a card absent from the file, so a
+     * near-empty backup left every existing card untouched — the actual
+     * complaint that motivated this parameter: importing a 0-connection
+     * backup did nothing to the phone's existing cards).
+     */
+    fun importBackup(uri: Uri, password: String, replaceAll: Boolean = false) {
         viewModelScope.launch {
             _backupStatus.value = BackupStatus.InProgress
             try {
@@ -197,7 +205,7 @@ class SettingsViewModel @Inject constructor(
                 val result = withContext(Dispatchers.IO) {
                     val data = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalStateException("Could not open input stream")
-                    backupService.import(data, password)
+                    backupService.import(data, password, replaceAll)
                 }
                 val msg = "Restored ${result.count} items" +
                     if (result.errors.isNotEmpty()) " (${result.errors.size} errors)" else ""
@@ -300,7 +308,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     /** Read the backup from the configured remote, decrypt, and restore it. */
-    fun pullBackupFromRemote(password: String) {
+    fun pullBackupFromRemote(password: String, replaceAll: Boolean = false) {
         val profileId = backupSyncProfileId.value
         if (profileId == null) {
             _backupStatus.value = BackupStatus.Error("Choose a backup destination first")
@@ -310,7 +318,7 @@ class SettingsViewModel @Inject constructor(
             _backupStatus.value = BackupStatus.InProgress
             try {
                 val result = withContext(Dispatchers.IO) {
-                    backupSyncManager.pull(profileId, backupSyncPath.value, password)
+                    backupSyncManager.pull(profileId, backupSyncPath.value, password, replaceAll)
                 }
                 val msg = "Restored ${result.count} items" +
                     if (result.errors.isNotEmpty()) " (${result.errors.size} errors)" else ""
@@ -462,6 +470,16 @@ class SettingsViewModel @Inject constructor(
 
     fun setDesktopInputMode(mode: String) {
         viewModelScope.launch { preferencesRepository.setDesktopInputMode(mode) }
+    }
+
+    /** Desktop size Haven asks RDP servers for (#422). */
+    val rdpDesktopWidth: StateFlow<Int> = preferencesRepository.rdpDesktopWidth
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1920)
+    val rdpDesktopHeight: StateFlow<Int> = preferencesRepository.rdpDesktopHeight
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1080)
+
+    fun setRdpDesktopSize(width: Int, height: Int) {
+        viewModelScope.launch { preferencesRepository.setRdpDesktopSize(width, height) }
     }
 
     val gpuUseVenus: StateFlow<Boolean> = preferencesRepository.gpuUseVenus

@@ -23,6 +23,10 @@ interface ConnectionGroupDao {
     @Query("DELETE FROM connection_groups WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    /** Full-replace restore (#backup-replace): wipes every group. */
+    @Query("DELETE FROM connection_groups")
+    suspend fun deleteAll()
+
     @Query("UPDATE connection_groups SET collapsed = :collapsed WHERE id = :id")
     suspend fun updateCollapsed(id: String, collapsed: Boolean)
 

@@ -34,6 +34,8 @@ import sh.haven.core.data.repository.ConnectionRepository
 import sh.haven.core.data.repository.PortForwardRepository
 import sh.haven.core.data.repository.SshKeyRepository
 import sh.haven.core.ssh.ConnectionConfig
+import sh.haven.core.ssh.OpenKeychainClientFactory
+import sh.haven.core.ssh.openkeychain.OpenKeychainKeyData
 import sh.haven.core.ssh.HostKeyAuthFailure
 import sh.haven.core.ssh.HostKeyResult
 import sh.haven.core.ssh.isSshNetworkError
@@ -215,6 +217,7 @@ class ConnectionsViewModel @Inject constructor(
     private val sshIdentityRepository: sh.haven.core.data.repository.SshIdentityRepository,
     private val portForwardRepository: PortForwardRepository,
     private val sshSessionManager: SshSessionManager,
+    private val backgroundDisconnectDetector: sh.haven.core.ssh.BackgroundDisconnectDetector,
     private val sshSessionAttacher: sh.haven.core.ssh.SshSessionAttacher,
     private val reticulumSessionManager: ReticulumSessionManager,
     private val moshSessionManager: MoshSessionManager,
@@ -321,6 +324,63 @@ class ConnectionsViewModel @Inject constructor(
                 }
             }
         }
+        // #495: an SSH session that dies within seconds of the app going to the
+        // background, while the process and its foreground-service notification
+        // are both still alive, is the signature of a vendor background
+        // restriction rather than anything Haven did. Say so once, with the
+        // setting to check — Android's own battery-optimisation exemption cannot
+        // see those switches, so Haven otherwise reports "exempt, all good"
+        // while the thing killing connections sits in a screen it can't read.
+        //
+        // Deliberately NOT a general SSH-drop log: an intentional disconnect
+        // leaves an SSH session in the map as DISCONNECTED, unlike the serial
+        // transports above, so logging every transition would be noise. Gating
+        // on the background window keeps this to the case it can explain.
+        viewModelScope.launch {
+            val wasConnected = mutableSetOf<String>()
+            var alreadyReported = false
+            sshSessionManager.sessions.collect { map ->
+                map.values.forEach { s ->
+                    val connected = s.status == SshSessionManager.SessionState.Status.CONNECTED
+                    if (connected) {
+                        wasConnected += s.sessionId
+                    } else if (s.sessionId in wasConnected) {
+                        wasConnected -= s.sessionId
+                        if (!alreadyReported && backgroundDisconnectDetector.looksLikeBackgroundRestriction()) {
+                            alreadyReported = true
+                            val hint = sh.haven.core.ssh.BackgroundDisconnectDetector
+                                .vendorBackgroundSettingHint(android.os.Build.MANUFACTURER)
+                            connectionLogRepository.logEvent(
+                                s.profileId,
+                                ConnectionLog.Status.DISCONNECTED,
+                                details = buildString {
+                                    append(
+                                        "Dropped within ")
+                                    append(sh.haven.core.ssh.BackgroundDisconnectDetector.WINDOW_MS / 1000)
+                                    append("s of Haven going to the background, while the ")
+                                    append("connection notification was still showing. That is usually the ")
+                                    append("phone's own background restrictions cutting the connection, not ")
+                                    append("Haven closing it — and it is a separate setting from Android's ")
+                                    append("battery optimisation, which Haven cannot read. ")
+                                    if (hint != null) {
+                                        append("On ")
+                                        append(android.os.Build.MANUFACTURER)
+                                        append(": ")
+                                        append(hint)
+                                        append(".")
+                                    } else {
+                                        append(
+                                            "Look for an 'allow background activity' or 'autostart' " +
+                                                "switch in your phone's app settings.",
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         // Same out-of-range/drop logging for BLE-serial links.
         viewModelScope.launch {
             val wasConnected = mutableSetOf<String>()
@@ -375,13 +435,22 @@ class ConnectionsViewModel @Inject constructor(
                         onSessionSelected(command.sessionId, command.sessionName)
                     }
                 } else if (command is sh.haven.core.data.agent.AgentUiCommand.ConnectFromDeepLink) {
-                    // haven://connect matched a saved profile (#305). Show a
-                    // confirm sheet first — a BROWSABLE link can be fired by a
-                    // web page, and confirming blocks a drive-by connect that
-                    // would use this profile's stored credentials.
+                    // haven://connect matched a saved profile (#305): connect
+                    // straight away, no confirm. Every haven:// link in this
+                    // fork's actual use is generated by the fleet's own
+                    // scripts referencing a card already saved on this phone
+                    // (single-user personal device), so the drive-by-link
+                    // concern the confirm sheet guarded against doesn't apply
+                    // to an already-known profile — see CreateAndConnectFromDeepLink
+                    // below for the still-gated new-profile path.
                     val profile = repository.getById(command.profileId)
                     if (profile != null) {
-                        _connectConfirm.value = ConnectConfirm(profile, command.sessionName, command.startupCommand)
+                        connect(
+                            profile,
+                            password = profile.sshPassword.orEmpty(),
+                            sessionName = command.sessionName,
+                            startupCommand = command.startupCommand,
+                        )
                     } else {
                         Log.w(TAG, "ConnectFromDeepLink: profile ${command.profileId} not found")
                     }
@@ -390,6 +459,27 @@ class ConnectionsViewModel @Inject constructor(
                     // New-Connection editor pre-filled for the user to review,
                     // add auth, and save.
                     _prefillNewConnection.value = command
+                } else if (command is sh.haven.core.data.agent.AgentUiCommand.CreateAndConnectFromDeepLink) {
+                    // haven://connect with no saved match but a keyId already
+                    // on this device (#305 follow-up): build the profile from
+                    // the link's fields and hold it for a one-tap confirm
+                    // before persisting — still BROWSABLE, so a stray link
+                    // from another app shouldn't silently create-and-dial.
+                    val draft = ConnectionProfile(
+                        label = command.label,
+                        host = command.host,
+                        username = command.username,
+                        port = command.port,
+                        connectionType = "SSH",
+                        authType = ConnectionProfile.AuthType.KEY,
+                        keyId = command.keyId,
+                        useMosh = command.transport == "mosh",
+                        useEternalTerminal = command.transport == "et",
+                        sessionManager = if (command.command == null && command.session != null) "TMUX" else null,
+                        remoteCommand = command.command,
+                        requestPty = true,
+                    )
+                    _createConnectConfirm.value = CreateConnectConfirm(draft, command.session, command.command)
                 }
             }
         }
@@ -504,9 +594,18 @@ class ConnectionsViewModel @Inject constructor(
         viewModelScope.launch { repository.updateMcpEnabled(profileId, enabled) }
     }
 
-    /** Silent connect for Files/SFTP channel. */
+    /**
+     * Silent connect for Files/SFTP channel. No-ops when a Terminal (or an
+     * existing Files) session for this profile is already CONNECTED — the
+     * SSH connection multiplexes an SFTP channel on top of an already
+     * authenticated session ([SshSessionManager.openSftpSession] already does
+     * this reuse for the main Files tab); dialing a second, independent
+     * session here was the actual cause of "Files needs its own connect"
+     * even when Terminal was live.
+     */
     fun connectFiles(profile: ConnectionProfile) {
         if (!profile.isSsh) return
+        if (sshSessionManager.isProfileConnected(profile.id)) return
         viewModelScope.launch {
             _connectingProfileId.value = profile.id
             try {
@@ -684,11 +783,20 @@ class ConnectionsViewModel @Inject constructor(
             result.toMap()
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    /** Derive Files-specific statuses for the connections list UI. */
+    /**
+     * Derive Files-specific statuses for the connections list UI. A live
+     * Terminal (INTERACTIVE) session counts as Files-ready too — the SSH
+     * connection multiplexes an SFTP channel on top of it (same reuse
+     * [SshSessionManager.openSftpSession] does for the main Files tab), so
+     * this icon shouldn't demand its own separate connect.
+     */
     val filesStatuses: StateFlow<Map<String, ProfileStatus>> = sshSessionManager.sessions
         .map { sshMap ->
             val result = mutableMapOf<String, ProfileStatus>()
-            sshMap.values.filter { it.purpose == SshSessionManager.SessionState.SessionPurpose.FILES }
+            sshMap.values.filter {
+                it.purpose == SshSessionManager.SessionState.SessionPurpose.FILES ||
+                    it.purpose == SshSessionManager.SessionState.SessionPurpose.INTERACTIVE
+            }
                 .groupBy { it.profileId }
                 .forEach { (profileId, states) ->
                     val statuses = states.map { it.status }
@@ -1042,30 +1150,28 @@ class ConnectionsViewModel @Inject constructor(
 
     // --- haven://connect deep link (#305) ---
 
-    /** A matched saved profile awaiting the user's confirm before connecting. */
-    data class ConnectConfirm(
+    /** A not-yet-saved profile, built from a deep link's fields, awaiting the user's confirm. */
+    data class CreateConnectConfirm(
         val profile: ConnectionProfile,
         val sessionName: String?,
         val startupCommand: String? = null,
     )
 
-    private val _connectConfirm = MutableStateFlow<ConnectConfirm?>(null)
-    val connectConfirm: StateFlow<ConnectConfirm?> = _connectConfirm.asStateFlow()
+    private val _createConnectConfirm = MutableStateFlow<CreateConnectConfirm?>(null)
+    val createConnectConfirm: StateFlow<CreateConnectConfirm?> = _createConnectConfirm.asStateFlow()
 
-    /** User confirmed the deep-link connect: run the same path as ConnectProfile. */
-    fun confirmDeepLinkConnect() {
-        val c = _connectConfirm.value ?: return
-        _connectConfirm.value = null
-        connect(
-            c.profile,
-            password = c.profile.sshPassword.orEmpty(),
-            sessionName = c.sessionName,
-            startupCommand = c.startupCommand,
-        )
+    /** User confirmed: persist the draft profile, then connect it. */
+    fun confirmCreateAndConnect() {
+        val c = _createConnectConfirm.value ?: return
+        _createConnectConfirm.value = null
+        viewModelScope.launch {
+            repository.save(c.profile)
+            connect(c.profile, password = "", sessionName = c.sessionName, startupCommand = c.startupCommand)
+        }
     }
 
-    fun dismissDeepLinkConnect() {
-        _connectConfirm.value = null
+    fun dismissCreateAndConnect() {
+        _createConnectConfirm.value = null
     }
 
     /** Params for the New-Connection editor to open pre-filled (unmatched host). */
@@ -3158,6 +3264,7 @@ class ConnectionsViewModel @Inject constructor(
             } else null
             val client = reuseClient ?: SshConnectionFactory.create(sshEngineFromOptionsText(profile.sshOptions)).apply {
                 fidoAuthenticator = this@ConnectionsViewModel.fidoAuthenticator
+                openKeychainClients = OpenKeychainClientFactory.from(appContext)
                 this.verboseLogger = verboseLogger
             }
             val sessionId = sshSessionManager.registerSession(profile.id, profile.label, client)
@@ -4177,6 +4284,7 @@ class ConnectionsViewModel @Inject constructor(
         // this SshClient", never reaching the touch prompt (#286).
         val jumpClient = SshClient().apply {
             fidoAuthenticator = this@ConnectionsViewModel.fidoAuthenticator
+            openKeychainClients = OpenKeychainClientFactory.from(appContext)
             verboseLogger = jumpVerbose
         }
         val jumpSessionId = sshSessionManager.registerSession(jumpProfileId, "Jump: ${jumpProfile.label}", jumpClient)
@@ -4342,6 +4450,7 @@ class ConnectionsViewModel @Inject constructor(
                 is ConnectionConfig.AuthMethod.PrivateKey -> "key"
                 is ConnectionConfig.AuthMethod.PrivateKeys -> "key"
                 is ConnectionConfig.AuthMethod.FidoKey -> "FIDO2"
+                is ConnectionConfig.AuthMethod.ProviderKey -> "provider key"
                 is ConnectionConfig.AuthMethod.Multi -> m.methods.joinToString("+") { label(it) }
             }
             label(config.authMethod)
@@ -4712,6 +4821,16 @@ class ConnectionsViewModel @Inject constructor(
                     keyLabel = key.label,
                 )
             }
+            // A key held by another app (#487): the bytes are a reference to
+            // it, not key material, so they go through verbatim exactly as
+            // an SK credential handle does.
+            if (key.keyType == OpenKeychainKeyData.KEY_TYPE) {
+                Log.d(TAG, "Using a provider-held key: ${key.label}")
+                return ConnectionConfig.AuthMethod.ProviderKey(
+                    keyData = keyBytes,
+                    keyLabel = key.label,
+                )
+            }
             // For encrypted keys, pass the original encrypted bytes + passphrase.
             // JSch decrypts at auth time — key never stored in plaintext.
             // When the caller supplied no passphrase, fall back to the opt-in
@@ -4756,7 +4875,14 @@ class ConnectionsViewModel @Inject constructor(
      */
     private suspend fun resolveAnyUsableKeys(): ConnectionConfig.AuthMethod? {
         val entries = sshKeyRepository.getAllDecrypted()
-            .filter { !it.keyType.startsWith("sk-") && it.enabledForAuth }
+            // Provider-held keys (#487) are excluded for the same reason as
+            // SK keys: their bytes are a reference to a key in another app,
+            // not loadable material, and signing with one prompts the user.
+            .filter {
+                !it.keyType.startsWith("sk-") &&
+                    it.keyType != OpenKeychainKeyData.KEY_TYPE &&
+                    it.enabledForAuth
+            }
             .mapNotNull { key ->
                 if (key.isEncrypted) {
                     // Only usable unattended if its passphrase is stored (#290).
@@ -5455,6 +5581,7 @@ class ConnectionsViewModel @Inject constructor(
         val verboseLogger = if (verboseEnabled) SshVerboseLogger() else null
         val client = SshConnectionFactory.create(sshEngineFromOptionsText(profile.sshOptions)).apply {
             fidoAuthenticator = this@ConnectionsViewModel.fidoAuthenticator
+            openKeychainClients = OpenKeychainClientFactory.from(appContext)
             this.verboseLogger = verboseLogger
         }
         val sessionId = sshSessionManager.registerSession(profile.id, profile.label, client)

@@ -18,6 +18,7 @@ class ConnectDeepLinkTest {
         type: String = "SSH",
         mosh: Boolean = false,
         et: Boolean = false,
+        remoteCommand: String? = null,
     ) = ConnectionProfile(
         id = id,
         label = host,
@@ -27,6 +28,7 @@ class ConnectDeepLinkTest {
         connectionType = type,
         useMosh = mosh,
         useEternalTerminal = et,
+        remoteCommand = remoteCommand,
     )
 
     /** A query getter backed by a map, standing in for `Uri::getQueryParameter`. */
@@ -206,5 +208,140 @@ class ConnectDeepLinkTest {
         assertTrue(cmd is AgentUiCommand.ConnectFromDeepLink)
         cmd as AgentUiCommand.ConnectFromDeepLink
         assertEquals("b", cmd.profileId)
+    }
+
+    // --- id fallback and ambiguity (maintainer additions on #486) ---
+
+    @Test
+    fun `a stale id falls back to host matching when the link carries a host`() {
+        // A profile deleted and recreated keeps its host but gets a new id, so a
+        // bookmarked link's id stops resolving. Falling through to the host beats
+        // opening an empty New-Connection editor.
+        val prof = profile(id = "new-id", host = "h")
+        val cmd = ConnectDeepLink.resolve(
+            listOf(prof),
+            ConnectDeepLink.parse(query("host" to "h", "id" to "old-id"))!!,
+        )
+        assertTrue(cmd is AgentUiCommand.ConnectFromDeepLink)
+        assertEquals("new-id", (cmd as AgentUiCommand.ConnectFromDeepLink).profileId)
+    }
+
+    @Test
+    fun `a stale id with no host still yields no match`() {
+        val prof = profile(id = "new-id", host = "h")
+        val matches = ConnectDeepLink.matches(
+            listOf(prof),
+            ConnectDeepLink.parse(query("id" to "old-id"))!!,
+        )
+        assertTrue(matches.isEmpty())
+    }
+
+    @Test
+    fun `a live id wins over a host that matches a different profile`() {
+        val a = profile(id = "a", host = "h", username = "one")
+        val b = profile(id = "b", host = "h", username = "two")
+        val cmd = ConnectDeepLink.resolve(
+            listOf(a, b),
+            ConnectDeepLink.parse(query("host" to "h", "user" to "one", "id" to "b"))!!,
+        )
+        assertEquals("b", (cmd as AgentUiCommand.ConnectFromDeepLink).profileId)
+    }
+
+    @Test
+    fun `session narrowing picks the one profile whose command contains it`() {
+        val a = profile(id = "a", host = "h", remoteCommand = "tmux new -A -s work")
+        val b = profile(id = "b", host = "h", remoteCommand = "tmux new -A -s play")
+        val cmd = ConnectDeepLink.resolve(
+            listOf(a, b),
+            ConnectDeepLink.parse(query("host" to "h", "session" to "play"))!!,
+        )
+        assertEquals("b", (cmd as AgentUiCommand.ConnectFromDeepLink).profileId)
+    }
+
+    @Test
+    fun `session narrowing that stays ambiguous prefills instead of guessing`() {
+        // Both commands contain the session string. Connecting to the wrong host
+        // is worse than asking, so this must NOT pick one.
+        val a = profile(id = "a", host = "h", remoteCommand = "tmux new -A -s work")
+        val b = profile(id = "b", host = "h", remoteCommand = "tmux new -A -s workshop")
+        val cmd = ConnectDeepLink.resolve(
+            listOf(a, b),
+            ConnectDeepLink.parse(query("host" to "h", "session" to "work"))!!,
+        )
+        assertTrue(cmd is AgentUiCommand.PrefillNewConnection)
+    }
+
+    // --- keyId / label / canAutoCreate ---
+
+    @Test
+    fun `parse extracts keyId and label params`() {
+        val p = ConnectDeepLink.parse(
+            query("host" to "h", "keyId" to " key-1 ", "label" to " seer worker "),
+        )!!
+        assertEquals("key-1", p.keyId)
+        assertEquals("seer worker", p.label)
+    }
+
+    @Test
+    fun `parse leaves keyId and label null when missing or blank`() {
+        val p = ConnectDeepLink.parse(query("host" to "h", "keyId" to "", "label" to ""))!!
+        assertNull(p.keyId)
+        assertNull(p.label)
+    }
+
+    @Test
+    fun `canAutoCreate requires host, username, keyId, and an existing key`() {
+        val full = ConnectDeepLink.Params("h", "me", null, null, null, keyId = "k1")
+        assertTrue(ConnectDeepLink.canAutoCreate(full) { it == "k1" })
+        assertTrue(!ConnectDeepLink.canAutoCreate(full) { it == "some-other-key" })
+        assertTrue(!ConnectDeepLink.canAutoCreate(full.copy(keyId = null)) { true })
+        assertTrue(!ConnectDeepLink.canAutoCreate(full.copy(username = null)) { true })
+        assertTrue(!ConnectDeepLink.canAutoCreate(full.copy(host = "")) { true })
+    }
+
+    @Test
+    fun `resolve creates-and-connects when no match but keyId resolves on device`() {
+        val cmd = ConnectDeepLink.resolve(
+            emptyList(),
+            ConnectDeepLink.Params("newhost", "me", 2022, "et", "work", command = "exec tmux new -A -s work", keyId = "k1", label = "seer · worker"),
+            keyExists = { it == "k1" },
+        )
+        assertTrue(cmd is AgentUiCommand.CreateAndConnectFromDeepLink)
+        cmd as AgentUiCommand.CreateAndConnectFromDeepLink
+        assertEquals("newhost", cmd.host)
+        assertEquals("me", cmd.username)
+        assertEquals(2022, cmd.port)
+        assertEquals("et", cmd.transport)
+        assertEquals("work", cmd.session)
+        assertEquals("exec tmux new -A -s work", cmd.command)
+        assertEquals("k1", cmd.keyId)
+        assertEquals("seer · worker", cmd.label)
+    }
+
+    @Test
+    fun `resolve falls back to prefill when keyId is present but not found on device`() {
+        val cmd = ConnectDeepLink.resolve(
+            emptyList(),
+            ConnectDeepLink.Params("newhost", "me", null, null, null, keyId = "k1"),
+            keyExists = { false },
+        )
+        assertTrue(cmd is AgentUiCommand.PrefillNewConnection)
+    }
+
+    @Test
+    fun `resolve falls back to prefill when no keyId is present at all`() {
+        val cmd = ConnectDeepLink.resolve(emptyList(), ConnectDeepLink.Params("newhost", "me", null, null, null))
+        assertTrue(cmd is AgentUiCommand.PrefillNewConnection)
+    }
+
+    @Test
+    fun `resolve prefers an existing exact-id match over auto-create`() {
+        val match = profile(id = "p1", host = "h", username = "me")
+        val cmd = ConnectDeepLink.resolve(
+            listOf(match),
+            ConnectDeepLink.Params("h", "me", null, null, null, id = "p1", keyId = "k1"),
+            keyExists = { it == "k1" },
+        )
+        assertTrue(cmd is AgentUiCommand.ConnectFromDeepLink)
     }
 }

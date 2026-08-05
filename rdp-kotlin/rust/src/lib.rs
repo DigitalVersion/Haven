@@ -2,6 +2,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex, RwLock};
 use log::{debug, error, info, warn};
 
+mod bitmap_bridge;
 mod egfx;
 mod redirection;
 
@@ -215,8 +216,20 @@ enum InputEvent {
 pub struct RdpClient {
     config: RdpConfig,
     state: Arc<RwLock<SessionState>>,
+    /// Key the JNI bitmap bridge uses to find `state` (#466). A raw JNI entry
+    /// point cannot reach a UniFFI object, so the state is registered here and
+    /// Kotlin passes this id back in.
+    bitmap_bridge_id: i64,
     input_queue: Arc<Mutex<Vec<InputEvent>>>,
     session_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Drop for RdpClient {
+    fn drop(&mut self) {
+        // Weak refs mean a stale entry is harmless, but a long-lived process
+        // should not accumulate them.
+        bitmap_bridge::unregister(self.bitmap_bridge_id);
+    }
 }
 
 #[uniffi::export]
@@ -224,9 +237,7 @@ impl RdpClient {
     #[uniffi::constructor]
     pub fn new(config: RdpConfig) -> Self {
         init_logging();
-        Self {
-            config,
-            state: Arc::new(RwLock::new(SessionState {
+        let state = Arc::new(RwLock::new(SessionState {
                 connected: false,
                 framebuffer: None,
                 dirty_rects: Vec::new(),
@@ -234,12 +245,25 @@ impl RdpClient {
                 clipboard_callback: None,
                 session_callback: None,
                 pointer_callback: None,
-                avc_decoder: None,
-                shutdown: false,
-            })),
+            avc_decoder: None,
+            shutdown: false,
+        }));
+        let bitmap_bridge_id = bitmap_bridge::register(&state);
+        Self {
+            config,
+            state,
+            bitmap_bridge_id,
             input_queue: Arc::new(Mutex::new(Vec::new())),
             session_thread: Mutex::new(None),
         }
+    }
+
+    /// Key for the JNI bitmap bridge (#466). Kotlin passes this to
+    /// `RdpBitmapBridge.blitRegion` so a raw JNI call can find this session's
+    /// framebuffer; UniFFI objects are opaque handles and cannot be reached
+    /// from hand-written JNI any other way.
+    pub fn bitmap_bridge_id(&self) -> i64 {
+        self.bitmap_bridge_id
     }
 
     pub fn connect(
@@ -289,7 +313,31 @@ impl RdpClient {
         let handle = std::thread::Builder::new()
             .name("rdp-session".into())
             .spawn(move || {
-                let result = run_rdp_session(stream, &config, &state, &input_queue, &server_name, server_addr);
+                // #422: a panic in the decode path used to abort the process —
+                // the reporter's log ends in a native tombstone in
+                // librdp_transport.so with no Java frames, after 1550 24-bpp RLE
+                // bitmaps. Catch it here so a bad frame kills this session and
+                // reports itself, instead of taking Haven with it. Paired with
+                // panic = "unwind" in the release profile; under abort this
+                // never runs.
+                //
+                // AssertUnwindSafe is honest rather than convenient: past a
+                // panic we touch `state` only to mark the session dead.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_rdp_session(stream, &config, &state, &input_queue, &server_name, server_addr)
+                }))
+                .unwrap_or_else(|payload| {
+                    let what = payload
+                        .downcast_ref::<&'static str>()
+                        .map(|s| (*s).to_owned())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown panic".to_owned());
+                    error!("RDP session panicked: {what}");
+                    Err(format!(
+                        "internal error decoding the RDP stream: {what} \
+                         — the session was dropped to keep the app running"
+                    ))
+                });
                 let session_cb = state.read().ok().and_then(|s| s.session_callback.clone());
                 match result {
                     Err(e) => {
@@ -339,6 +387,41 @@ impl RdpClient {
 
     pub fn get_framebuffer(&self) -> Option<FrameData> {
         self.state.read().ok()?.framebuffer.clone()
+    }
+
+    /// Tightly-packed RGBA for just `(x, y, w, h)` of the framebuffer.
+    ///
+    /// #422: the host repaints only the region the server changed, but had to
+    /// fetch the WHOLE framebuffer to get at it — on a 1920x1080 session that
+    /// is an 8.29 MB copy per update, for a median update of about 41 KB.
+    /// The rect is clipped to the framebuffer; `None` means there is nothing
+    /// to copy (no framebuffer, or an empty/out-of-bounds rect) and the caller
+    /// should fall back to a full repaint.
+    pub fn get_framebuffer_region(&self, x: u16, y: u16, w: u16, h: u16) -> Option<FrameData> {
+        let state = self.state.read().ok()?;
+        let fb = state.framebuffer.as_ref()?;
+        let (fb_w, fb_h) = (fb.width as usize, fb.height as usize);
+        let (x, y) = (x as usize, y as usize);
+        if x >= fb_w || y >= fb_h {
+            return None;
+        }
+        let w = (w as usize).min(fb_w - x);
+        let h = (h as usize).min(fb_h - y);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let stride = fb_w * 4;
+        let row_bytes = w * 4;
+        let mut pixels = Vec::with_capacity(row_bytes * h);
+        for row in 0..h {
+            let start = (y + row) * stride + x * 4;
+            pixels.extend_from_slice(&fb.pixels[start..start + row_bytes]);
+        }
+        Some(FrameData {
+            width: w as u16,
+            height: h as u16,
+            pixels,
+        })
     }
 
     pub fn get_dirty_rects(&self) -> Vec<RdpRect> {
@@ -452,6 +535,17 @@ fn build_config(config: &RdpConfig) -> ironrdp_connector::Config {
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
         keyboard_layout: 0x0409, // US English
+        // Advertised network profile. Haven is a mobile client and the link is
+        // usually WAN or worse, but this only tunes the server's own
+        // heuristics — it does not gate any feature we depend on.
+        connection_type: gcc::ConnectionType::Lan,
+        // The whole reason the vendored connector fork existed: without this
+        // bit, modern Windows servers never open the EGFX dynamic virtual
+        // channel and Haven's ClearCodec/RemoteFX-Progressive decoders are
+        // never fed (#418, #425). The fork OR'd it in unconditionally; upstream
+        // takes it as an opt-in Config flag (Devolutions/IronRDP#1237), and
+        // Haven has the EGFX DVC processor wired, so it opts in.
+        support_dyn_vc_gfx_protocol: true,
         ime_file_name: String::new(),
         bitmap: Some(BitmapConfig {
             lossy_compression: true,
@@ -492,14 +586,22 @@ fn build_config(config: &RdpConfig) -> ironrdp_connector::Config {
                             }),
                         ),
                     },
-                    Codec {
-                        id: 0,
-                        property: CodecProperty::NsCodec(NsCodec {
-                            is_dynamic_fidelity_allowed: true,
-                            is_subsampling_allowed: true,
-                            color_loss_level: 3,
-                        }),
-                    },
+                    // NSCodec is deliberately NOT advertised (#461).
+                    //
+                    // Advertising it lets a Windows server assign it a codec id
+                    // (1 in practice) and send fast-path SET_SURFACE_BITS with
+                    // it — but that route is decoded by ironrdp-session, whose
+                    // CodecId::from_u8 accepts only NONE(0), REMOTEFX(3) and
+                    // QOI(0x0A/0x0B). An id it does not know is a hard error,
+                    // not a skipped region, so the whole session dies with
+                    // `Fast-Path: unexpected codec ID: 1` mid-logon.
+                    //
+                    // Haven's NSCodec support is the sub-region decoder INSIDE
+                    // ClearCodec on the EGFX channel (#418) — a different
+                    // container entirely, and no help here. Advertising a codec
+                    // this path cannot decode only invites the server to use it.
+                    // Windows falls back to RemoteFX or uncompressed bitmaps,
+                    // both of which are decodable.
                 ])
             },
         }),
@@ -1018,6 +1120,54 @@ mod tls_pin_tests {
 /// user rather than swallowing every failure into a generic "Connection
 /// failed" — which is what happened before and produced the "nothing
 /// happens, empty Desktop screen" symptom in #106.
+/// #422: re-express a fast-path input event as its slow-path TS_INPUT_EVENT
+/// twin, for servers that never negotiated fast-path input (VirtualBox VRDP).
+/// The mouse PDU bodies are byte-identical between the two paths; keyboard and
+/// sync events just carry their flags in different positions/widths. QoE has
+/// no slow-path equivalent and is dropped.
+fn slow_path_input_event(
+    ev: &ironrdp_pdu::input::fast_path::FastPathInputEvent,
+) -> Option<ironrdp_pdu::input::InputEvent> {
+    use ironrdp_pdu::input::fast_path::{FastPathInputEvent as Fp, KeyboardFlags as FpKb};
+    use ironrdp_pdu::input::{InputEvent, scan_code, sync, unicode};
+
+    Some(match ev {
+        Fp::KeyboardEvent(flags, code) => {
+            let mut kf = scan_code::KeyboardFlags::empty();
+            if flags.contains(FpKb::RELEASE) {
+                kf |= scan_code::KeyboardFlags::RELEASE;
+            }
+            if flags.contains(FpKb::EXTENDED) {
+                kf |= scan_code::KeyboardFlags::EXTENDED;
+            }
+            if flags.contains(FpKb::EXTENDED1) {
+                kf |= scan_code::KeyboardFlags::EXTENDED_1;
+            }
+            InputEvent::ScanCode(scan_code::ScanCodePdu {
+                flags: kf,
+                key_code: u16::from(*code),
+            })
+        }
+        Fp::UnicodeKeyboardEvent(flags, code) => {
+            let mut kf = unicode::KeyboardFlags::empty();
+            if flags.contains(FpKb::RELEASE) {
+                kf |= unicode::KeyboardFlags::RELEASE;
+            }
+            InputEvent::Unicode(unicode::UnicodePdu {
+                flags: kf,
+                unicode_code: *code,
+            })
+        }
+        Fp::MouseEvent(pdu) => InputEvent::Mouse(pdu.clone()),
+        Fp::MouseEventEx(pdu) => InputEvent::MouseX(pdu.clone()),
+        Fp::MouseEventRel(pdu) => InputEvent::MouseRel(pdu.clone()),
+        Fp::SyncEvent(flags) => InputEvent::Sync(sync::SyncPdu {
+            flags: sync::SyncToggleFlags::from_bits_retain(u32::from(flags.bits())),
+        }),
+        Fp::QoeEvent(_) => return None,
+    })
+}
+
 fn run_rdp_session(
     stream: TcpStream,
     config: &RdpConfig,
@@ -1028,7 +1178,7 @@ fn run_rdp_session(
 ) -> Result<(), String> {
     use ironrdp_blocking::{connect_begin, connect_finalize, mark_as_upgraded, Framed};
     use ironrdp_connector::ServerName;
-    use ironrdp_session::{ActiveStage, ActiveStageOutput};
+    use ironrdp_session::ActiveStageOutput;
     use ironrdp_session::image::DecodedImage;
     use ironrdp_graphics::image_processing::PixelFormat;
 
@@ -1111,8 +1261,8 @@ fn run_rdp_session(
         return Err(format!("TLS handshake failed: {}", detail));
     }
 
-    let tls_stream = rustls::StreamOwned::new(tls_conn, socket);
-    let mut tls_framed = Framed::new_with_leftover(tls_stream, leftover);
+    let tls_shared = SharedTls::new(rustls::StreamOwned::new(tls_conn, socket));
+    let mut tls_framed = Framed::new_with_leftover(tls_shared.clone(), leftover);
 
     let upgraded = mark_as_upgraded(should_upgrade, &mut connector);
 
@@ -1126,9 +1276,8 @@ fn run_rdp_session(
     // always wrong. Reproducer (Devolutions/sspi-rs#651) shows full-DER
     // → AlertReceived(InternalError) and SPKI → success against the
     // same VM with the same credentials.
-    let raw_cert_der = tls_framed
-        .get_inner()
-        .0
+    let raw_cert_der = tls_shared
+        .lock()
         .conn
         .peer_certificates()
         .and_then(|certs| certs.first())
@@ -1213,8 +1362,40 @@ fn run_rdp_session(
     // #438: keep a resettable copy of the activation sequence so a bare
     // Server Demand Active (FreeRDP shadow skips the preceding Deactivate
     // All) can re-enter the activation state machine mid-session.
-    let activation_template = connection_result.connection_activation.reset_clone();
-    let mut active_stage = ActiveStage::new(connection_result);
+    // connector 0.10.0 replaced the clone-and-reset dance with a factory that
+    // mints a fresh sequence on demand — which is what #438 wanted in the first
+    // place.
+    let activation_factory = connection_result.activation_factory;
+
+    // #422: fast-path input is only legal when the server advertised it
+    // (MS-RDPBCGR 2.2.8.1.2). VirtualBox VRDP advertises SCANCODES only and
+    // closes the connection on a lone fast-path scancode event ("Network
+    // packet length is incorrect 0x0004" in VBox.log) — the reason arrow
+    // keys killed VRDE sessions. Such servers get slow-path TS_INPUT_PDUs,
+    // as mstsc/FreeRDP do.
+    let fastpath_input_supported = {
+        use ironrdp_pdu::rdp::capability_sets::InputFlags;
+        let flags = connection_result.input_flags;
+        let supported = flags.intersects(InputFlags::FASTPATH_INPUT | InputFlags::FASTPATH_INPUT_2);
+        if !supported {
+            info!("Server did not advertise fast-path input ({flags:?}); using slow-path input PDUs");
+        }
+        supported
+    };
+
+    // session 0.11.0 replaced ActiveStage::new(connection_result) with an
+    // explicit builder; the fields are the same ones the constructor read.
+    let mut active_stage = ironrdp_session::ActiveStageBuilder {
+        static_channels: connection_result.static_channels,
+        user_channel_id: connection_result.user_channel_id,
+        io_channel_id: connection_result.io_channel_id,
+        message_channel_id: connection_result.message_channel_id,
+        share_id: connection_result.share_id,
+        compression_type: connection_result.compression_type,
+        enable_server_pointer: connection_result.enable_server_pointer,
+        pointer_software_rendering: connection_result.pointer_software_rendering,
+    }
+    .build();
 
     // Handshake is done; shrink the read timeout to 100ms so the session
     // loop can poll the shutdown flag promptly. WouldBlock/TimedOut are
@@ -1226,6 +1407,110 @@ fn run_rdp_session(
     // Input state tracking
     let mut input_db = ironrdp_input::Database::new();
 
+    // #477: on a fast-path server, move input off the session loop entirely.
+    //
+    // Encoding fast-path input is a pure function of the events — ActiveStage's
+    // `process_fastpath_input` only reaches for the image to composite a
+    // client-side pointer, and Haven sets `pointer_software_rendering: false`
+    // so `image.pointer` is never populated and `move_pointer` is a no-op that
+    // records coordinates nobody reads (we draw the cursor in Kotlin, #212).
+    // That leaves the socket as the only thing input needs, so it can run on
+    // its own thread and stop waiting behind frame decodes.
+    //
+    // Slow-path servers (VirtualBox VRDP, #422) keep the in-loop path below:
+    // their PDUs go through `active_stage.encode_static`, which is not shareable.
+    let input_counters = Arc::new(InputCounters::default());
+    let stop_input = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let input_thread = if fastpath_input_supported {
+        let queue = Arc::clone(input_queue);
+        let mut sink = tls_shared.clone();
+        let st = Arc::clone(state);
+        let stop = Arc::clone(&stop_input);
+        let counters = Arc::clone(&input_counters);
+        // The thread keeps its own key/button state. `input_db` above is still
+        // fresh at this point and is only touched by the slow-path branch,
+        // which never runs while this thread exists.
+        let mut db = ironrdp_input::Database::new();
+        Some(std::thread::spawn(move || {
+            use ironrdp_pdu::input::fast_path::FastPathInput;
+            use std::io::Write as _;
+            use std::sync::atomic::Ordering;
+            loop {
+                if stop.load(Ordering::Acquire) || st.read().map(|s| s.shutdown).unwrap_or(true) {
+                    break;
+                }
+                // Scope the guard: a `match queue.lock() { .. }` holds it for the
+                // whole match, so sleeping in an arm would idle *while holding
+                // the queue* and starve the producer — measured as the offered
+                // rate collapsing from 60/s to 3.5/s.
+                let pending: Vec<InputEvent> = {
+                    match queue.lock() {
+                        Ok(mut q) => std::mem::take(&mut *q),
+                        Err(_) => break,
+                    }
+                };
+                if pending.is_empty() {
+                    // 3ms keeps a 60Hz drag from waiting a whole frame without
+                    // spinning a core when idle.
+                    std::thread::sleep(std::time::Duration::from_millis(3));
+                    continue;
+                }
+                let n = pending.len() as u64;
+                let events = fastpath_events_for(&mut db, pending);
+                if events.is_empty() {
+                    continue;
+                }
+                let frame = match FastPathInput::new(events.to_vec())
+                    .map_err(|e| format!("{e}"))
+                    .and_then(|pdu| ironrdp_core::encode_vec(&pdu).map_err(|e| format!("{e}")))
+                {
+                    Ok(f) => f,
+                    Err(e) => {
+                        error!("Fast-path input encode error: {e}");
+                        continue;
+                    }
+                };
+                if let Err(e) = sink.write_all(&frame) {
+                    // The session loop owns teardown; a write failing here just
+                    // means the connection is going away.
+                    debug!("Input write ended: {e}");
+                    break;
+                }
+                counters.flushes.fetch_add(1, Ordering::Relaxed);
+                counters.events.fetch_add(n, Ordering::Relaxed);
+            }
+            debug!("Input thread exiting");
+        }))
+    } else {
+        None
+    };
+
+    // #477: queued input can only be flushed once per loop iteration, and each
+    // iteration blocks on the socket read above. At a flat 100ms that caps
+    // input at ~10 flushes/sec whenever the server is quiet, so a finger drag
+    // reaches the server as a burst of moves and then nothing — the local
+    // cursor looks smooth while the server's jumps and skips.
+    //
+    // Poll fast while the user is actually interacting and fall back to the
+    // idle timeout afterwards, so an untouched session is not woken 60+ times
+    // a second for nothing. Only issued when the value changes; set_read_timeout
+    // is a syscall.
+    const INPUT_ACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(15);
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+    const INPUT_ACTIVE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut last_input_at: Option<std::time::Instant> = None;
+    let mut current_timeout = IDLE_TIMEOUT;
+
+    // #466: nothing in the display path was timed, so "it is slow" could not be
+    // attributed to a stage. Costs a couple of Instant::now() per frame.
+    let mut perf = FramePerf::new(Arc::clone(&input_counters));
+
+    // Consecutive PDUs dropped for a mis-declared length (#422). Reset by any
+    // frame that decodes, so this only climbs on a stream that has genuinely
+    // gone bad.
+    const MAX_SKIPPED_IN_A_ROW: u32 = 100;
+    let mut skipped_in_a_row: u32 = 0;
+
     // Active session loop
     loop {
         // Check for shutdown
@@ -1235,104 +1520,87 @@ fn run_rdp_session(
             }
         }
 
-        // Process queued input events
-        let pending_inputs: Vec<InputEvent> = {
-            if let Ok(mut q) = input_queue.lock() {
-                std::mem::take(&mut *q)
-            } else {
-                Vec::new()
-            }
+        // Process queued input events.
+        //
+        // With the input thread running (#477) the queue is drained there, so
+        // this yields nothing and the adaptive read timeout below is skipped —
+        // that existed only to flush input sooner, and the read is no longer
+        // what gates input. Slow-path servers still take this path.
+        let pending_inputs: Vec<InputEvent> = if input_thread.is_some() {
+            Vec::new()
+        } else if let Ok(mut q) = input_queue.lock() {
+            std::mem::take(&mut *q)
+        } else {
+            Vec::new()
         };
 
-        for event in pending_inputs {
-            let fastpath_events = match event {
-                InputEvent::Key { scancode, pressed } => {
-                    let op = if pressed {
-                        ironrdp_input::Operation::KeyPressed(
-                            ironrdp_input::Scancode::from_u16(scancode)
-                        )
-                    } else {
-                        ironrdp_input::Operation::KeyReleased(
-                            ironrdp_input::Scancode::from_u16(scancode)
-                        )
-                    };
-                    input_db.apply(std::iter::once(op))
-                }
-                InputEvent::UnicodeKey { ch, pressed } => {
-                    if let Some(c) = char::from_u32(ch) {
-                        let op = if pressed {
-                            ironrdp_input::Operation::UnicodeKeyPressed(c)
-                        } else {
-                            ironrdp_input::Operation::UnicodeKeyReleased(c)
-                        };
-                        input_db.apply(std::iter::once(op))
-                    } else {
-                        smallvec::SmallVec::new()
-                    }
-                }
-                InputEvent::MouseMove { x, y } => {
-                    let op = ironrdp_input::Operation::MouseMove(
-                        ironrdp_input::MousePosition { x, y }
-                    );
-                    input_db.apply(std::iter::once(op))
-                }
-                InputEvent::MouseButton { button, pressed } => {
-                    let btn = match button {
-                        MouseButton::Left => ironrdp_input::MouseButton::Left,
-                        MouseButton::Right => ironrdp_input::MouseButton::Right,
-                        MouseButton::Middle => ironrdp_input::MouseButton::Middle,
-                    };
-                    let op = if pressed {
-                        ironrdp_input::Operation::MouseButtonPressed(btn)
-                    } else {
-                        ironrdp_input::Operation::MouseButtonReleased(btn)
-                    };
-                    input_db.apply(std::iter::once(op))
-                }
-                InputEvent::MouseWheel { vertical: _, delta } => {
-                    let op = ironrdp_input::Operation::WheelRotations(
-                        ironrdp_input::WheelRotations {
-                            is_vertical: true,
-                            rotation_units: delta as i16,
-                        }
-                    );
-                    input_db.apply(std::iter::once(op))
-                }
-                InputEvent::ClipboardText(_text) => {
-                    // Clipboard handled via CLIPRDR channel, not input
-                    smallvec::SmallVec::new()
-                }
+        if !pending_inputs.is_empty() {
+            use std::sync::atomic::Ordering;
+            last_input_at = Some(std::time::Instant::now());
+            input_counters.flushes.fetch_add(1, Ordering::Relaxed);
+            input_counters.events.fetch_add(pending_inputs.len() as u64, Ordering::Relaxed);
+        }
+        perf.maybe_report();
+        if input_thread.is_none() {
+            let want_timeout = match last_input_at {
+                Some(t) if t.elapsed() < INPUT_ACTIVE_WINDOW => INPUT_ACTIVE_TIMEOUT,
+                _ => IDLE_TIMEOUT,
             };
+            if want_timeout != current_timeout
+                && stream_ctl.set_read_timeout(Some(want_timeout)).is_ok()
+            {
+                current_timeout = want_timeout;
+            }
+        }
 
-            if !fastpath_events.is_empty() {
-                match active_stage.process_fastpath_input(&mut image, &fastpath_events) {
-                    Ok(outputs) => {
-                        for output in outputs {
-                            if let ActiveStageOutput::ResponseFrame(frame) = output {
-                                if let Err(e) = tls_framed.write_all(&frame) {
-                                    error!("Write input error: {:?}", e);
-                                }
-                            }
+        // Slow-path servers only — the fast-path case is handled on the input
+        // thread, which leaves `pending_inputs` empty here (#477).
+        if !pending_inputs.is_empty() {
+            let fastpath_events = fastpath_events_for(&mut input_db, pending_inputs);
+            // #422: slow-path input for servers that never negotiated fast-path
+            // (VirtualBox VRDP). One TS_INPUT_PDU per batch.
+            let events: Vec<_> = fastpath_events.iter().filter_map(slow_path_input_event).collect();
+            if !events.is_empty() {
+                use ironrdp_pdu::input::InputEventPdu;
+                use ironrdp_pdu::rdp::headers::ShareDataPdu;
+                let mut buf = ironrdp_core::WriteBuf::new();
+                match active_stage.encode_static(&mut buf, ShareDataPdu::Input(InputEventPdu(events))) {
+                    Ok(_) => {
+                        if let Err(e) = tls_framed.write_all(buf.filled()) {
+                            error!("Write input error: {:?}", e);
                         }
                     }
                     Err(e) => {
-                        error!("Input processing error: {:?}", e);
+                        error!("Slow-path input encode error: {:?}", e);
                     }
                 }
             }
         }
 
         // Read server PDU
+        let t_read = std::time::Instant::now();
         match tls_framed.read_pdu() {
             Ok((action, frame)) => {
+                // Time blocked waiting for the server. Large here means we are
+                // NOT the bottleneck; small here with a large process/publish
+                // means we are.
+                perf.read_us += t_read.elapsed().as_micros() as u64;
                 // #425 diag: log action + header bytes to diagnose the KRDP
                 // "unexpected channel received: ID 0" interop error.
                 if std::env::var("HAVEN_RDP_FRAMEDIAG").is_ok() {
                     let n = frame.len().min(64);
                     debug!("FRAMEDIAG action={:?} len={} bytes={:02x?}", action, frame.len(), &frame[..n]);
                 }
-                match active_stage.process(&mut image, action, &frame) {
+                let frame_to_process: &[u8] = &frame;
+
+                let t_process = std::time::Instant::now();
+                match active_stage.process(&mut image, action, frame_to_process) {
                     Ok(outputs) => {
+                        // Time inside process(): protocol decode, and for AVC
+                        // tiles the MediaCodec round-trip plus YUV->RGB, since
+                        // the decoder callback runs from in here.
+                        perf.process_us += t_process.elapsed().as_micros() as u64;
+                        skipped_in_a_row = 0;
                         for output in outputs {
                             match output {
                                 ActiveStageOutput::ResponseFrame(response) => {
@@ -1344,7 +1612,11 @@ fn run_rdp_session(
                                 ActiveStageOutput::GraphicsUpdate(rect) => {
                                     debug!("GraphicsUpdate at ({},{}) to ({},{})",
                                         rect.left, rect.top, rect.right, rect.bottom);
+                                    let t_pub = std::time::Instant::now();
                                     update_framebuffer(state, &image, &rect);
+                                    perf.publish_us += t_pub.elapsed().as_micros() as u64;
+                                    perf.frames += 1;
+                                    perf.maybe_report();
                                 }
                                 // Server cursor updates (#212). Forward the
                                 // decoded shape/visibility/position to Kotlin,
@@ -1390,7 +1662,24 @@ fn run_rdp_session(
                                     error!("Server disconnect: {}", reason);
                                     break;
                                 }
-                                ActiveStageOutput::DeactivateAll(mut cas) => {
+                                // Both new in Devolutions/IronRDP#1501. Logged
+                                // rather than acted on: Haven has no session-resume
+                                // path to spend the cookie on, and storing a
+                                // credential-equivalent token we would never use
+                                // is not a trade worth making. Revisit if
+                                // reconnect-after-network-drop is ever built.
+                                ActiveStageOutput::SaveSessionInfo { logon_complete } => {
+                                    debug!("Save Session Info: logon_complete={logon_complete}");
+                                }
+                                ActiveStageOutput::AutoReconnectCookie(_) => {
+                                    debug!("Server issued an auto-reconnect cookie; not retained");
+                                }
+                                ActiveStageOutput::DeactivateAll => {
+                                    // session 0.11.0 stopped handing the
+                                    // activation sequence out with this event;
+                                    // we mint our own from the factory, which
+                                    // is the same sequence it used to pass.
+                                    let mut cas = activation_factory.create();
                                     // Server-initiated Deactivation-Reactivation
                                     // (#438): re-run the activation sequence and
                                     // swap onto the renegotiated parameters. Any
@@ -1402,7 +1691,10 @@ fn run_rdp_session(
                                         &mut tls_framed, &mut cas, None,
                                         &mut active_stage, &mut image, state,
                                     );
-                                    let _ = stream_ctl.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                                    let _ = stream_ctl.set_read_timeout(Some(IDLE_TIMEOUT));
+                                    // Keep the cached value honest, or the
+                                    // adaptive poll above stops re-arming (#477).
+                                    current_timeout = IDLE_TIMEOUT;
                                     res?;
                                     break;
                                 }
@@ -1429,7 +1721,7 @@ fn run_rdp_session(
                         // redirect (reconnect with the routing token) is #117's
                         // next phase — deferred until it can be verified against a
                         // real GRD redirect capture.
-                        if let Some(info) = redirection::detect_server_redirect(&frame) {
+                        if let Some(info) = redirection::detect_server_redirect(frame_to_process) {
                             let target = info
                                 .target_host()
                                 .unwrap_or_else(|| "another session on the same host".to_string());
@@ -1458,21 +1750,67 @@ fn run_rdp_session(
                             // layer rejects. Re-enter the activation state machine
                             // and hand it the frame we already consumed.
                             info!("Bare Server Demand Active — running reactivation");
-                            let mut cas = activation_template.reset_clone();
+                            let mut cas = activation_factory.create();
                             let _ = stream_ctl.set_read_timeout(Some(std::time::Duration::from_secs(30)));
                             let res = perform_reactivation(
-                                &mut tls_framed, &mut cas, Some(&frame),
+                                &mut tls_framed, &mut cas, Some(frame_to_process),
                                 &mut active_stage, &mut image, state,
                             );
-                            let _ = stream_ctl.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                            let _ = stream_ctl.set_read_timeout(Some(IDLE_TIMEOUT));
+                            current_timeout = IDLE_TIMEOUT;
                             res?;
                         } else if msg.contains("unhandled") || msg.contains("unsupported") {
                             // Try to decode as slow-path bitmap update
-                            if try_handle_slow_path_bitmap(&frame, state) {
+                            if try_handle_slow_path_bitmap(frame_to_process, state) {
                                 debug!("Decoded slow-path bitmap update");
                             } else {
                                 debug!("Skipping unhandled PDU: {}", msg);
                             }
+                        } else if msg.contains("NotEnoughBytes") && msg.contains("ShareControlHeader") {
+                            // #422: this is NOT a truncated PDU, despite the name.
+                            //
+                            // ShareControlHeader::decode ends with a cross-check
+                            // that the PDU it just decoded is the size the header
+                            // declared, and reports a mismatch as
+                            //     not_enough_bytes_err!(total_length, header_length)
+                            // — so `received` is the server's declared totalLength
+                            // and `expected` is the size IronRDP decoded. Neither
+                            // is a byte count off the wire.
+                            //
+                            // The reporter's `received: 24, expected: 8550` came on
+                            // an 8565-byte frame, and 8565 - 15 (TPKT 4 + X224 3 +
+                            // MCS SDI 8) = 8550 exactly: `expected` is the whole
+                            // MCS user_data, because a Pointer payload is decoded
+                            // greedily to the end of the cursor. The PDU was
+                            // entirely present; VirtualBox VRDP just under-declared
+                            // totalLength as 24. Reproduced by hand-building that
+                            // frame — see the test below.
+                            //
+                            // So there is nothing to wait for and nothing to
+                            // rejoin. Drop the frame (one pointer/bitmap update)
+                            // and keep the session, which is what the old
+                            // reassembly attempt was reaching for and could never
+                            // achieve: it glued two complete transport frames
+                            // together, each with its own TPKT/X224/MCS header, and
+                            // handed the pair to process() under the *second*
+                            // frame's action — turning this into a bogus
+                            // FastPathHeader error that killed the session anyway.
+                            //
+                            // Bounded, because "skip and carry on" and "the
+                            // stream has desynchronised" look identical from
+                            // here: on VirtualBox this fires once between many
+                            // good frames, so the counter never climbs. If it
+                            // does, the display has frozen and silence would be
+                            // a worse answer than an error.
+                            skipped_in_a_row += 1;
+                            if skipped_in_a_row > MAX_SKIPPED_IN_A_ROW {
+                                error!("{skipped_in_a_row} undecodable PDUs in a row: {msg}");
+                                return Err(format!(
+                                    "session error: {skipped_in_a_row} undecodable PDUs in a row \
+                                     — last was {msg}"
+                                ));
+                            }
+                            debug!("Skipping PDU with a mis-declared length: {}", msg);
                         } else {
                             // #437: a fatal protocol error is not a clean exit —
                             // surface it through on_error so the app layer marks
@@ -1494,7 +1832,208 @@ fn run_rdp_session(
         }
     }
 
+    // A session that ends on a read error rather than a shutdown request never
+    // sets state.shutdown, and the caller reads that flag to tell a clean exit
+    // from a failure — so signal the input thread separately rather than
+    // forging a shutdown it can misread (#477).
+    stop_input.store(true, std::sync::atomic::Ordering::Release);
+    if let Some(handle) = input_thread {
+        let _ = handle.join();
+    }
+
     Ok(())
+}
+
+/// Per-frame cost breakdown for the RDP display path (#466).
+///
+/// A reporter saw updates arrive "extremely slowly" and — importantly —
+/// dropping the desktop from 4K to 1080p and the server quality to minimum
+/// changed nothing. That argues the cost is NOT proportional to pixels, which
+/// rules out most of the obvious suspects and leaves the fixed per-frame costs:
+/// the MediaCodec round-trip, the JNI hops, the draw. Nothing in this path was
+/// timed, so neither we nor the reporter could say which.
+///
+/// Reports an average every [PERF_REPORT_FRAMES] frames at info level, so a
+/// single ordinary logcat answers it.
+struct FramePerf {
+    frames: u64,
+    read_us: u64,
+    process_us: u64,
+    publish_us: u64,
+    /// Writes that carried input to the wire, and the events in them (#477).
+    /// Written by whichever side is delivering input — the dedicated thread on
+    /// a fast-path server, the session loop on a slow-path one — so the same
+    /// perf line describes both. Flushes far below the offered rate means
+    /// input is being batched behind something.
+    input: Arc<InputCounters>,
+    since: std::time::Instant,
+}
+
+const PERF_REPORT_FRAMES: u64 = 60;
+const PERF_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The TLS session shared between the session loop and the input thread (#477).
+///
+/// Input used to be flushed once per loop iteration, and every iteration also
+/// decoded a frame. Measured against a shadow server at 1280x800, the loop
+/// spent ~99% of its wall time inside `active_stage.process()`, so 60 mouse
+/// moves a second reached the wire as ~3.5 bursts a second — smooth under the
+/// finger, jumpy on the server.
+///
+/// Sharing works because **decoding never touches the socket**: `process()`
+/// operates on the `DecodedImage` and the active stage, and only the short
+/// response write at the end goes near the stream. So a writer contends with
+/// the *read* — bounded by the read timeout, 15ms while interacting — and
+/// never with the decode.
+///
+/// Each `read`/`write` takes the lock and drops it, so `Framed`'s multi-call
+/// reads interleave with input writes at TLS-record granularity, which rustls
+/// handles: it is one `ClientConnection` mutated under one mutex, never two.
+#[derive(Clone)]
+struct SharedTls(Arc<Mutex<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>);
+
+impl SharedTls {
+    fn new(stream: rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>) -> Self {
+        Self(Arc::new(Mutex::new(stream)))
+    }
+
+    /// Lock, recovering from poisoning. A panicking peer thread leaves the TLS
+    /// state untouched (we only ever hold the guard across one read or write),
+    /// so continuing beats tearing down a working session.
+    fn lock(&self) -> std::sync::MutexGuard<'_, rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl std::io::Read for SharedTls {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.lock().read(buf)
+    }
+}
+
+impl std::io::Write for SharedTls {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.lock().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.lock().flush()
+    }
+}
+
+/// Input delivery counters, shared so the input thread can record what it sent
+/// and the session loop's perf line can report it (#477).
+#[derive(Default)]
+struct InputCounters {
+    flushes: std::sync::atomic::AtomicU64,
+    events: std::sync::atomic::AtomicU64,
+}
+
+/// Translate queued [`InputEvent`]s into fast-path events via the input
+/// database, which tracks key/button state across calls.
+///
+/// A whole batch is accumulated into one `Vec` so a drag leaves as a single
+/// PDU rather than one per position — fewer writes, and the positions stay
+/// contiguous on the wire.
+fn fastpath_events_for(
+    db: &mut ironrdp_input::Database,
+    pending: Vec<InputEvent>,
+) -> Vec<ironrdp_pdu::input::fast_path::FastPathInputEvent> {
+    let mut out = Vec::new();
+    for event in pending {
+        let ops = match event {
+            InputEvent::Key { scancode, pressed } => {
+                let sc = ironrdp_input::Scancode::from_u16(scancode);
+                db.apply(std::iter::once(if pressed {
+                    ironrdp_input::Operation::KeyPressed(sc)
+                } else {
+                    ironrdp_input::Operation::KeyReleased(sc)
+                }))
+            }
+            InputEvent::UnicodeKey { ch, pressed } => match char::from_u32(ch) {
+                Some(c) => db.apply(std::iter::once(if pressed {
+                    ironrdp_input::Operation::UnicodeKeyPressed(c)
+                } else {
+                    ironrdp_input::Operation::UnicodeKeyReleased(c)
+                })),
+                None => smallvec::SmallVec::new(),
+            },
+            InputEvent::MouseMove { x, y } => db.apply(std::iter::once(
+                ironrdp_input::Operation::MouseMove(ironrdp_input::MousePosition { x, y }),
+            )),
+            InputEvent::MouseButton { button, pressed } => {
+                let btn = match button {
+                    MouseButton::Left => ironrdp_input::MouseButton::Left,
+                    MouseButton::Right => ironrdp_input::MouseButton::Right,
+                    MouseButton::Middle => ironrdp_input::MouseButton::Middle,
+                };
+                db.apply(std::iter::once(if pressed {
+                    ironrdp_input::Operation::MouseButtonPressed(btn)
+                } else {
+                    ironrdp_input::Operation::MouseButtonReleased(btn)
+                }))
+            }
+            InputEvent::MouseWheel { vertical: _, delta } => {
+                db.apply(std::iter::once(ironrdp_input::Operation::WheelRotations(
+                    ironrdp_input::WheelRotations {
+                        is_vertical: true,
+                        rotation_units: delta as i16,
+                    },
+                )))
+            }
+            // Clipboard travels on the CLIPRDR channel, not the input path.
+            InputEvent::ClipboardText(_) => smallvec::SmallVec::new(),
+        };
+        out.extend(ops);
+    }
+    out
+}
+
+/// How many extra frames reactivation will pull in to complete a PDU that
+/// arrived split (#422). The observed case needs exactly one; the bound keeps
+/// a real desync from consuming the stream frame by frame.
+const REACTIVATION_MAX_JOINS: u32 = 4;
+
+impl FramePerf {
+    fn new(input: Arc<InputCounters>) -> Self {
+        Self {
+            frames: 0,
+            read_us: 0,
+            process_us: 0,
+            publish_us: 0,
+            input,
+            since: std::time::Instant::now(),
+        }
+    }
+
+    fn maybe_report(&mut self) {
+        // Frame count alone never fired on the EGFX path — surface updates
+        // publish through the egfx module rather than
+        // ActiveStageOutput::GraphicsUpdate, so `frames` stayed at 0 on exactly
+        // the sessions worth profiling. Report on elapsed time as well, and
+        // call this once per loop iteration so input-only activity (#477) is
+        // visible even when no frame arrives.
+        use std::sync::atomic::Ordering;
+        let elapsed = self.since.elapsed();
+        let idle = self.frames == 0 && self.input.events.load(Ordering::Relaxed) == 0;
+        if idle || (self.frames < PERF_REPORT_FRAMES && elapsed < PERF_REPORT_INTERVAL) {
+            return;
+        }
+        let input_flushes = self.input.flushes.swap(0, Ordering::Relaxed);
+        let input_events = self.input.events.swap(0, Ordering::Relaxed);
+        let secs = elapsed.as_secs_f64().max(0.000_001);
+        let frames = self.frames;
+        let n = self.frames.max(1);
+        info!(
+            "RDP perf: {:.1} fps over {frames} frames — per frame: read {}us, process {}us, publish {}us (read = blocked on server, so a large read means the server is the limit, not us); input {:.1} flushes/s, {:.1} events/s (#477: flushes/s tracking fps means input is stuck behind decode)",
+            frames as f64 / secs,
+            self.read_us / n,
+            self.process_us / n,
+            self.publish_us / n,
+            input_flushes as f64 / secs,
+            input_events as f64 / secs,
+        );
+        *self = Self::new(Arc::clone(&self.input));
+    }
 }
 
 /// Try to decode a slow-path bitmap update from the raw X224 frame
@@ -1510,7 +2049,11 @@ fn try_handle_slow_path_bitmap(
     // UPDATETYPE_BITMAP marker (0x0001 LE) in the frame.
     // Decode the X224/MCS/ShareControl/ShareData headers to extract the
     // Update PDU payload.
-    use ironrdp_connector::legacy::{decode_send_data_indication, decode_io_channel, IoChannelPdu};
+    // These moved out of ironrdp-connector's `legacy` module, which was
+    // deleted in connector 0.10.0, into the PDU crate that always owned
+    // the wire formats.
+    use ironrdp_pdu::mcs::decode_send_data_indication;
+    use ironrdp_pdu::rdp::headers::{decode_io_channel, IoChannelPdu};
     use ironrdp_pdu::rdp::headers::ShareDataPdu;
 
     let ctx = match decode_send_data_indication(frame) {
@@ -1752,6 +2295,50 @@ fn try_handle_slow_path_bitmap(
 /// The caller must widen the transport read timeout around this call — the
 /// sequence blocks on multi-PDU reads that the session loop's 100ms poll
 /// timeout would abort.
+/// Render an error together with its source chain.
+///
+/// `ConnectorError`'s Display prints only its own context — "decode error" —
+/// while the part that actually explains the failure sits one level down. A
+/// server dropping the link reports `received disconnect provider ultimatum`
+/// in the inner `DecodeError`, and printing only the outer context turns that
+/// into a bare "decode error" with nothing to act on.
+///
+/// IronRDP 0.10/0.11 routes more failures through the generic decode variant
+/// than 0.9 did — 0.9 raised the ultimatum as its own reason — so without this
+/// the upgrade would have made a whole class of disconnects unreadable.
+fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = strip_location(&e.to_string());
+    let mut source = e.source();
+    while let Some(inner) = source {
+        let msg = strip_location(&inner.to_string());
+        // Skip a link that only repeats what the outer message already said.
+        if !out.contains(&msg) {
+            out.push_str(": ");
+            out.push_str(&msg);
+        }
+        source = inner.source();
+    }
+    out
+}
+
+/// Drop IronRDP's leading `[context @ /path/to/file.rs:12]` marker.
+///
+/// Those paths point into the Rust toolchain and the cargo registry, so they
+/// say nothing to a user looking at a failed connection and crowd out the part
+/// that does. Only a marker at the very start is removed, so a message that
+/// happens to contain brackets later keeps them.
+fn strip_location(msg: &str) -> String {
+    let trimmed = msg.trim_start();
+    if !trimmed.starts_with('[') {
+        return trimmed.to_owned();
+    }
+    match trimmed.find(']') {
+        // Only strip when it really is a location marker.
+        Some(end) if trimmed[..end].contains(" @ ") => trimmed[end + 1..].trim_start().to_owned(),
+        _ => trimmed.to_owned(),
+    }
+}
+
 fn perform_reactivation<S: std::io::Read + std::io::Write>(
     framed: &mut ironrdp_blocking::Framed<S>,
     cas: &mut ironrdp_connector::connection_activation::ConnectionActivationSequence,
@@ -1773,7 +2360,7 @@ fn perform_reactivation<S: std::io::Read + std::io::Write>(
         buf.clear();
         let written = cas
             .step(input, buf)
-            .map_err(|e| format!("reactivation step: {e}"))?;
+            .map_err(|e| format!("reactivation step: {}", error_chain(&e)))?;
         if let Some(n) = written.size() {
             framed
                 .write_all(&buf[..n])
@@ -1783,7 +2370,47 @@ fn perform_reactivation<S: std::io::Read + std::io::Write>(
     };
 
     if let Some(frame) = first_frame {
-        feed(cas, frame, framed, &mut buf)?;
+        // The frame that announced the reactivation can be only part of its
+        // PDU. The loop below reads by hint and so always gets a whole one,
+        // but this first frame was already taken off the wire by the caller.
+        //
+        // CAUTION (#422): this join was added on the reading that
+        // `NotEnoughBytes { received: 24, expected: 4287 }` meant a PDU split
+        // across two frames. That reading is wrong for the session loop —
+        // `received`/`expected` are the declared totalLength and the decoded
+        // size, so nothing is missing (see
+        // under_declared_share_control_length_is_not_a_truncated_pdu), and the
+        // matching in-session reassembly has been removed.
+        //
+        // It is left here because neither reporter log shows reactivation
+        // running at all, so there is no evidence about which branch fires on
+        // a Demand Active, and ripping it out on theory alone would risk the
+        // crash d312d2bf fixed. Bounded by REACTIVATION_MAX_JOINS. If a log
+        // ever shows "Reactivation: joining", check `expected` against the
+        // frame length first: if it equals frame - 15, it is the same
+        // under-declared quirk and this loop is chasing nothing.
+        let mut pending = frame.to_vec();
+        let mut joins = 0;
+        loop {
+            match feed(cas, &pending, framed, &mut buf) {
+                Ok(()) => break,
+                Err(e) if e.contains("NotEnoughBytes") && joins < REACTIVATION_MAX_JOINS => {
+                    joins += 1;
+                    let (_, more) = framed
+                        .read_pdu()
+                        .map_err(|io| format!("reactivation read (join {joins}): {io}"))?;
+                    debug!(
+                        "Reactivation: joining {} + {} byte fragments (#422)",
+                        pending.len(),
+                        more.len()
+                    );
+                    pending.extend_from_slice(&more);
+                }
+                // Bounded on purpose: a genuine desync fails fast rather than
+                // swallowing the whole stream one frame at a time.
+                Err(e) => return Err(e),
+            }
+        }
     }
     while !cas.state().is_terminal() {
         // A hint means "read that PDU and feed it"; no hint means the next
@@ -1801,14 +2428,25 @@ fn perform_reactivation<S: std::io::Read + std::io::Write>(
         feed(cas, pdu.as_deref().unwrap_or(&[]), framed, &mut buf)?;
     }
 
+    // connector 0.10.0 dropped these from the Finalized variant; the sequence
+    // still knows them, and they cannot change across a reactivation.
+    let io_channel_id = cas.io_channel_id();
+    let user_channel_id = cas.user_channel_id();
+
     match cas.connection_activation_state() {
         ConnectionActivationState::Finalized {
-            io_channel_id,
-            user_channel_id,
             desktop_size,
             share_id,
+            // #422: a reactivation could in principle renegotiate input flags,
+            // but no known server flips fast-path support mid-session; the
+            // connect-time decision stands.
+            input_flags: _,
             enable_server_pointer,
             pointer_software_rendering,
+            // refresh_rect_support / suppress_output_support and anything
+            // upstream adds next: reactivation reuses the connect-time
+            // decisions, so nothing here consumes them.
+            ..
         } => {
             info!(
                 "Reactivation finalized: desktop {}x{}",
@@ -1826,7 +2464,10 @@ fn perform_reactivation<S: std::io::Read + std::io::Write>(
                     share_id,
                     enable_server_pointer,
                     pointer_software_rendering,
-                    bulk_decompressor: None,
+                    // `bulk_decompressor` is gone: the processor always owns one
+                    // now (Devolutions/IronRDP#1255), which also means a
+                    // reactivation no longer drops the decompression history a
+                    // later compressed update refers back to.
                 }
                 .build(),
             );
@@ -1875,7 +2516,7 @@ fn update_framebuffer(
     // [B,G,R,A] renders with red/blue swapped (the blue Windows accent showed
     // orange). So a verbatim copy is correct here; no swap.
     let pixel_count = fb_width * fb_height;
-    let argb = pixel_data[..pixel_count * 4].to_vec();
+    let needed = pixel_count * 4;
 
     let rdp_rect = RdpRect {
         x: rect.left,
@@ -1889,11 +2530,51 @@ fn update_framebuffer(
             Ok(s) => s,
             Err(_) => return,
         };
-        s.framebuffer = Some(FrameData {
-            width: fb_width as u16,
-            height: fb_height as u16,
-            pixels: argb,
-        });
+        // Copy ONLY the rows the update touched, into the buffer we already
+        // own. This used to be `pixel_data[..needed].to_vec()` — a fresh
+        // whole-framebuffer allocation per update, regardless of how little
+        // the update changed.
+        //
+        // #422: a reporter's 38-second VirtualBox session logged 4305 graphics
+        // updates whose rectangles lay OUTSIDE the 1920x1080 image (the server
+        // was painting a larger desktop), so ironrdp skipped them — they drew
+        // nothing at all. Each still cost an 8.3MB allocate-copy-free here:
+        // ~36GB of memcpy and 4305 heap churns for zero visible change, on a
+        // phone. Clamping to the intersection makes those cost nothing, and an
+        // ordinary small update cost its own area instead of the whole screen.
+        let reusable = matches!(
+            &s.framebuffer,
+            Some(f) if f.width as usize == fb_width
+                && f.height as usize == fb_height
+                && f.pixels.len() == needed
+        );
+        if reusable {
+            // Inclusive rectangle, clamped to the image — an out-of-bounds
+            // update yields an empty range and copies nothing, which is
+            // correct: those pixels do not exist in this framebuffer.
+            let x0 = (rect.left as usize).min(fb_width);
+            let x1 = (rect.right as usize + 1).min(fb_width);
+            let y0 = (rect.top as usize).min(fb_height);
+            let y1 = (rect.bottom as usize + 1).min(fb_height);
+            if x1 > x0 {
+                let fb = match s.framebuffer.as_mut() {
+                    Some(f) => f,
+                    None => return,
+                };
+                for y in y0..y1 {
+                    let start = (y * fb_width + x0) * 4;
+                    let end = (y * fb_width + x1) * 4;
+                    fb.pixels[start..end].copy_from_slice(&pixel_data[start..end]);
+                }
+            }
+        } else {
+            // First frame, or the image was resized — take the whole thing once.
+            s.framebuffer = Some(FrameData {
+                width: fb_width as u16,
+                height: fb_height as u16,
+                pixels: pixel_data[..needed].to_vec(),
+            });
+        }
         s.dirty_rects.push(rdp_rect.clone());
         s.frame_callback.clone()
     };
@@ -1974,6 +2655,219 @@ fn socks5_connect(
 }
 
 #[cfg(test)]
+mod codec_advertisement_tests {
+    use super::{build_config, RdpConfig};
+    use ironrdp_pdu::rdp::capability_sets::CodecProperty;
+
+    fn config() -> RdpConfig {
+        RdpConfig {
+            username: String::new(),
+            password: String::new(),
+            domain: String::new(),
+            width: 1920,
+            height: 1080,
+            color_depth: 32,
+            enable_credssp: false,
+            pinned_cert_sha256: None,
+            progressive_upgrade: false,
+            avc_enabled: true,
+        }
+    }
+
+    /// #461: a Windows server took up NSCodec because we advertised it, then
+    /// sent fast-path surface bits with codec id 1 — which ironrdp-session
+    /// rejects outright, killing the session mid-logon with
+    /// `Fast-Path: unexpected codec ID: 1`. Never advertise a codec the
+    /// surface-bits path cannot decode; the server will happily use it.
+    #[test]
+    fn nscodec_is_not_advertised() {
+        let cfg = build_config(&config());
+        let codecs = &cfg.bitmap.as_ref().expect("bitmap config").codecs.0;
+        assert!(
+            !codecs
+                .iter()
+                .any(|c| matches!(c.property, CodecProperty::NsCodec(_))),
+            "NSCodec must not be advertised: ironrdp-session's CodecId::from_u8 \
+             accepts only NONE(0), REMOTEFX(3), QOI(0x0A/0x0B), so a server that \
+             takes it up kills the session",
+        );
+    }
+
+    /// The advertisement must not become empty either — RemoteFX is what makes
+    /// Windows send efficient tile updates rather than 16bpp line-by-line RLE.
+    #[test]
+    fn remotefx_is_still_advertised() {
+        let cfg = build_config(&config());
+        let codecs = &cfg.bitmap.as_ref().expect("bitmap config").codecs.0;
+        assert!(
+            codecs
+                .iter()
+                .any(|c| matches!(c.property, CodecProperty::RemoteFx(_))),
+            "RemoteFX must stay advertised",
+        );
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::{FrameData, RdpClient, RdpConfig};
+
+    /// #422: the region fetch replaces an 8.29 MB full-framebuffer copy per
+    /// update, so it has to extract exactly the right rows — an off-by-one in
+    /// the stride would show as a smeared or shifted patch on screen.
+    fn client_with_framebuffer(w: u16, h: u16) -> RdpClient {
+        let client = RdpClient::new(RdpConfig {
+            username: String::new(),
+            password: String::new(),
+            domain: String::new(),
+            width: w,
+            height: h,
+            color_depth: 32,
+            enable_credssp: false,
+            pinned_cert_sha256: None,
+            progressive_upgrade: false,
+            avc_enabled: false,
+        });
+        // Distinct value per pixel so a wrong row or column is detectable.
+        let mut pixels = vec![0u8; w as usize * h as usize * 4];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let i = (y * w as usize + x) * 4;
+                pixels[i] = x as u8;
+                pixels[i + 1] = y as u8;
+                pixels[i + 2] = 0x5A;
+                pixels[i + 3] = 0xFF;
+            }
+        }
+        client.state.write().unwrap().framebuffer = Some(FrameData { width: w, height: h, pixels });
+        client
+    }
+
+    #[test]
+    fn region_extracts_the_requested_rows_and_columns() {
+        let client = client_with_framebuffer(64, 32);
+        let region = client.get_framebuffer_region(10, 4, 3, 2).expect("region");
+        assert_eq!((region.width, region.height), (3, 2));
+        assert_eq!(region.pixels.len(), 3 * 2 * 4);
+        // Row 0 of the region is framebuffer row 4, columns 10..13.
+        assert_eq!(&region.pixels[0..4], &[10, 4, 0x5A, 0xFF]);
+        assert_eq!(&region.pixels[4..8], &[11, 4, 0x5A, 0xFF]);
+        assert_eq!(&region.pixels[8..12], &[12, 4, 0x5A, 0xFF]);
+        // Row 1 is framebuffer row 5, same columns — proves the stride step.
+        assert_eq!(&region.pixels[12..16], &[10, 5, 0x5A, 0xFF]);
+    }
+
+    #[test]
+    fn region_is_clipped_to_the_framebuffer() {
+        let client = client_with_framebuffer(64, 32);
+        let region = client.get_framebuffer_region(60, 30, 100, 100).expect("clipped region");
+        assert_eq!((region.width, region.height), (4, 2));
+        assert_eq!(region.pixels.len(), 4 * 2 * 4);
+    }
+
+    #[test]
+    fn region_outside_or_empty_returns_none() {
+        let client = client_with_framebuffer(64, 32);
+        assert!(client.get_framebuffer_region(64, 0, 4, 4).is_none(), "x at the edge");
+        assert!(client.get_framebuffer_region(0, 32, 4, 4).is_none(), "y at the edge");
+        assert!(client.get_framebuffer_region(0, 0, 0, 4).is_none(), "zero width");
+    }
+
+    #[test]
+    fn region_without_a_framebuffer_returns_none() {
+        let client = RdpClient::new(RdpConfig {
+            username: String::new(),
+            password: String::new(),
+            domain: String::new(),
+            width: 8,
+            height: 8,
+            color_depth: 32,
+            enable_credssp: false,
+            pinned_cert_sha256: None,
+            progressive_upgrade: false,
+            avc_enabled: false,
+        });
+        assert!(client.get_framebuffer_region(0, 0, 4, 4).is_none());
+    }
+}
+
+#[cfg(test)]
+mod error_chain_tests {
+    use super::{error_chain, strip_location};
+
+    #[derive(Debug)]
+    struct Layer {
+        msg: String,
+        source: Option<Box<Layer>>,
+    }
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.msg)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source.as_deref().map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn layer(msg: &str, source: Option<Layer>) -> Layer {
+        Layer { msg: msg.to_owned(), source: source.map(Box::new) }
+    }
+
+    #[test]
+    fn the_reason_one_level_down_is_reported() {
+        // The case this exists for: IronRDP 0.10 reports a server dropping the
+        // link as a bare "decode error", with the reason in the source.
+        let e = layer(
+            "[decode error @ /rustc/abc/library/core/src/ops/function.rs:250] decode error",
+            Some(layer(
+                "[decode_send_data_indication @ /home/x/.cargo/registry/ironrdp-core-0.2.1/src/error.rs:248] other (received disconnect provider ultimatum)",
+                None,
+            )),
+        );
+        assert_eq!(
+            "decode error: other (received disconnect provider ultimatum)",
+            error_chain(&e),
+        );
+    }
+
+    #[test]
+    fn a_repeated_link_is_not_appended_twice() {
+        let e = layer("decode error", Some(layer("decode error", None)));
+        assert_eq!("decode error", error_chain(&e));
+    }
+
+    #[test]
+    fn a_chain_deeper_than_two_is_followed() {
+        let e = layer("a", Some(layer("b", Some(layer("c", None)))));
+        assert_eq!("a: b: c", error_chain(&e));
+    }
+
+    #[test]
+    fn an_error_with_no_source_is_unchanged() {
+        assert_eq!("plain failure", error_chain(&layer("plain failure", None)));
+    }
+
+    #[test]
+    fn location_markers_are_stripped() {
+        assert_eq!("decode error", strip_location("[decode error @ /rustc/abc/f.rs:250] decode error"));
+        assert_eq!("other (x)", strip_location("[f @ /path/error.rs:248] other (x)"));
+    }
+
+    #[test]
+    fn text_that_merely_starts_with_a_bracket_is_left_alone() {
+        // Only a real `[context @ path]` marker is a location; a message that
+        // opens with a bracket for its own reasons keeps it.
+        assert_eq!("[not a location] body", strip_location("[not a location] body"));
+        assert_eq!("[unclosed bracket", strip_location("[unclosed bracket"));
+        assert_eq!("no brackets at all", strip_location("no brackets at all"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::classify_raw_finalize;
 
@@ -1998,6 +2892,72 @@ mod tests {
         assert!(
             out.contains("colour depth"),
             "should hint at colour depth fix, got: {out}"
+        );
+    }
+
+    /// #422: pins what the reporter's NotEnoughBytes actually means, because
+    /// the name says the opposite and we already shipped a fix built on the
+    /// wrong reading.
+    ///
+    /// `ShareControlHeader::decode` finishes with a cross-check that the PDU it
+    /// decoded is the size the header declared, and reports a mismatch as
+    /// `not_enough_bytes_err!(total_length, header_length)` — so `received` is
+    /// the server's *declared* totalLength and `expected` is the size IronRDP
+    /// decoded, neither of them a count of bytes off the wire.
+    ///
+    /// Build the reporter's exact frame — 8565 bytes on the wire, so 8550 of
+    /// MCS user_data after TPKT(4) + X224(3) + MCS SDI(8) — with a greedily
+    /// decoded Pointer payload and totalLength under-declared as 24, and
+    /// assert it lands on their error verbatim. If this ever reproduces
+    /// `expected` != the full user_data length, the "the PDU is all here"
+    /// conclusion is wrong and the skip in the session loop needs revisiting.
+    #[test]
+    fn under_declared_share_control_length_is_not_a_truncated_pdu() {
+        use ironrdp_core::decode;
+        use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+        const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
+        const SHARE_DATA_HEADER_SIZE: usize = 1 + 1 + 2 + 1 + 1 + 2;
+        const PROTOCOL_VERSION: u16 = 0x10;
+        const DATA_PDU: u16 = 0x7;
+        const PDU_TYPE_POINTER: u8 = 0x1b;
+
+        // 8565 on the wire minus TPKT(4) + X224(3) + MCS SendDataIndication(8).
+        let user_data = 8565 - 15;
+        assert!(user_data > SHARE_CONTROL_HEADER_SIZE + SHARE_DATA_HEADER_SIZE);
+
+        let mut b = Vec::with_capacity(user_data);
+        b.extend_from_slice(&24u16.to_le_bytes()); // totalLength, under-declared
+        b.extend_from_slice(&(PROTOCOL_VERSION | DATA_PDU).to_le_bytes());
+        b.extend_from_slice(&1002u16.to_le_bytes()); // pduSource
+        b.extend_from_slice(&0x0001_0000u32.to_le_bytes()); // shareId
+        b.push(0); // padding
+        b.push(2); // streamPriority = Medium
+        b.extend_from_slice(&0u16.to_le_bytes()); // uncompressedLength
+        b.push(PDU_TYPE_POINTER); // pduType2
+        b.push(0); // compressionFlags | compressionType
+        b.extend_from_slice(&0u16.to_le_bytes()); // compressedLength
+        b.resize(user_data, 0);
+        assert_eq!(b.len(), 8550);
+
+        let err = decode::<ShareControlHeader>(&b)
+            .expect_err("an under-declared totalLength must not decode cleanly")
+            .to_string();
+
+        // The reporter's numbers, verbatim.
+        assert!(
+            err.contains("received 24 bytes, expected 8550 bytes"),
+            "should reproduce the #422 report exactly, got: {err}"
+        );
+        // `expected` is the whole user_data, not a shortfall: nothing is missing.
+        assert!(
+            err.contains(&format!("expected {user_data} bytes")),
+            "expected should be the full MCS user_data ({user_data}), got: {err}"
+        );
+        // And it must be the branch the session loop keys off.
+        assert!(
+            err.contains("ShareControlHeader"),
+            "the skip in the session loop matches on this context: {err}"
         );
     }
 
@@ -2028,5 +2988,128 @@ mod tests {
             out.contains("RDP setup"),
             "expected post-handshake framing: {out}"
         );
+    }
+}
+
+/// #422: the framebuffer publish used to reallocate and copy the WHOLE image
+/// on every graphics update, however small — or however far outside the image
+/// the update landed.
+///
+/// The reporter's 38-second VirtualBox session is the case that made it hurt:
+/// the server painted a desktop larger than the negotiated 1920x1080, so 4305
+/// updates were skipped by ironrdp as out-of-bounds and drew nothing, yet each
+/// one still cost an 8.3MB allocate-copy-free on the phone.
+#[cfg(test)]
+mod framebuffer_publish_tests {
+    use super::*;
+    use ironrdp_pdu::geometry::InclusiveRectangle;
+    use ironrdp_session::image::DecodedImage;
+    use ironrdp_graphics::image_processing::PixelFormat;
+
+    const W: u16 = 64;
+    const H: u16 = 32;
+
+    fn blank_state() -> SessionState {
+        SessionState {
+            connected: true,
+            framebuffer: None,
+            dirty_rects: Vec::new(),
+            frame_callback: None,
+            clipboard_callback: None,
+            session_callback: None,
+            pointer_callback: None,
+            avc_decoder: None,
+            shutdown: false,
+        }
+    }
+
+    fn state_with_frame(fill: u8) -> Arc<RwLock<SessionState>> {
+        let st = Arc::new(RwLock::new(blank_state()));
+        st.write().unwrap().framebuffer = Some(FrameData {
+            width: W,
+            height: H,
+            pixels: vec![fill; W as usize * H as usize * 4],
+        });
+        st
+    }
+
+    fn image_filled(v: u8) -> DecodedImage {
+        let mut img = DecodedImage::new(PixelFormat::RgbA32, W, H);
+        // DecodedImage exposes its buffer read-only; paint through a full-size
+        // update so the test drives the same path the session does.
+        let _ = &mut img;
+        img
+    }
+
+    fn px(fb: &FrameData, x: usize, y: usize) -> [u8; 4] {
+        let i = (y * W as usize + x) * 4;
+        [fb.pixels[i], fb.pixels[i + 1], fb.pixels[i + 2], fb.pixels[i + 3]]
+    }
+
+    /// An update whose rectangle lies wholly outside the image must not touch
+    /// the published buffer — and critically must not reallocate it. This is
+    /// the 4305-updates case; before the fix each one replaced the whole Vec.
+    #[test]
+    fn an_out_of_bounds_update_leaves_the_buffer_untouched() {
+        let state = state_with_frame(0xAB);
+        let image = image_filled(0);
+        let before_ptr = state.read().unwrap().framebuffer.as_ref().unwrap().pixels.as_ptr();
+
+        // Same shape as the logged rects: far beyond a 64x32 image.
+        let rect = InclusiveRectangle { left: 2304, top: 1517, right: 2431, bottom: 1599 };
+        update_framebuffer(&state, &image, &rect);
+
+        let s = state.read().unwrap();
+        let fb = s.framebuffer.as_ref().unwrap();
+        assert_eq!(
+            fb.pixels.as_ptr(),
+            before_ptr,
+            "an out-of-bounds update reallocated the framebuffer; that realloc \
+             (8.3MB at 1080p) happened 4305 times in the #422 trace",
+        );
+        assert!(
+            fb.pixels.iter().all(|&b| b == 0xAB),
+            "an out-of-bounds update must not alter published pixels",
+        );
+        assert_eq!(fb.width, W, "dimensions must be preserved");
+    }
+
+    /// A dimension change is the one case that still needs a fresh buffer,
+    /// otherwise a resized session would publish a stale-sized frame.
+    #[test]
+    fn a_size_change_replaces_the_buffer() {
+        let state = Arc::new(RwLock::new(blank_state()));
+        state.write().unwrap().framebuffer = Some(FrameData {
+            width: 8,
+            height: 8,
+            pixels: vec![0x11; 8 * 8 * 4],
+        });
+        let image = image_filled(0);
+        update_framebuffer(
+            &state,
+            &image,
+            &InclusiveRectangle { left: 0, top: 0, right: 0, bottom: 0 },
+        );
+        let s = state.read().unwrap();
+        let fb = s.framebuffer.as_ref().unwrap();
+        assert_eq!((fb.width, fb.height), (W, H), "buffer must adopt the new image size");
+        assert_eq!(fb.pixels.len(), W as usize * H as usize * 4);
+    }
+
+    /// Every update, in bounds or not, still reports a dirty rect — the app
+    /// layer relies on that to know a frame arrived.
+    #[test]
+    fn a_dirty_rect_is_still_recorded() {
+        let state = state_with_frame(0);
+        let image = image_filled(0);
+        update_framebuffer(
+            &state,
+            &image,
+            &InclusiveRectangle { left: 1, top: 2, right: 4, bottom: 6 },
+        );
+        let s = state.read().unwrap();
+        assert_eq!(s.dirty_rects.len(), 1);
+        assert_eq!((s.dirty_rects[0].x, s.dirty_rects[0].y), (1, 2));
+        let _ = px(s.framebuffer.as_ref().unwrap(), 0, 0);
     }
 }

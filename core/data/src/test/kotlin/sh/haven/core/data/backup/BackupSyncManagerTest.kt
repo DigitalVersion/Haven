@@ -44,7 +44,7 @@ class BackupSyncManagerTest {
         val result = BackupService.BackupResult(count = 7)
         coEvery { io.readBackup("p1", "haven-backup.enc") } returns encrypted
         val imported = slot<ByteArray>()
-        coEvery { backup.import(capture(imported), "pw") } returns result
+        coEvery { backup.import(capture(imported), "pw", false) } returns result
         val mgr = BackupSyncManager(backup, io)
 
         val out = mgr.pull("p1", "haven-backup.enc", "pw")

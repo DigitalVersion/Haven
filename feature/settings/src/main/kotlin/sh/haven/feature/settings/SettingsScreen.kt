@@ -136,6 +136,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import sh.haven.core.data.preferences.UserPreferencesRepository.Companion.MAX_RDP_DIMENSION
+import sh.haven.core.data.preferences.UserPreferencesRepository.Companion.MIN_RDP_DIMENSION
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
@@ -711,6 +713,26 @@ fun SettingsScreen(
 
         }
         CollapsibleSettingsSection(stringResource(R.string.settings_section_desktop), settingsExpanded[4], { settingsExpanded[4] = !settingsExpanded[4] }) {
+        val rdpW by viewModel.rdpDesktopWidth.collectAsState()
+        val rdpH by viewModel.rdpDesktopHeight.collectAsState()
+        var showRdpSizeDialog by remember { mutableStateOf(false) }
+        SettingsItem(
+            icon = Icons.Filled.DesktopWindows,
+            title = stringResource(R.string.settings_rdp_desktop_size_title),
+            subtitle = stringResource(R.string.settings_rdp_desktop_size_subtitle, rdpW, rdpH),
+            onClick = { showRdpSizeDialog = true },
+        )
+        if (showRdpSizeDialog) {
+            RdpDesktopSizeDialog(
+                width = rdpW,
+                height = rdpH,
+                onDismiss = { showRdpSizeDialog = false },
+                onApply = { w, h ->
+                    viewModel.setRdpDesktopSize(w, h)
+                    showRdpSizeDialog = false
+                },
+            )
+        }
         SettingsToggleItem(
             icon = Icons.Filled.Mouse,
             title = stringResource(R.string.settings_touchpad_input_title),
@@ -1794,8 +1816,9 @@ fun SettingsScreen(
                 else -> null
             },
             initialPassword = backupSyncPassphrase ?: "",
+            showReplaceOption = action is BackupAction.Restore || action is BackupAction.PullRemote,
             onDismiss = { showBackupPasswordDialog = null },
-            onConfirm = { password, remember ->
+            onConfirm = { password, remember, replaceAll ->
                 showBackupPasswordDialog = null
                 when (action) {
                     is BackupAction.Export -> {
@@ -1808,7 +1831,7 @@ fun SettingsScreen(
                         } else {
                             viewModel.clearBackupSyncPassphrase()
                         }
-                        viewModel.importBackup(action.uri, password)
+                        viewModel.importBackup(action.uri, password, replaceAll)
                     }
                     is BackupAction.PushRemote -> {
                         viewModel.pushBackupToRemote(password)
@@ -1819,7 +1842,7 @@ fun SettingsScreen(
                         } else {
                             viewModel.clearBackupSyncPassphrase()
                         }
-                        viewModel.pullBackupFromRemote(password)
+                        viewModel.pullBackupFromRemote(password, replaceAll)
                     }
                     is BackupAction.EnableAutoSync -> {
                         viewModel.setBackupAutoSync(true, password)
@@ -2150,14 +2173,22 @@ private fun BackupSyncDialog(
 private fun BackupPasswordDialog(
     isExport: Boolean,
     onDismiss: () -> Unit,
-    onConfirm: (String, Boolean) -> Unit,
+    onConfirm: (String, Boolean, Boolean) -> Unit,
     titleOverride: String? = null,
     descriptionOverride: String? = null,
     initialPassword: String = "",
+    /**
+     * Restore/Pull only: offers "Replace all connections" — wipes every
+     * local connection+group before writing the backup's, instead of the
+     * default merge (which only ever adds/updates, so a near-empty backup
+     * silently leaves every existing card untouched).
+     */
+    showReplaceOption: Boolean = false,
 ) {
     var password by remember(initialPassword) { mutableStateOf(initialPassword) }
     var confirmPassword by remember { mutableStateOf("") }
     var rememberPassword by remember(initialPassword) { mutableStateOf(initialPassword.isNotEmpty()) }
+    var replaceAll by remember { mutableStateOf(false) }
     val title = titleOverride
         ?: stringResource(if (isExport) R.string.settings_backup_export_dialog_title else R.string.settings_backup_restore_dialog_title)
     val passwordError = if (isExport && password.length in 1..5) stringResource(R.string.settings_backup_password_min_length) else null
@@ -2219,11 +2250,37 @@ private fun BackupPasswordDialog(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                    if (showReplaceOption) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { replaceAll = !replaceAll }
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Checkbox(
+                                checked = replaceAll,
+                                onCheckedChange = { replaceAll = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = stringResource(R.string.settings_backup_replace_all_label),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = stringResource(R.string.settings_backup_replace_all_description),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(password, rememberPassword) }, enabled = canConfirm) {
+            TextButton(onClick = { onConfirm(password, rememberPassword, replaceAll) }, enabled = canConfirm) {
                 Text(stringResource(if (isExport) R.string.settings_backup_export_button else R.string.settings_backup_restore_button))
             }
         },
@@ -2248,7 +2305,10 @@ private fun AboutDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.settings_about_dialog_title)) },
         text = {
-            Column {
+            // The library list alone is taller than the dialog on a phone, and
+            // AlertDialog clips its text slot rather than scrolling it — so
+            // without this the last entries were simply unreachable (#485).
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     text = stringResource(R.string.settings_about_app_name),
                     style = MaterialTheme.typography.headlineSmall,
@@ -3925,4 +3985,81 @@ private fun ImeFlagToggle(
             )
         }
     }
+}
+
+/**
+ * Pick the desktop size Haven asks RDP servers for (#422).
+ *
+ * This existed only as a hardcoded 1920x1080 before. A server that draws a
+ * different size — VirtualBox defaults to 2560x1600 and never announces a
+ * resize — had every update outside that area silently discarded, which looks
+ * like a screen that stops refreshing rather than like a size mismatch.
+ */
+@Composable
+private fun RdpDesktopSizeDialog(
+    width: Int,
+    height: Int,
+    onDismiss: () -> Unit,
+    onApply: (Int, Int) -> Unit,
+) {
+    var w by remember { mutableStateOf(width.toString()) }
+    var h by remember { mutableStateOf(height.toString()) }
+    val wv = w.toIntOrNull()
+    val hv = h.toIntOrNull()
+    val valid = wv != null && hv != null &&
+        wv in MIN_RDP_DIMENSION..MAX_RDP_DIMENSION &&
+        hv in MIN_RDP_DIMENSION..MAX_RDP_DIMENSION
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_rdp_desktop_size_title)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    stringResource(R.string.settings_rdp_desktop_size_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = w,
+                        onValueChange = { w = it.filter(Char::isDigit).take(4) },
+                        label = { Text(stringResource(R.string.settings_rdp_desktop_size_width)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedTextField(
+                        value = h,
+                        onValueChange = { h = it.filter(Char::isDigit).take(4) },
+                        label = { Text(stringResource(R.string.settings_rdp_desktop_size_height)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                // The sizes people actually hit, so the common cases are one tap
+                // rather than typing four digits twice on a phone.
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1920 to 1080, 2560 to 1600, 1280 to 720).forEach { (pw, ph) ->
+                        TextButton(onClick = { w = pw.toString(); h = ph.toString() }) {
+                            Text("$pw×$ph", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (valid) onApply(wv!!, hv!!) },
+                enabled = valid,
+            ) { Text(stringResource(R.string.common_apply)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
+        },
+    )
 }

@@ -1,6 +1,7 @@
 package sh.haven.core.rdp
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.util.Log
 import sh.haven.rdp.FrameCallback
 import sh.haven.rdp.FrameData
@@ -9,11 +10,14 @@ import sh.haven.rdp.PointerCallback
 import sh.haven.rdp.RdpClient
 import sh.haven.rdp.RdpConfig
 import sh.haven.rdp.RdpException
+import sh.haven.rdp.RdpRect
 import sh.haven.rdp.SessionCallback
 import sh.haven.rdp.SocksProxyConfig
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 private const val TAG = "RdpSession"
 
@@ -65,6 +69,18 @@ class RdpSession(
     private var closed = false
     private var client: RdpClient? = null
     private var currentBitmap: Bitmap? = null
+
+    /**
+     * Framebuffer size as last announced by the server, so the dirty-rect path
+     * can tell whether [currentBitmap] is still the right size WITHOUT fetching
+     * the whole framebuffer to ask (#422). Updated from onConnected/onResize,
+     * which are the only things that change it.
+     */
+    @Volatile
+    private var fbWidth: Int = 0
+
+    @Volatile
+    private var fbHeight: Int = 0
     // #425: MediaCodec H.264 decoder, created only when AVC is enabled.
     private var avcDecoder: Avc420MediaCodecDecoder? = null
     private val startTime = System.currentTimeMillis()
@@ -74,8 +90,30 @@ class RdpSession(
         verboseBuffer?.add("+${System.currentTimeMillis() - startTime}ms [$TAG] $level: $msg")
     }
 
-    /** Called on frame updates. Set by the ViewModel. */
+    /**
+     * Called on frame updates. Set by the ViewModel.
+     *
+     * ★The bitmap is now the SAME instance for the life of a framebuffer size —
+     * it is mutated in place (#422). Anything keyed on its identity (a
+     * `StateFlow`, `remember(bitmap)`) will therefore not see a change; observe
+     * [frameSeq] to know when to redraw.
+     */
     var onFrameUpdate: ((Bitmap) -> Unit)? = null
+
+    /**
+     * Bumped once per framebuffer change, so a viewer holding the stable bitmap
+     * from [onFrameUpdate] knows to repaint.
+     *
+     * #422: previously every update allocated a fresh full-screen bitmap purely
+     * so the `StateFlow<Bitmap?>` carrying it would emit — it conflates on
+     * equality, and re-publishing one instance emits nothing. On a 1920x1080
+     * session that meant an 8.29 MB allocation plus two full-frame copies for
+     * updates whose median size was 127x82 (about 41 KB), roughly 400x more
+     * work than the update contained, at 14-21 updates/sec. That is what made a
+     * VirtualBox UEFI menu take seconds to repaint and eventually wedge.
+     */
+    val frameSeq: StateFlow<Long> get() = _frameSeq
+    private val _frameSeq = MutableStateFlow(0L)
 
     /**
      * Called when the server pushes a new cursor shape / visibility (#212).
@@ -132,10 +170,15 @@ class RdpSession(
             val pinnedCert = tlsCertVerifier?.let { v ->
                 kotlinx.coroutines.runBlocking { v.pinnedFingerprint(certHost, certPort) }
             }
+            // #461: a `MicrosoftAccount\you@example.com` or `CORP\alice` typed
+            // into the username box has to reach the Client Info PDU as two
+            // fields, or Windows authenticates the transport and then shows the
+            // lock screen. Splitting only — a bare UPN is left alone.
+            val logon = qualifyRdpLogon(username, domain)
             val config = RdpConfig(
-                username = username,
+                username = logon.username,
                 password = password,
-                domain = domain,
+                domain = logon.domain,
                 width = width.toUShort(),
                 height = height.toUShort(),
                 // Per-profile colour depth (#109). Default 16 is xrdp-
@@ -169,7 +212,7 @@ class RdpSession(
                 override fun onFrameUpdate(x: UShort, y: UShort, w: UShort, h: UShort) {
                     if (closed) return
                     try {
-                        refreshBitmap()
+                        refreshBitmap(RdpRect(x, y, w, h))
                     } catch (e: Exception) {
                         log("E", "Frame update failed (${x},${y} ${w}x${h}): ${e.message}")
                         onError?.invoke(e)
@@ -179,6 +222,8 @@ class RdpSession(
                 override fun onResize(width: UShort, height: UShort) {
                     if (closed) return
                     log("D", "Desktop resized: ${width}x${height}")
+                    fbWidth = width.toInt()
+                    fbHeight = height.toInt()
                     try {
                         synchronized(this@RdpSession) {
                             // #425: don't recycle() — this bitmap may still be
@@ -202,6 +247,8 @@ class RdpSession(
                 override fun onConnected(width: UShort, height: UShort) {
                     if (closed) return
                     log("D", "RDP handshake complete: ${width}x${height}")
+                    fbWidth = width.toInt()
+                    fbHeight = height.toInt()
                     onConnected?.invoke(width.toInt(), height.toInt())
                 }
 
@@ -290,26 +337,110 @@ class RdpSession(
         }
     }
 
-    private fun refreshBitmap() {
+    /**
+     * Bring the on-screen bitmap up to date. [dirty] is the region the server
+     * actually changed; only that region is written, and only into a bitmap
+     * that already exists at the right size (#422).
+     */
+    private fun refreshBitmap(dirty: RdpRect? = null) {
         val c = client ?: return
-        val frame = try {
-            c.getFramebuffer() ?: return
-        } catch (e: Exception) {
-            log("E", "getFramebuffer() failed: ${e.message}")
-            onError?.invoke(e)
-            return
-        }
         val bitmap = try {
-            frameToBitmap(frame)
+            val existing = synchronized(this) { currentBitmap }
+            val reusable = existing != null &&
+                !existing.isRecycled &&
+                existing.width == fbWidth &&
+                existing.height == fbHeight
+            // The common path: fetch ONLY the changed region and paint it into
+            // the bitmap the viewer already holds. Fetching the whole
+            // framebuffer here was the last full-frame copy per update (#422).
+            // Fastest path: let native write straight into the bitmap we
+            // already hold, skipping the Vec, the FFI marshalling and the
+            // Kotlin-side copy entirely (#466). Returns false for anything
+            // recoverable — wrong size, wrong format, session gone — and we
+            // fall through to the byte-array path below.
+            val blitted = reusable && dirty != null && RdpBitmapBridge.available &&
+                runCatching {
+                    RdpBitmapBridge.blitRegion(
+                        existing!!,
+                        c.bitmapBridgeId(),
+                        dirty.x.toInt(),
+                        dirty.y.toInt(),
+                        dirty.width.toInt(),
+                        dirty.height.toInt(),
+                    )
+                }.getOrDefault(false)
+
+            val region = if (!blitted && reusable && dirty != null) {
+                c.getFramebufferRegion(dirty.x, dirty.y, dirty.width, dirty.height)
+            } else {
+                null
+            }
+            if (blitted) {
+                existing!!
+            } else if (region != null) {
+                existing!!.also {
+                    // A region covering the whole bitmap is the common case, not
+                    // the exception: progressive and AVC both hand us a
+                    // full-screen dirty bbox every frame. drawTile would
+                    // allocate a second full-size bitmap, copy into it, then
+                    // blit that over the destination — two 8.3MB copies and an
+                    // 8.3MB allocation per frame, to land the pixels exactly
+                    // where copyPixelsFromBuffer puts them in one. Measured at
+                    // 1080p the whole publish step was ~72ms/frame (#466).
+                    if (dirty!!.x.toInt() == 0 && dirty.y.toInt() == 0 &&
+                        region.width.toInt() == it.width && region.height.toInt() == it.height
+                    ) {
+                        it.copyPixelsFromBuffer(ByteBuffer.wrap(region.pixels))
+                    } else {
+                        drawTile(it, region, dirty.x.toInt(), dirty.y.toInt())
+                    }
+                }
+            } else {
+                // First frame, a resize, or a rect the native side rejected:
+                // fall back to a full repaint.
+                val frame = c.getFramebuffer() ?: return
+                if (reusable && existing!!.width == frame.width.toInt() &&
+                    existing.height == frame.height.toInt()
+                ) {
+                    existing.also { it.copyPixelsFromBuffer(ByteBuffer.wrap(frame.pixels)) }
+                } else {
+                    frameToBitmap(frame)
+                }
+            }
         } catch (e: Exception) {
-            log("E", "frameToBitmap() failed (${frame.width}x${frame.height}, ${frame.pixels.size} bytes): ${e.message}")
+            log("E", "frame paint failed (dirty=${dirty?.width}x${dirty?.height}): ${e.message}")
             onError?.invoke(e)
             return
         }
         synchronized(this) {
             currentBitmap = bitmap
         }
+        // Identity may be unchanged, so the counter is what tells the viewer to
+        // repaint. Bumped before the callback so an observer that reads it
+        // synchronously sees this frame, not the previous one.
+        _frameSeq.value = _frameSeq.value + 1
         onFrameUpdate?.invoke(bitmap)
+    }
+
+    /**
+     * Paint an already tightly-packed RGBA [region] into [dst] at ([x], [y]).
+     *
+     * Goes via a tile bitmap and [Canvas] rather than `setPixels`, because
+     * `copyPixelsFromBuffer` keeps the same RGBA byte order the full-frame path
+     * has always used — `setPixels` takes packed ARGB ints and would reintroduce
+     * the red/blue swap of #212.
+     */
+    private fun drawTile(dst: Bitmap, region: FrameData, x: Int, y: Int) {
+        val w = region.width.toInt()
+        val h = region.height.toInt()
+        if (w <= 0 || h <= 0) return
+        val tile = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try {
+            tile.copyPixelsFromBuffer(ByteBuffer.wrap(region.pixels))
+            Canvas(dst).drawBitmap(tile, x.toFloat(), y.toFloat(), null)
+        } finally {
+            tile.recycle()
+        }
     }
 
     /**
