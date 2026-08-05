@@ -34,6 +34,33 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUST_DIR="$SCRIPT_DIR/../rust"
 OUT_DIR="$SCRIPT_DIR/../jniLibs"
 
+# Skip entirely if jniLibs/*.so are already newer than the Rust sources —
+# this matters because the caller may be Gradle running INSIDE the amd64
+# build container (see Dockerfile): `uname -m` there reports x86_64 (the
+# container's own reported arch, not seer's real aarch64 CPU), so the
+# arch-detection below would wrongly take the cargo-ndk branch — and cargo
+# isn't installed in that container anymore (Rust builds on the true
+# aarch64 host, outside any container). Gradle's own up-to-date tracking
+# doesn't help here either: a fresh container has no build/ state to know
+# this task already ran on the host. So check freshness directly instead
+# of trusting either uname -m or Gradle's cache.
+all_fresh=1
+for abi in arm64-v8a armeabi-v7a x86_64; do
+    so="$OUT_DIR/$abi/librdp_transport.so"
+    if [ ! -f "$so" ]; then
+        all_fresh=0
+        break
+    fi
+    if [ -n "$(find "$RUST_DIR/src" "$RUST_DIR/Cargo.toml" "$RUST_DIR/Cargo.lock" -type f -newer "$so" 2>/dev/null)" ]; then
+        all_fresh=0
+        break
+    fi
+done
+if [ "$all_fresh" = "1" ]; then
+    echo "==> jniLibs/*.so already newer than rust/src — skipping (likely pre-built on the real host)"
+    exit 0
+fi
+
 NDK_HOME="${1:-${ANDROID_NDK_HOME:-}}"
 if [ -z "$NDK_HOME" ]; then
     NDK_HOME="$(ls -d "$HOME/Android/Sdk/ndk"/*/ 2>/dev/null | sort -V | tail -1)"
