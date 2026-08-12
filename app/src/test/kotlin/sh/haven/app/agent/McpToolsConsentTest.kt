@@ -538,7 +538,7 @@ class McpToolsConsentTest {
                 listOf("present_", "haven_ui", "raise_notification", "self_message", "send_to_agent", "await_turn", "read_last_turn")),
             Section("agent-endpoint", "Agent endpoint, device & diagnostics", 11,
                 "Pairing, standing policies, app info/update, preferences, and device diagnostics.",
-                listOf("standing_polic", "pair", "consent", "install_apk", "restart_app", "app_info", "preference", "developer_settings", "logcat", "notification")),
+                listOf("standing_polic", "pair", "consent", "install_apk", "restart_app", "app_info", "preference", "developer_settings", "logcat", "native_crash", "notification")),
         )
         val byPriority = sections.sortedBy { it.priority }
         fun sectionOf(name: String): Section? =
@@ -720,7 +720,7 @@ class McpToolsConsentTest {
         val definitionNames = tools.definitions().map { it.getString("name") }.toSet()
         val readOnly = listOf("list_totp_secrets", "list_age_identities")
         val everyCall = listOf(
-            "create_totp_secret", "delete_totp_secret",
+            "create_totp_secret", "delete_totp_secret", "generate_totp_code",
             "create_age_identity", "encrypt_file", "decrypt_file",
         )
         for (name in readOnly) {

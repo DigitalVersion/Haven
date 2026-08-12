@@ -431,6 +431,8 @@ fun HavenNavHost(
         .collectAsState(initial = sh.haven.core.data.preferences.DesktopKeyPlacement.LEFT)
     val fullscreenButtonCorner by preferencesRepository.fullscreenButtonCorner
         .collectAsState(initial = sh.haven.core.data.preferences.FullscreenButtonCorner.DEFAULT)
+    val rdpChipAnchor by preferencesRepository.rdpChipAnchor
+        .collectAsState(initial = sh.haven.core.data.preferences.RdpChipAnchor.DEFAULT)
     val toolbarMinKeyWidth by preferencesRepository.toolbarMinButtonWidth
         .collectAsState(initial = sh.haven.core.data.preferences.UserPreferencesRepository.DEFAULT_TOOLBAR_MIN_BUTTON_WIDTH)
     val showSearchButton by preferencesRepository.showSearchButton
@@ -528,6 +530,11 @@ fun HavenNavHost(
     // makes the Scaffold container transparent so the (window-level)
     // FLAG_SHOW_WALLPAPER actually reaches the eye behind the terminal.
     var terminalTransparent by remember { mutableStateOf(false) }
+    // The active terminal's background while the Terminal pane is showing
+    // (#523). The terminal's colours come from its own scheme rather than the
+    // app theme, so without this a black terminal under a light app theme left
+    // the Scaffold's light container showing behind the status bar.
+    var terminalBackground by remember { mutableStateOf<Color?>(null) }
     var terminalReorderMode by remember { mutableStateOf(false) }
     var openToolbarConfig by remember { mutableStateOf(false) }
 
@@ -709,6 +716,7 @@ fun HavenNavHost(
                         },
                         onSelectionActiveChanged = { terminalSelectionActive = it },
                         onTransparentChanged = { terminalTransparent = it },
+                        onBackgroundColorChanged = { terminalBackground = it },
                         onReorderModeChanged = { terminalReorderMode = it },
                         onToolbarLayoutChanged = { newLayout ->
                             coroutineScope.launch {
@@ -773,6 +781,10 @@ fun HavenNavHost(
                         toolbarLayout = toolbarLayout,
                         navBlockMode = navBlockMode,
                         toolbarUniformGrid = toolbarUniformGrid,
+                        rdpChipAnchor = rdpChipAnchor,
+                        onRdpChipAnchorChange = {
+                            coroutineScope.launch { preferencesRepository.setRdpChipAnchor(it) }
+                        },
                         inputMode = desktopInputMode,
                         onSetInputMode = { mode ->
                             coroutineScope.launch { preferencesRepository.setDesktopInputMode(mode) }
@@ -894,8 +906,13 @@ fun HavenNavHost(
         //   app background with alpha so the device wallpaper shows through
         //   every screen. Inner screen Scaffolds are Color.Transparent so they
         //   defer to this single layer instead of compounding it.
+        // - An opaque terminal pane paints its own scheme's background here so
+        //   it reaches behind the status bar instead of stopping under a strip
+        //   of app-theme colour (#523). Below the translucent case, which must
+        //   still win: that one wants nothing painted at all.
         containerColor = when {
             terminalTransparent -> Color.Transparent
+            terminalBackground != null -> terminalBackground!!
             appBackgroundOpacity < 1f ->
                 MaterialTheme.colorScheme.background.copy(alpha = appBackgroundOpacity)
             else -> MaterialTheme.colorScheme.background

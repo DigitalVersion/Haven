@@ -285,6 +285,17 @@ impl SurfaceManager {
         self.surfaces.get(&id)
     }
 
+    /// Every live surface, lowest id first. Used by the `EGFX_DUMP_DIR` dump,
+    /// which must not assume the server picked surface 0 — FreeRDP's shadow
+    /// server allocates id 1, and a dump hard-coded to 0 silently produced
+    /// nothing at all (#496).
+    #[allow(dead_code)]
+    pub fn all_surfaces(&self) -> Vec<(u16, &Surface)> {
+        let mut v: Vec<(u16, &Surface)> = self.surfaces.iter().map(|(id, s)| (*id, s)).collect();
+        v.sort_by_key(|(id, _)| *id);
+        v
+    }
+
     #[allow(dead_code)]
     pub fn surface_mut(&mut self, id: u16) -> Option<&mut Surface> {
         self.surfaces.get_mut(&id)
@@ -295,10 +306,27 @@ impl SurfaceManager {
         self.output_map.get(&surface_id).copied()
     }
 
+    /// Handle `ResetGraphics`: drop the surfaces and their output mapping, and
+    /// **keep the bitmap cache**.
+    ///
+    /// The cache used to be cleared here too, and that is a bug a reporter's
+    /// Windows session shows plainly (#477): a second `ResetGraphics` arrives
+    /// mid-session, and eleven log lines later the server starts replaying
+    /// cache slots it still believes in — 221 `CacheToSurface: empty cache
+    /// slot` misses, each one a rectangle left holding stale pixels.
+    ///
+    /// MS-RDPEGFX gives the cache its own lifecycle: entries go away on an
+    /// explicit `RDPGFX_EVICT_CACHE_ENTRY_PDU`, and survive across connections
+    /// entirely via cache import/export. Nothing ties it to the graphics
+    /// output being reconfigured, which is all `ResetGraphics` does. The
+    /// ClearCodec decoder beside it already survives a reset for exactly this
+    /// reason, and the same argument was simply never applied here.
+    ///
+    /// Surfaces genuinely do go: the server deletes and recreates them around
+    /// a reset, so holding the old ones would be wrong.
     pub fn reset(&mut self) {
         self.surfaces.clear();
         self.output_map.clear();
-        self.cache.clear();
         self.dirty.clear();
     }
 }
@@ -326,3 +354,75 @@ fn copy_rect_out(src: &Surface, r: &ExclusiveRectangle, w: u32, h: u32, out: &mu
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironrdp_egfx::pdu::{CacheToSurfacePdu, CreateSurfacePdu, PixelFormat, SurfaceToCachePdu};
+    use ironrdp_egfx::pdu::Point;
+
+    fn make_surface(m: &mut SurfaceManager, id: u16, w: u16, h: u16) {
+        m.create_surface(&CreateSurfacePdu {
+            surface_id: id,
+            width: w,
+            height: h,
+            pixel_format: PixelFormat::XRgb,
+        });
+    }
+
+    /// #477: a `ResetGraphics` must not take the bitmap cache with it.
+    ///
+    /// A reporter's Windows session sends a second `ResetGraphics` mid-session
+    /// and then immediately replays cache slots it still believes in — 221
+    /// `CacheToSurface: empty cache slot` misses, each one a rectangle left
+    /// holding stale pixels, which is what "the rendering is pixelated" looked
+    /// like from their side.
+    ///
+    /// Driven through the real PDUs rather than by inspecting the map, because
+    /// the failure is a *replay after a reset* and that is the thing worth
+    /// pinning.
+    #[test]
+    fn a_cached_tile_survives_reset_graphics_and_can_still_be_replayed() {
+        let mut m = SurfaceManager::new();
+        make_surface(&mut m, 1, 8, 8);
+
+        // Paint a recognisable pixel and cache a 4x4 corner of it.
+        m.surface_mut(1).unwrap().pixels[0..4].copy_from_slice(&[1, 2, 3, 255]);
+        m.surface_to_cache(&SurfaceToCachePdu {
+            surface_id: 1,
+            cache_slot: 7,
+            cache_key: 0,
+            source_rectangle: ExclusiveRectangle { left: 0, top: 0, right: 4, bottom: 4 },
+        });
+
+        // The server reconfigures the graphics output; surfaces go, cache stays.
+        m.reset();
+        assert!(m.surface(1).is_none(), "surfaces are rebuilt after a reset");
+
+        make_surface(&mut m, 2, 8, 8);
+        m.cache_to_surface(&CacheToSurfacePdu {
+            cache_slot: 7,
+            surface_id: 2,
+            destination_points: vec![Point { x: 0, y: 0 }],
+        });
+
+        assert_eq!(
+            &m.surface(2).unwrap().pixels[0..4],
+            &[1, 2, 3, 255],
+            "the cached tile must still replay after ResetGraphics",
+        );
+    }
+
+    /// The other half: a reset really does drop surfaces, so keeping the cache
+    /// has not accidentally turned into keeping everything.
+    #[test]
+    fn reset_graphics_still_drops_surfaces_and_dirty_rects() {
+        let mut m = SurfaceManager::new();
+        make_surface(&mut m, 1, 4, 4);
+        m.dirty.push((1, ExclusiveRectangle { left: 0, top: 0, right: 4, bottom: 4 }));
+        m.reset();
+        assert!(m.surface(1).is_none());
+        assert!(m.dirty.is_empty());
+    }
+
+}

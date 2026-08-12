@@ -68,13 +68,39 @@ pub(crate) struct EgfxPerf {
     /// Publishing the frame: dirty-rect copy plus the callback into the app.
     flush_us: u64,
     zgfx_us: u64,
+    /// The AVC decoder round trip as Rust sees it: the host decode plus the
+    /// UniFFI marshalling of the returned frame. The host reports its own
+    /// internal split separately, and the two did not agree — 107ms inside the
+    /// Kotlin decoder against 309ms for the whole dispatch at 2560x1440 (#477).
+    /// Splitting the round trip from the blit is what says which of the two
+    /// carries that ~200ms, instead of it being attributed by guesswork.
+    avc_call_us: u64,
+    /// A yardstick for the line above: what it costs *this device* to allocate
+    /// and copy the same number of bytes the round trip carries back. The
+    /// round trip has consistently measured far more than the work the host
+    /// reports doing inside it, and the two candidate explanations — copying
+    /// the frame across the boundary, or fixed dispatch overhead — predict
+    /// very different values here. Measured once per report window.
+    memcpy_us: u64,
+    memcpy_kb: u64,
+    /// `blit_rgba` of the decoded frame into the surface.
+    blit_us: u64,
+    /// I420 → RGBA, which the host used to do before returning (#466).
+    /// Reported separately so moving it here can be judged rather than
+    /// assumed: it should be a fraction of the 27-109ms it cost in Kotlin,
+    /// and if it is not, that is worth knowing immediately.
+    yuv_us: u64,
     since_report: Option<std::time::Instant>,
 }
 
 const EGFX_PERF_REPORT_FRAMES: u64 = 30;
 
 impl EgfxPerf {
-    fn maybe_report(&mut self) {
+    /// `state` is where the line is parked for the host to drain (#477). It
+    /// went only to the Android log before, which needs adb — so the number
+    /// that says whether decode is the bottleneck could not reach the app's
+    /// own verbose log, and reporters had no way to send it.
+    fn maybe_report(&mut self, state: &Arc<RwLock<SessionState>>) {
         let started = *self.since_report.get_or_insert_with(std::time::Instant::now);
         if self.frames < EGFX_PERF_REPORT_FRAMES {
             return;
@@ -85,14 +111,36 @@ impl EgfxPerf {
         // also wraps — so decode_us contains flush_us. Subtract, or the two
         // numbers overlap and "decode" looks worse than it is.
         let decode_only = self.decode_us.saturating_sub(self.flush_us);
-        info!(
-            "EGFX perf: {:.1} fps over {n} frames — per frame: zgfx {}us, decode {}us, publish {}us, total {}us",
+        let line = format!(
+            "EGFX perf: {:.1} fps over {n} frames — per frame: zgfx {}us, decode {}us \
+             (avc round trip {}us, yuv {}us, blit {}us), publish {}us, total {}us{}",
             n as f64 / secs,
             self.zgfx_us / n,
             decode_only / n,
+            self.avc_call_us / n,
+            self.yuv_us / n,
+            self.blit_us / n,
             self.flush_us / n,
             (self.zgfx_us + self.decode_us) / n,
+            // Only when the probe actually ran. A session the server never
+            // sends H.264 to — Windows uses progressive for ordinary desktop
+            // updates even with AVC420 negotiated — leaves it at zero, and
+            // "alloc+copy of 0KB took 0us" reads like a measurement saying
+            // copying is free rather than a probe that never fired. Caught by
+            // running it against a real Windows 11 server (#466/#477).
+            if self.memcpy_us > 0 {
+                format!(
+                    ", yardstick: alloc+copy of {}KB took {}us",
+                    self.memcpy_kb, self.memcpy_us,
+                )
+            } else {
+                String::new()
+            },
         );
+        info!("{line}");
+        if let Ok(mut s) = state.write() {
+            s.push_perf(line);
+        }
         *self = Self::default();
     }
 }
@@ -124,6 +172,10 @@ pub struct EgfxProcessor {
     /// the host-registered [`crate::Avc420Decoder`] (MediaCodec on Android),
     /// reached through `state.avc_decoder`.
     avc_enabled: bool,
+    /// Reused RGBA target for [`crate::yuv::i420_to_rgba`]. Held across frames
+    /// because allocating 8.29MB per frame at 1080p is the churn this whole
+    /// change exists to remove.
+    avc_rgba: Vec<u8>,
 }
 
 impl EgfxProcessor {
@@ -145,6 +197,7 @@ impl EgfxProcessor {
             progressive_decoder,
             planar_decoder: ironrdp_graphics::rdp6::BitmapStreamDecoder::default(),
             avc_enabled,
+            avc_rgba: Vec::new(),
         }
     }
 }
@@ -179,9 +232,32 @@ impl DvcProcessor for EgfxProcessor {
             // V10 makes it pick V10 (which it reads as "YUV420 false") and it then
             // has nothing to send. V8.1-only forces the YUV420 path. AVC444 (V10)
             // is a later slice once we decode it. #425.
-            info!("EGFX: sending CapabilitiesAdvertise(V8_1 AVC420_ENABLED)");
+            //
+            // SMALL_CACHE is not optional here (#477). A Windows 11 24H2 server
+            // *closes the graphics channel* when V8.1 arrives with
+            // AVC420_ENABLED as its only flag, and the session then falls back
+            // to legacy fast-path bitmaps for its whole life. Measured against
+            // win11-rdptest, same binary, one bit apart, twice each:
+            //
+            //   flags                          | Windows
+            //   0x10 AVC420_ENABLED alone      | channel closed, 0 EGFX frames
+            //   0x12 + SMALL_CACHE             | confirms V8.1
+            //   0x11 + THIN_CLIENT             | confirms V8.1
+            //   0x02 SMALL_CACHE alone         | confirms V8.1
+            //   0x00 no flags                  | confirms V8.1
+            //
+            // Why the lone AVC bit is the one Windows refuses is unexplained —
+            // the encoding is byte-identical apart from that word. SMALL_CACHE
+            // is the flag to add regardless of that: it asks for the 16MB cache
+            // profile rather than 100MB, which is what a phone should want, and
+            // `SurfaceManager`'s cache is an unbounded-by-bytes HashMap.
+            // FreeRDP is unaffected — it selects purely on capset *version* and
+            // gates AVC420 on the AVC420_ENABLED bit alone (shadow_client.c
+            // `shadow_client_rdpgfx_caps_advertise` / `shadow_avc420_enabled`),
+            // confirmed on the wire against freerdp-shadow-cli.
+            info!("EGFX: sending CapabilitiesAdvertise(V8_1 AVC420_ENABLED|SMALL_CACHE)");
             CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::AVC420_ENABLED,
+                flags: CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE,
             }])
         } else {
             info!("EGFX: sending CapabilitiesAdvertise(V10, AVC_DISABLED)");
@@ -241,7 +317,8 @@ impl DvcProcessor for EgfxProcessor {
             self.perf.decode_us += t_pdu.elapsed().as_micros() as u64;
             if is_end_frame {
                 self.perf.frames += 1;
-                self.perf.maybe_report();
+                // Disjoint field borrows: &mut self.perf and &self.state.
+                self.perf.maybe_report(&self.state);
             }
         }
         Ok(out_messages)
@@ -265,6 +342,9 @@ impl EgfxProcessor {
                     p.monitors.len()
                 );
                 self.surfaces.reset();
+                // #496: refinement state is per-tile and sized by surface area;
+                // a rebuilt graphics context invalidates all of it.
+                self.progressive_decoder.forget_all();
                 self.resize_framebuffer(p.width, p.height);
             }
             GfxPdu::CreateSurface(p) => {
@@ -277,6 +357,10 @@ impl EgfxProcessor {
             GfxPdu::DeleteSurface(p) => {
                 debug!("EGFX[{n}]: DeleteSurface id={}", p.surface_id);
                 self.surfaces.delete_surface(p);
+                // #496: ~48 KB per 64x64 tile of that surface, and nothing else
+                // evicts it. Must go with the surface, not linger for the
+                // lifetime of the connection.
+                self.progressive_decoder.forget_surface(p.surface_id);
             }
             GfxPdu::MapSurfaceToOutput(p) => {
                 debug!(
@@ -522,27 +606,37 @@ impl EgfxProcessor {
         }
     }
 
-    /// If `EGFX_DUMP_DIR` is set, write surface 0 as a PPM after each
-    /// EndFrame. Useful for visual diff against a VNC reference shot from
-    /// the host smoke driver — no extra image-crate dependency.
+    /// If `EGFX_DUMP_DIR` is set, write every live surface as a PPM after each
+    /// EndFrame. Useful for visual diff against a reference shot of the source
+    /// display — no extra image-crate dependency.
+    ///
+    /// ★ #496: this used to dump surface **0** only, and returned silently
+    /// when there wasn't one. FreeRDP's shadow server allocates surface id 1,
+    /// so the whole visual-diff path produced nothing at all — tile payloads
+    /// appeared in the dump directory but never a rendered frame, with no hint
+    /// as to why. Whichever ids the server picked now get dumped.
     fn maybe_dump_surface(&self, frame_id: u32) {
         let Ok(dir) = std::env::var("EGFX_DUMP_DIR") else {
             return;
         };
-        let Some(s) = self.surfaces.surface(0) else {
+        let surfaces = self.surfaces.all_surfaces();
+        if surfaces.is_empty() {
+            warn!("EGFX[{frame_id}]: surface dump requested but no surface exists yet");
             return;
-        };
-        let path = format!("{dir}/surface0_frame{frame_id:04}.ppm");
-        let mut buf = format!("P6\n{} {}\n255\n", s.width, s.height).into_bytes();
-        // Surface stores RGBA8888; PPM is RGB.
-        buf.reserve(s.pixels.len() / 4 * 3);
-        for px in s.pixels.chunks_exact(4) {
-            buf.extend_from_slice(&px[..3]);
         }
-        if let Err(e) = std::fs::write(&path, &buf) {
-            warn!("EGFX surface dump to {path} failed: {e}");
-        } else {
-            info!("EGFX surface dumped to {path}");
+        for (id, s) in surfaces {
+            let path = format!("{dir}/surface{id}_frame{frame_id:04}.ppm");
+            let mut buf = format!("P6\n{} {}\n255\n", s.width, s.height).into_bytes();
+            // Surface stores RGBA8888; PPM is RGB.
+            buf.reserve(s.pixels.len() / 4 * 3);
+            for px in s.pixels.chunks_exact(4) {
+                buf.extend_from_slice(&px[..3]);
+            }
+            if let Err(e) = std::fs::write(&path, &buf) {
+                warn!("EGFX surface dump to {path} failed: {e}");
+            } else {
+                info!("EGFX surface dumped to {path}");
+            }
         }
     }
 
@@ -709,18 +803,46 @@ impl EgfxProcessor {
                 // to the destination. ponytail: multi-region partial blits
                 // (Windows/AVC444) collapse to a full-dest repaint here — still
                 // correct pixels, just not minimal; refine in slice 3.
-                let rgba = decoder.decode(stream.data.to_vec(), w as u16, h as u16);
-                let want = (w * h * 4) as usize;
-                if rgba.len() < want {
-                    warn!("EGFX[{n}]: AVC420 decoder returned {} bytes, need {} ({w}x{h}) — dropping", rgba.len(), want);
+                let t_avc = std::time::Instant::now();
+                let i420 = decoder.decode_to_i420(stream.data.to_vec(), w as u16, h as u16);
+                self.perf.avc_call_us += t_avc.elapsed().as_micros() as u64;
+                if self.perf.memcpy_us == 0 && !i420.is_empty() {
+                    let t = std::time::Instant::now();
+                    let mut probe = vec![0u8; i420.len()];
+                    probe.copy_from_slice(&i420);
+                    std::hint::black_box(&probe);
+                    // max(1) so a sub-microsecond result does not re-arm the
+                    // probe on every frame of the window.
+                    self.perf.memcpy_us = (t.elapsed().as_micros() as u64).max(1);
+                    self.perf.memcpy_kb = (i420.len() / 1024) as u64;
+                }
+                // Colour conversion is ours now (#466). The host used to do it
+                // and hand back RGBA, which cost 27-109ms in a Kotlin loop and
+                // sent 2.67x as many bytes across the boundary as I420 does.
+                let t_yuv = std::time::Instant::now();
+                let mut rgba = std::mem::take(&mut self.avc_rgba);
+                let converted = crate::yuv::i420_to_rgba(&i420, w as usize, h as usize, &mut rgba);
+                self.perf.yuv_us += t_yuv.elapsed().as_micros() as u64;
+                if !converted {
+                    warn!(
+                        "EGFX[{n}]: AVC420 decoder returned {} bytes, need {:?} for {w}x{h} I420 — dropping",
+                        i420.len(),
+                        crate::yuv::i420_len(w as usize, h as usize),
+                    );
+                    self.avc_rgba = rgba;
                     return;
                 }
                 let Some(surface) = self.surfaces.surface_mut(p.surface_id) else {
                     warn!("EGFX[{n}]: WireToSurface1 unknown surface {}", p.surface_id);
                     return;
                 };
+                let t_blit = std::time::Instant::now();
                 surface.blit_rgba(u32::from(r.left), u32::from(r.top), w, h, &rgba);
+                self.perf.blit_us += t_blit.elapsed().as_micros() as u64;
                 self.surfaces.dirty.push((p.surface_id, r.clone()));
+                // Keep the buffer for the next frame: a fresh 8.29MB Vec per
+                // frame is exactly the allocation churn this change is about.
+                self.avc_rgba = rgba;
             }
             Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
                 // #425 slice 3: AVC444 dual-stream (4:2:0 luma + chroma aux)
@@ -901,6 +1023,56 @@ mod tests {
         assert_eq!(stream.data, &annex_b, "data is the trailing Annex-B AU");
     }
 
+    /// Encode what `start()` puts on the wire, and pull the single capability
+    /// set out of it: `(version, flags)`.
+    ///
+    /// Reading the *encoded bytes* rather than the typed value is deliberate —
+    /// the Windows behaviour this guards keys off one 32-bit word in the PDU,
+    /// so the assertion should be on the word the server actually receives.
+    fn advertised_capset(avc_enabled: bool) -> (u32, u32) {
+        let mut proc = EgfxProcessor::new(test_state(64, 64), false, avc_enabled);
+        let msgs = proc.start(0).expect("start() builds an advertise");
+        assert_eq!(msgs.len(), 1, "one CapabilitiesAdvertise");
+        let mut buf = vec![0u8; msgs[0].size()];
+        msgs[0]
+            .encode(&mut WriteCursor::new(&mut buf))
+            .expect("advertise encodes");
+        // RDPGFX_HEADER (8) + capsSetCount (2), then version (4) + capsDataLength (4) + capsData (4).
+        assert_eq!(u16::from_le_bytes([buf[8], buf[9]]), 1, "exactly one capset advertised");
+        let word = |o: usize| u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+        assert_eq!(word(14), 4, "capsDataLength is the 4-byte flags field");
+        (word(10), word(18))
+    }
+
+    /// #477: with AVC on we must advertise V8.1 carrying **both**
+    /// AVC420_ENABLED and SMALL_CACHE.
+    ///
+    /// Dropping SMALL_CACHE is not cosmetic: a Windows 11 24H2 server responds
+    /// to a lone AVC420_ENABLED by closing the graphics channel, and the
+    /// session spends the rest of its life on legacy fast-path bitmaps.
+    /// Verified on the wire against win11-rdptest — 2/2 closed without the
+    /// flag, 2/2 confirmed with it — and this pins the bit so it cannot be
+    /// tidied away again.
+    #[test]
+    fn avc_advertise_is_v81_with_small_cache() {
+        let (version, flags) = advertised_capset(true);
+        assert_eq!(version, 0x0008_0105, "V8.1 — FreeRDP gates AVC420 on this version");
+        assert_eq!(
+            flags,
+            (CapabilitiesV81Flags::AVC420_ENABLED | CapabilitiesV81Flags::SMALL_CACHE).bits(),
+            "AVC420_ENABLED alone makes Windows close the graphics channel",
+        );
+    }
+
+    /// The non-AVC arm still advertises V10 with AVC_DISABLED, so a server that
+    /// can do H.264 doesn't send us tiles we have no decoder for.
+    #[test]
+    fn non_avc_advertise_is_v10_avc_disabled() {
+        let (version, flags) = advertised_capset(false);
+        assert_eq!(version, 0x000a_0002, "V10");
+        assert_eq!(flags, CapabilitiesV10Flags::AVC_DISABLED.bits());
+    }
+
     /// A session with a framebuffer of the given size, as connect() leaves it.
     fn test_state(w: u16, h: u16) -> Arc<RwLock<crate::SessionState>> {
         Arc::new(RwLock::new(crate::SessionState {
@@ -917,7 +1089,54 @@ mod tests {
             pointer_callback: None,
             avc_decoder: None,
             shutdown: false,
+            perf_log: Vec::new(),
         }))
+    }
+
+    /// #477: the perf summary must reach the shared state, not just the
+    /// Android log.
+    ///
+    /// This is the whole point of the change — the number was always being
+    /// computed, it just could not get anywhere a reporter could copy it from.
+    /// Asserting on `state` rather than on the log is what distinguishes the
+    /// two, so this fails if the line goes back to being log-only.
+    #[test]
+    fn perf_summary_reaches_the_host_state() {
+        let state = test_state(64, 32);
+        let mut perf = EgfxPerf::default();
+
+        // One short of the reporting threshold: nothing should be recorded yet,
+        // or the "report every N frames" batching is not actually happening.
+        perf.frames = EGFX_PERF_REPORT_FRAMES - 1;
+        perf.maybe_report(&state);
+        assert!(
+            state.read().unwrap().perf_log.is_empty(),
+            "must not report before {EGFX_PERF_REPORT_FRAMES} frames",
+        );
+
+        perf.frames = EGFX_PERF_REPORT_FRAMES;
+        perf.decode_us = 3_000;
+        perf.flush_us = 1_000;
+        perf.zgfx_us = 500;
+        perf.maybe_report(&state);
+
+        let log = state.read().unwrap().perf_log.clone();
+        assert_eq!(log.len(), 1, "one summary line recorded");
+        assert!(log[0].starts_with("EGFX perf:"), "recognisable line: {}", log[0]);
+        assert!(
+            log[0].contains(&format!("over {EGFX_PERF_REPORT_FRAMES} frames")),
+            "carries the frame count: {}",
+            log[0],
+        );
+
+        // Reporting resets the accumulator, so a second call at the same
+        // instant must not emit a duplicate off stale counters.
+        perf.maybe_report(&state);
+        assert_eq!(
+            state.read().unwrap().perf_log.len(),
+            1,
+            "counters reset after reporting",
+        );
     }
 
     /// Surface 0 covering the whole output, which is what a server sets up
@@ -982,6 +1201,129 @@ mod tests {
         // Neighbours untouched — the tile must not smear.
         assert_eq!(at(5, 5), vec![0, 0, 0, 0], "pixel past the tile");
         assert_eq!(at(3, 6), vec![0, 0, 0, 0], "pixel below the tile");
+    }
+
+    /// #466/#477: the AVC round-trip and blit timers must actually fire on the
+    /// AVC420 path.
+    ///
+    /// Both reporters' logs show the Rust-side per-frame decode cost far
+    /// exceeding what the Kotlin decoder reports for the same frames — 107ms
+    /// against 309ms at 2560x1440 — and these two counters exist to say where
+    /// the difference lives. An earlier timer on this same path was attached to
+    /// an event EGFX never emits and produced nothing but zeroes for a whole
+    /// session, so "the numbers appear in the line" is not enough: this drives
+    /// a real dispatch through a decoder that sleeps a known time, and fails if
+    /// either counter stays at zero.
+    /// A session the server never sends H.264 to still reports a perf line,
+    /// and that line must not carry a yardstick that never ran. "alloc+copy of
+    /// 0KB took 0us" reads like a result saying copying is free.
+    ///
+    /// Found by running the instrument against a real Windows 11 server, which
+    /// used progressive for ordinary desktop updates even with AVC420
+    /// negotiated — so the AVC counters, and the probe, stayed at zero.
+    #[test]
+    fn a_perf_line_omits_the_yardstick_when_no_avc_frame_ran() {
+        let state = test_state(64, 64);
+        let mut perf = EgfxPerf { frames: EGFX_PERF_REPORT_FRAMES, decode_us: 1_000, ..Default::default() };
+        perf.maybe_report(&state);
+        let lines = state.read().unwrap().perf_log.clone();
+        assert_eq!(1, lines.len(), "the perf line must still be reported");
+        assert!(
+            !lines[0].contains("yardstick"),
+            "a probe that never ran must not appear as a measurement: {}",
+            lines[0],
+        );
+
+        let state2 = test_state(64, 64);
+        let mut ran = EgfxPerf {
+            frames: EGFX_PERF_REPORT_FRAMES,
+            decode_us: 1_000,
+            memcpy_us: 42,
+            memcpy_kb: 5_400,
+            ..Default::default()
+        };
+        ran.maybe_report(&state2);
+        let with = state2.read().unwrap().perf_log[0].clone();
+        assert!(with.contains("yardstick: alloc+copy of 5400KB took 42us"), "got {with}");
+    }
+
+    #[test]
+    fn avc420_round_trip_and_blit_are_measured() {
+        struct SlowDecoder {
+            delay: std::time::Duration,
+        }
+        impl crate::Avc420Decoder for SlowDecoder {
+            fn decode_to_i420(&self, _annex_b: Vec<u8>, w: u16, h: u16) -> Vec<u8> {
+                std::thread::sleep(self.delay);
+                // A mid-grey I420 frame: luma 128, chroma neutral.
+                let len = crate::yuv::i420_len(usize::from(w), usize::from(h)).unwrap();
+                vec![128u8; len]
+            }
+        }
+
+        let (w, h) = (64u16, 64u16);
+        let state = test_state(w, h);
+        let delay = std::time::Duration::from_millis(20);
+        state.write().unwrap().avc_decoder = Some(Arc::new(SlowDecoder { delay }));
+
+        let mut proc = EgfxProcessor::new(state.clone(), false, false);
+        proc.capabilities_received = true;
+        let mut out = Vec::new();
+        create_full_surface(&mut proc, &mut out, w, h);
+
+        // RFX_AVC420_BITMAP_STREAM: one full-frame region, then an Annex-B AU.
+        let mut payload: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x40, 0x00]);
+        payload.extend_from_slice(&[0x16, 0x64]);
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0]);
+
+        proc.dispatch(
+            12,
+            &GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 0,
+                codec_id: Codec1Type::Avc420,
+                pixel_format: PixelFormat::XRgb,
+                destination_rectangle: ExclusiveRectangle { left: 0, top: 0, right: w, bottom: h },
+                bitmap_data: payload,
+            }),
+            &mut out,
+        );
+
+        assert!(
+            proc.perf.avc_call_us >= delay.as_micros() as u64,
+            "the AVC round trip must be timed: got {}us for a decoder that slept {}us",
+            proc.perf.avc_call_us,
+            delay.as_micros(),
+        );
+        assert!(proc.perf.blit_us > 0, "the blit must be timed, got 0us");
+        // The yardstick has to have actually run. A probe that stays at zero
+        // reports "0us to copy 0KB", which reads like a result rather than
+        // like a probe that never fired — the exact failure this test's
+        // predecessor was written for.
+        assert!(proc.perf.memcpy_us > 0, "the alloc+copy yardstick must run, got 0us");
+        assert_eq!(
+            proc.perf.memcpy_kb,
+            (crate::yuv::i420_len(usize::from(w), usize::from(h)).unwrap() / 1024) as u64,
+            "the yardstick must size itself from the frame it is a yardstick for",
+        );
+        assert!(proc.perf.yuv_us > 0, "the I420 conversion must be timed, got 0us");
+        // And the frame really was painted — otherwise the timers could be
+        // measuring a path that bails out before doing the work.
+        //
+        // The value checked for is the *converted* one: neutral I420
+        // (Y=128, U=V=128) is R=G=B=130 through BT.601 limited range. Asserting
+        // 130 rather than 128 is what distinguishes "the conversion ran" from
+        // "the decoder's bytes were blitted raw", which is the mistake this
+        // whole change could most easily make (#466).
+        let surface = proc.surfaces.surface(0).expect("surface");
+        assert!(
+            surface.pixels.iter().any(|&b| b == 130),
+            "the converted frame must reach the surface",
+        );
+        assert!(
+            !surface.pixels.iter().any(|&b| b == 128),
+            "raw I420 luma must not appear in the surface — that would mean no conversion",
+        );
     }
 
     /// A short payload must be refused rather than read past its end.
@@ -1051,6 +1393,7 @@ mod tests {
             pointer_callback: None,
             avc_decoder: None,
             shutdown: false,
+            perf_log: Vec::new(),
         }));
         let mut proc = EgfxProcessor::new(state.clone(), false, true);
         proc.capabilities_received = true;

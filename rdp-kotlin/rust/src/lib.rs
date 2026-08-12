@@ -5,8 +5,72 @@ use log::{debug, error, info, warn};
 mod bitmap_bridge;
 mod egfx;
 mod redirection;
+mod yuv;
 
 uniffi::setup_scaffolding!();
+
+/// Values that must never reach logcat (#477).
+///
+/// Haven's RDP logs exist to be attached to public issues, and ironrdp's own
+/// `tracing` output dumps whole PDUs at debug level: `ConnectionRequest`
+/// carries the logon name as the RDP Cookie, and `ClientInfoPdu` carries
+/// `username` plus the server `address`, both in the clear. We cannot reformat
+/// somebody else's `Debug` impl, and dropping those lines would cost the
+/// connect-phase trace that #422 and #461 were both diagnosed from — so scrub
+/// the formatted line instead. Exact-match replacement of values we already
+/// hold cannot false-positive the way a pattern over arbitrary PDU text would,
+/// and cannot miss a field we forgot to think about.
+static SECRETS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Add one value to the scrub list. Idempotent; safe to call per connect.
+fn remember_secret(value: &str) {
+    // Under 3 chars there is nothing worth hiding and a real risk of chewing
+    // fragments out of unrelated text (an empty domain would match everywhere).
+    if value.len() < 3 {
+        return;
+    }
+    let mut secrets = SECRETS.write().unwrap_or_else(|e| e.into_inner());
+    if !secrets.iter().any(|s| s == value) {
+        secrets.push(value.to_owned());
+    }
+}
+
+/// Every way a secret can appear in a log line, not just the way we were given it.
+///
+/// #477: the scrubber held "192.168.1.100" and the address still reached logcat,
+/// because rustls does not print addresses as dotted quads — it prints the Rust
+/// `Debug` of the octet array:
+///
+/// ```text
+/// rustls::client::hs: No cached session for IpAddress(V4(Ipv4Addr([192, 168, 1, 100])))
+/// ```
+///
+/// A substring search for the dotted form cannot match that, so an exact-match
+/// scrubber is only as good as its guess about formatting — and third-party
+/// crates format however they like. Where a secret parses as an IPv4 address,
+/// its octet rendering is registered alongside it.
+fn secret_renderings(secret: &str) -> Vec<String> {
+    let mut forms = vec![secret.to_owned()];
+    let octets: Vec<&str> = secret.split('.').collect();
+    if octets.len() == 4 && octets.iter().all(|o| o.parse::<u8>().is_ok()) {
+        forms.push(format!("[{}]", octets.join(", ")));
+    }
+    forms
+}
+
+fn scrub(line: &str, secrets: &[String]) -> String {
+    let mut out = line.to_owned();
+    for secret in secrets {
+        for form in secret_renderings(secret) {
+            // The `contains` guard keeps the common (nothing to redact) case down
+            // to a substring search instead of a fresh allocation per secret.
+            if out.contains(form.as_str()) {
+                out = out.replace(form.as_str(), "<redacted>");
+            }
+        }
+    }
+    out
+}
 
 fn init_logging() {
     use std::sync::Once;
@@ -15,9 +79,95 @@ fn init_logging() {
         android_logger::init_once(
             android_logger::Config::default()
                 .with_max_level(log::LevelFilter::Debug)
-                .with_tag("RdpNative"),
+                .with_tag("RdpNative")
+                // Reproduces android_logger's own `{module_path}: {args}`
+                // layout for a custom tag — supplying a format replaces it.
+                .format(|f, record| {
+                    let line = format!(
+                        "{}: {}",
+                        record.module_path().unwrap_or_default(),
+                        record.args()
+                    );
+                    let secrets = SECRETS.read().unwrap_or_else(|e| e.into_inner());
+                    f.write_str(&scrub(&line, &secrets))
+                }),
         );
     });
+}
+
+#[cfg(test)]
+mod log_scrub_tests {
+    use super::scrub;
+
+    fn secrets() -> Vec<String> {
+        ["skeezmo", "192.168.1.100", "desktop.lan"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Verbatim from the #477 logcat (v5.86.48), with the reporter's manual
+    /// `--redacted--` put back to the account name he had to delete by hand.
+    #[test]
+    fn connection_request_cookie_is_scrubbed() {
+        let line = concat!(
+            "ironrdp_connector::connection: Send message=ConnectionRequest { ",
+            "nego_data: Some(Cookie(Cookie(\"skeezmo\"))), flags: RequestFlags(0x0), ",
+            "protocol: SecurityProtocol(SSL) }"
+        );
+        let out = scrub(line, &secrets());
+        assert!(!out.contains("skeezmo"), "{out}");
+        assert!(out.contains("Cookie(Cookie(\"<redacted>\"))"), "{out}");
+    }
+
+    #[test]
+    fn client_info_username_and_address_are_scrubbed() {
+        let line = concat!(
+            "ironrdp_connector::connection: Send message=ClientInfoPdu { client_info: ",
+            "ClientInfo { credentials: Credentials { username: \"skeezmo\", domain: None, .. }, ",
+            "extra_info: ExtendedClientInfo { address_family: AddressFamily(2), ",
+            "address: \"192.168.1.100\", dir: \"\" } } }"
+        );
+        let out = scrub(line, &secrets());
+        assert!(!out.contains("skeezmo"), "{out}");
+        assert!(!out.contains("192.168.1.100"), "{out}");
+        // The PDU shape survives — this is still a usable connect-phase trace.
+        assert!(out.contains("address_family: AddressFamily(2)"), "{out}");
+    }
+
+    /// #477: the exact line that reached a reporter's logcat while the scrubber
+    /// already held this address. rustls prints the octet array, not the dotted
+    /// quad, so the substring search never fired.
+    #[test]
+    fn an_address_printed_as_octets_is_scrubbed() {
+        let line = "rustls::client::hs: No cached session for IpAddress(V4(Ipv4Addr([192, 168, 1, 100])))";
+        let out = scrub(line, &secrets());
+        assert!(!out.contains("192, 168, 1, 100"), "{out}");
+        // Still a usable trace: the crate and the event survive.
+        assert!(out.contains("rustls::client::hs"), "{out}");
+    }
+
+    /// A dotted quad that is not an address must not sprout a bogus octet form.
+    #[test]
+    fn a_non_address_secret_gains_no_octet_rendering() {
+        let secrets = vec!["desktop.lan".to_string(), "1.2.3.999".to_string()];
+        let line = "rdp_transport: connecting to host [1, 2, 3, 999]";
+        assert_eq!(scrub(line, &secrets), line);
+    }
+
+    #[test]
+    fn unrelated_lines_are_untouched() {
+        let line = "rdp_transport: EGFX caps advertised: V8_1, V10_7";
+        assert_eq!(scrub(line, &secrets()), line);
+    }
+
+    #[test]
+    fn empty_secret_list_is_a_passthrough() {
+        // A session that never connected registers nothing; logging must not
+        // start mangling text just because the list is empty.
+        let line = "ironrdp_connector: Send message=ConnectionRequest { .. }";
+        assert_eq!(scrub(line, &[]), line);
+    }
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -76,6 +226,13 @@ pub struct RdpConfig {
     /// decoder; callers that don't register one must pass false, else negotiated
     /// AVC tiles are dropped and the screen stays black.
     pub avc_enabled: bool,
+    /// #504: the Windows keyboard-layout identifier (KLID, e.g. 0x0415 for
+    /// Polish) announced in the GCC client core data. Servers that build the
+    /// session's input layout from the announcement — Windows, xrdp, KRDP —
+    /// would otherwise hand every non-US user a US layout. VirtualBox-style
+    /// servers inject raw scancodes and ignore this entirely. Pass 0 to get
+    /// the previous behaviour (0x0409, US English).
+    pub keyboard_layout: u32,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -134,7 +291,21 @@ pub trait ClipboardCallback: Send + Sync {
 /// `video/avc` instance.
 #[uniffi::export(with_foreign)]
 pub trait Avc420Decoder: Send + Sync {
-    fn decode(&self, annex_b: Vec<u8>, width: u16, height: u16) -> Vec<u8>;
+    /// Decode one access unit and return the frame as **tightly-packed I420**
+    /// — `width*height` luma, then two `((width+1)/2)*((height+1)/2)` chroma
+    /// planes — or an empty vector if the frame could not be produced.
+    ///
+    /// I420 rather than the finished RGBA, which is what this used to return.
+    /// Colour conversion moved to [`crate::yuv`] for two reasons that both
+    /// showed up in one reporter's measurements (#466): the conversion itself
+    /// cost 27-109 ms per frame in Kotlin against 9-25 ms for the hardware
+    /// decode, and the crossing back into Rust cost a further 87-112 ms
+    /// carrying 8.29 MB of RGBA. I420 is 3.11 MB for the same 1080p frame.
+    ///
+    /// The host is expected to edge-replicate to `width`/`height` if the
+    /// decoder's own output is smaller, so the buffer size is a pure function
+    /// of the arguments and a short one is a bug rather than a crop.
+    fn decode_to_i420(&self, annex_b: Vec<u8>, width: u16, height: u16) -> Vec<u8>;
 }
 
 /// Server-side pointer (cursor) updates. RDP servers send the cursor shape and
@@ -200,6 +371,31 @@ struct SessionState {
     /// None unless the host registered one via `set_avc_decoder`.
     avc_decoder: Option<Arc<dyn Avc420Decoder>>,
     shutdown: bool,
+    /// EGFX per-frame timing summaries, drained by the host into the in-app
+    /// verbose log (#477).
+    ///
+    /// These already went to the Android log, which needs adb to read — so the
+    /// one measurement that discriminates "decode is slow" from "frames are
+    /// arriving late" was invisible to the people reporting that it is slow.
+    /// A reporter on #477 spent three rounds describing symptoms nobody could
+    /// attribute because of it.
+    perf_log: Vec<String>,
+}
+
+/// Perf lines kept before the oldest is dropped. A reporter needs the recent
+/// steady state, not a session's whole history, and this is held in memory for
+/// the life of the session.
+const MAX_PERF_LOG_LINES: usize = 64;
+
+impl SessionState {
+    /// Record a perf line for the host to drain, discarding the oldest once
+    /// full so a long session cannot grow this without bound.
+    fn push_perf(&mut self, line: String) {
+        if self.perf_log.len() >= MAX_PERF_LOG_LINES {
+            self.perf_log.remove(0);
+        }
+        self.perf_log.push(line);
+    }
 }
 
 /// Input events queued by the Kotlin side, consumed by the session thread.
@@ -247,6 +443,7 @@ impl RdpClient {
                 pointer_callback: None,
             avc_decoder: None,
             shutdown: false,
+            perf_log: Vec::new(),
         }));
         let bitmap_bridge_id = bitmap_bridge::register(&state);
         Self {
@@ -272,12 +469,19 @@ impl RdpClient {
         port: u16,
         socks_proxy: Option<SocksProxyConfig>,
     ) -> Result<(), RdpError> {
+        // Before the first PDU is logged (#477). The Kotlin side already logs
+        // the target's shape, so nothing here needs to name it.
+        remember_secret(&self.config.username);
+        remember_secret(&self.config.domain);
+        remember_secret(&self.config.password);
+        remember_secret(&host);
+        if let Some(ref proxy) = socks_proxy {
+            remember_secret(&proxy.host);
+        }
+
         let stream = match socks_proxy {
             Some(ref proxy) => socks5_connect(&proxy.host, proxy.port, &host, port).map_err(|e| {
-                error!(
-                    "SOCKS5 connect via {}:{} -> {}:{} failed: {}",
-                    proxy.host, proxy.port, host, port, e
-                );
+                error!("SOCKS5 connect failed: {}", e);
                 RdpError::ConnectionFailed
             })?,
             None => {
@@ -285,7 +489,7 @@ impl RdpClient {
                 TcpStream::connect(&addr).map_err(|e| {
                     // TCP-level failure surfaces synchronously — no thread yet,
                     // no callback to fire.
-                    error!("TCP connect to {} failed: {}", addr, e);
+                    error!("TCP connect failed: {}", e);
                     RdpError::ConnectionFailed
                 })?
             }
@@ -304,6 +508,9 @@ impl RdpClient {
             .map_err(|_| RdpError::IoError)?;
 
         let server_addr: SocketAddr = stream.peer_addr().map_err(|_| RdpError::IoError)?;
+        // ClientInfoPdu's ExtendedClientInfo prints this one as a bare IP, so
+        // the hostname registered above would not have caught it (#477).
+        remember_secret(&server_addr.ip().to_string());
 
         let config = self.config.clone();
         let state = Arc::clone(&self.state);
@@ -432,6 +639,19 @@ impl RdpClient {
         }
     }
 
+    /// Drain the EGFX per-frame timing summaries recorded since the last call
+    /// (#477), so the host can put them in the verbose log a reporter can copy.
+    ///
+    /// Draining rather than reading: the host appends these to a log it already
+    /// keeps, and returning them twice would duplicate lines in it.
+    pub fn take_perf_log(&self) -> Vec<String> {
+        if let Ok(mut s) = self.state.write() {
+            std::mem::take(&mut s.perf_log)
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn set_frame_callback(&self, cb: Arc<dyn FrameCallback>) {
         if let Ok(mut s) = self.state.write() {
             s.frame_callback = Some(cb);
@@ -534,7 +754,11 @@ fn build_config(config: &RdpConfig) -> ironrdp_connector::Config {
         keyboard_type: gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
-        keyboard_layout: 0x0409, // US English
+        keyboard_layout: if config.keyboard_layout == 0 {
+            0x0409 // US English — the pre-#504 hardcoded announcement
+        } else {
+            config.keyboard_layout
+        },
         // Advertised network profile. Haven is a mobile client and the link is
         // usually WAN or worse, but this only tunes the server's own
         // heuristics — it does not gate any feature we depend on.
@@ -1373,6 +1597,16 @@ fn run_rdp_session(
     // packet length is incorrect 0x0004" in VBox.log) — the reason arrow
     // keys killed VRDE sessions. Such servers get slow-path TS_INPUT_PDUs,
     // as mstsc/FreeRDP do.
+    // #422: does the server accept TS_UNICODE_KEYBOARD_EVENT at all?
+    let unicode_input_supported = {
+        use ironrdp_pdu::rdp::capability_sets::InputFlags;
+        connection_result.input_flags.contains(InputFlags::UNICODE)
+    };
+    let unicode_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    if !unicode_input_supported {
+        info!("Server did not advertise unicode input; non-ASCII characters cannot be sent");
+    }
+
     let fastpath_input_supported = {
         use ironrdp_pdu::rdp::capability_sets::InputFlags;
         let flags = connection_result.input_flags;
@@ -1406,6 +1640,11 @@ fn run_rdp_session(
 
     // Input state tracking
     let mut input_db = ironrdp_input::Database::new();
+    let mut input_dumps = 0usize;
+    info!(
+        "TEMP #422: share_id={} user_channel={} io_channel={}",
+        connection_result.share_id, connection_result.user_channel_id, connection_result.io_channel_id
+    );
 
     // #477: on a fast-path server, move input off the session loop entirely.
     //
@@ -1431,6 +1670,8 @@ fn run_rdp_session(
         // fresh at this point and is only touched by the slow-path branch,
         // which never runs while this thread exists.
         let mut db = ironrdp_input::Database::new();
+        let uni_ok = unicode_input_supported;
+        let uni_dropped = Arc::clone(&unicode_dropped);
         Some(std::thread::spawn(move || {
             use ironrdp_pdu::input::fast_path::FastPathInput;
             use std::io::Write as _;
@@ -1456,7 +1697,7 @@ fn run_rdp_session(
                     continue;
                 }
                 let n = pending.len() as u64;
-                let events = fastpath_events_for(&mut db, pending);
+                let events = fastpath_events_for(&mut db, pending, uni_ok, &uni_dropped);
                 if events.is_empty() {
                     continue;
                 }
@@ -1556,7 +1797,8 @@ fn run_rdp_session(
         // Slow-path servers only — the fast-path case is handled on the input
         // thread, which leaves `pending_inputs` empty here (#477).
         if !pending_inputs.is_empty() {
-            let fastpath_events = fastpath_events_for(&mut input_db, pending_inputs);
+            let fastpath_events =
+                fastpath_events_for(&mut input_db, pending_inputs, unicode_input_supported, &unicode_dropped);
             // #422: slow-path input for servers that never negotiated fast-path
             // (VirtualBox VRDP). One TS_INPUT_PDU per batch.
             let events: Vec<_> = fastpath_events.iter().filter_map(slow_path_input_event).collect();
@@ -1566,6 +1808,16 @@ fn run_rdp_session(
                 let mut buf = ironrdp_core::WriteBuf::new();
                 match active_stage.encode_static(&mut buf, ShareDataPdu::Input(InputEventPdu(events))) {
                     Ok(_) => {
+                        // TEMP #422: dump the first few input PDUs on the wire.
+                        if input_dumps < 3 {
+                            input_dumps += 1;
+                            let b = buf.filled();
+                            info!(
+                                "INPUT-WIRE[{input_dumps}] {} bytes: {}",
+                                b.len(),
+                                b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
+                            );
+                        }
                         if let Err(e) = tls_framed.write_all(buf.filled()) {
                             error!("Write input error: {:?}", e);
                         }
@@ -1767,34 +2019,19 @@ fn run_rdp_session(
                                 debug!("Skipping unhandled PDU: {}", msg);
                             }
                         } else if msg.contains("NotEnoughBytes") && msg.contains("ShareControlHeader") {
-                            // #422: this is NOT a truncated PDU, despite the name.
+                            // #422: the under-declared-totalLength case that used
+                            // to land here no longer reaches it — our IronRDP fork
+                            // accepts those outright from haven-pin-20260804, since
+                            // the PDU was always complete and only the server's
+                            // number was wrong. It had to be fixed there rather
+                            // than here: VirtualBox mis-declares a PDU during
+                            // *connection finalization* too, which never reaches
+                            // this loop, so the connect failed before a session
+                            // existed to skip anything.
                             //
-                            // ShareControlHeader::decode ends with a cross-check
-                            // that the PDU it just decoded is the size the header
-                            // declared, and reports a mismatch as
-                            //     not_enough_bytes_err!(total_length, header_length)
-                            // — so `received` is the server's declared totalLength
-                            // and `expected` is the size IronRDP decoded. Neither
-                            // is a byte count off the wire.
-                            //
-                            // The reporter's `received: 24, expected: 8550` came on
-                            // an 8565-byte frame, and 8565 - 15 (TPKT 4 + X224 3 +
-                            // MCS SDI 8) = 8550 exactly: `expected` is the whole
-                            // MCS user_data, because a Pointer payload is decoded
-                            // greedily to the end of the cursor. The PDU was
-                            // entirely present; VirtualBox VRDP just under-declared
-                            // totalLength as 24. Reproduced by hand-building that
-                            // frame — see the test below.
-                            //
-                            // So there is nothing to wait for and nothing to
-                            // rejoin. Drop the frame (one pointer/bitmap update)
-                            // and keep the session, which is what the old
-                            // reassembly attempt was reaching for and could never
-                            // achieve: it glued two complete transport frames
-                            // together, each with its own TPKT/X224/MCS header, and
-                            // handed the pair to process() under the *second*
-                            // frame's action — turning this into a bogus
-                            // FastPathHeader error that killed the session anyway.
+                            // What still arrives here is genuine truncation — an
+                            // inner PDU shorter than its own fixed part. Skip the
+                            // frame and keep the session.
                             //
                             // Bounded, because "skip and carry on" and "the
                             // stream has desynchronised" look identical from
@@ -1934,12 +2171,33 @@ struct InputCounters {
 /// A whole batch is accumulated into one `Vec` so a drag leaves as a single
 /// PDU rather than one per position — fewer writes, and the positions stay
 /// contiguous on the wire.
+/// #422: `unicode_supported` is the server's INPUT_FLAG_UNICODE. A server that
+/// did not advertise it silently discards `TS_UNICODE_KEYBOARD_EVENT`
+/// (MS-RDPBCGR 2.2.8.1.1.3.1.1.2) — VirtualBox's VRDP advertises
+/// `InputFlags(SCANCODES)` alone and does exactly that. Dropping those events
+/// here instead costs nothing and makes the loss visible: it was invisible
+/// before, which is why "the keyboard does nothing" took so long to place.
 fn fastpath_events_for(
     db: &mut ironrdp_input::Database,
     pending: Vec<InputEvent>,
+    unicode_supported: bool,
+    unicode_dropped: &std::sync::atomic::AtomicU64,
 ) -> Vec<ironrdp_pdu::input::fast_path::FastPathInputEvent> {
     let mut out = Vec::new();
     for event in pending {
+        if matches!(event, InputEvent::UnicodeKey { .. }) && !unicode_supported {
+            use std::sync::atomic::Ordering;
+            let n = unicode_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            if n == 1 || n % 50 == 0 {
+                warn!(
+                    "Dropped {n} unicode key event(s): this server did not advertise \
+                     INPUT_FLAG_UNICODE, so it would discard them anyway. ASCII typing \
+                     uses scancodes and is unaffected; non-ASCII characters cannot be \
+                     delivered to this server (#422)."
+                );
+            }
+            continue;
+        }
         let ops = match event {
             InputEvent::Key { scancode, pressed } => {
                 let sc = ironrdp_input::Scancode::from_u16(scancode);
@@ -2671,6 +2929,7 @@ mod codec_advertisement_tests {
             pinned_cert_sha256: None,
             progressive_upgrade: false,
             avc_enabled: true,
+            keyboard_layout: 0,
         }
     }
 
@@ -2727,6 +2986,7 @@ mod region_tests {
             pinned_cert_sha256: None,
             progressive_upgrade: false,
             avc_enabled: false,
+            keyboard_layout: 0,
         });
         // Distinct value per pixel so a wrong row or column is detectable.
         let mut pixels = vec![0u8; w as usize * h as usize * 4];
@@ -2786,6 +3046,7 @@ mod region_tests {
             pinned_cert_sha256: None,
             progressive_upgrade: false,
             avc_enabled: false,
+            keyboard_layout: 0,
         });
         assert!(client.get_framebuffer_region(0, 0, 4, 4).is_none());
     }
@@ -2895,26 +3156,82 @@ mod tests {
         );
     }
 
-    /// #422: pins what the reporter's NotEnoughBytes actually means, because
-    /// the name says the opposite and we already shipped a fix built on the
-    /// wrong reading.
+    /// #422: a server that never advertised INPUT_FLAG_UNICODE discards
+    /// TS_UNICODE_KEYBOARD_EVENT silently (MS-RDPBCGR 2.2.8.1.1.3.1.1.2).
+    /// VirtualBox's VRDP advertises `InputFlags(SCANCODES)` alone and does
+    /// exactly that — verified against VBox 7.2.6 with a Windows 11 guest,
+    /// where scancodes drive the guest and unicode events change nothing.
+    /// Drop them here so the loss is counted and logged rather than invisible.
+    #[test]
+    fn unicode_keys_are_dropped_when_the_server_cannot_take_them() {
+        use super::{fastpath_events_for, InputEvent};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let dropped = AtomicU64::new(0);
+        let mut db = ironrdp_input::Database::new();
+        let events = vec![
+            InputEvent::UnicodeKey { ch: 'e' as u32, pressed: true },
+            InputEvent::UnicodeKey { ch: 'e' as u32, pressed: false },
+        ];
+        let out = fastpath_events_for(&mut db, events, false, &dropped);
+        assert!(out.is_empty(), "nothing should reach the wire");
+        assert_eq!(2, dropped.load(Ordering::Relaxed), "both drops counted");
+    }
+
+    /// The same events on a server that *did* advertise unicode still go out —
+    /// the gate must not become a blanket ban.
+    #[test]
+    fn unicode_keys_survive_when_the_server_advertises_unicode() {
+        use super::{fastpath_events_for, InputEvent};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let dropped = AtomicU64::new(0);
+        let mut db = ironrdp_input::Database::new();
+        let events = vec![InputEvent::UnicodeKey { ch: 'e' as u32, pressed: true }];
+        let out = fastpath_events_for(&mut db, events, true, &dropped);
+        assert!(!out.is_empty(), "unicode must still reach a server that takes it");
+        assert_eq!(0, dropped.load(Ordering::Relaxed));
+    }
+
+    /// Scancodes are the path the app uses for ASCII and must be untouched by
+    /// the unicode gate — this is what actually drives a VirtualBox guest.
+    #[test]
+    fn scancodes_are_unaffected_by_the_unicode_gate() {
+        use super::{fastpath_events_for, InputEvent};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let dropped = AtomicU64::new(0);
+        let mut db = ironrdp_input::Database::new();
+        let events = vec![
+            InputEvent::Key { scancode: 0x1c, pressed: true },
+            InputEvent::Key { scancode: 0x1c, pressed: false },
+        ];
+        let out = fastpath_events_for(&mut db, events, false, &dropped);
+        assert!(!out.is_empty(), "scancodes must still be sent");
+        assert_eq!(0, dropped.load(Ordering::Relaxed));
+    }
+
+    /// #422: pins that an under-declared totalLength decodes, because the error
+    /// it used to raise says the opposite and we shipped two fixes built on the
+    /// wrong reading before settling what it meant.
     ///
-    /// `ShareControlHeader::decode` finishes with a cross-check that the PDU it
-    /// decoded is the size the header declared, and reports a mismatch as
-    /// `not_enough_bytes_err!(total_length, header_length)` — so `received` is
-    /// the server's *declared* totalLength and `expected` is the size IronRDP
-    /// decoded, neither of them a count of bytes off the wire.
+    /// `ShareControlHeader::decode` used to finish with a cross-check that the
+    /// PDU it decoded is the size the header declared, and report a mismatch as
+    /// `not_enough_bytes_err!(total_length, header_length)` — so `received` was
+    /// the server's *declared* totalLength and `expected` the size IronRDP
+    /// decoded, neither of them a count of bytes off the wire. Nothing was ever
+    /// missing, so our fork dropped the check (`haven-pin-20260804`) and the
+    /// frame is now simply accepted.
     ///
     /// Build the reporter's exact frame — 8565 bytes on the wire, so 8550 of
     /// MCS user_data after TPKT(4) + X224(3) + MCS SDI(8) — with a greedily
-    /// decoded Pointer payload and totalLength under-declared as 24, and
-    /// assert it lands on their error verbatim. If this ever reproduces
-    /// `expected` != the full user_data length, the "the PDU is all here"
-    /// conclusion is wrong and the skip in the session loop needs revisiting.
+    /// decoded Pointer payload and totalLength under-declared as 24, and assert
+    /// the whole payload survives. This is the gate on the pin: revert to a
+    /// stock IronRDP and it fails with the reporter's error verbatim.
     #[test]
     fn under_declared_share_control_length_is_not_a_truncated_pdu() {
         use ironrdp_core::decode;
-        use ironrdp_pdu::rdp::headers::ShareControlHeader;
+        use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
 
         const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
         const SHARE_DATA_HEADER_SIZE: usize = 1 + 1 + 2 + 1 + 1 + 2;
@@ -2940,25 +3257,44 @@ mod tests {
         b.resize(user_data, 0);
         assert_eq!(b.len(), 8550);
 
-        let err = decode::<ShareControlHeader>(&b)
-            .expect_err("an under-declared totalLength must not decode cleanly")
-            .to_string();
+        let hdr = decode::<ShareControlHeader>(&b)
+            .expect("an under-declared totalLength is complete, not truncated");
 
-        // The reporter's numbers, verbatim.
-        assert!(
-            err.contains("received 24 bytes, expected 8550 bytes"),
-            "should reproduce the #422 report exactly, got: {err}"
+        let ShareControlPdu::Data(data) = hdr.share_control_pdu else {
+            panic!("expected a Share Data PDU");
+        };
+        let ShareDataPdu::Pointer(payload) = data.share_data_pdu else {
+            panic!("expected a Pointer PDU");
+        };
+        // Every byte past the two headers, i.e. nothing was dropped as padding
+        // on the strength of the server's wrong number.
+        assert_eq!(
+            payload.len(),
+            user_data - SHARE_CONTROL_HEADER_SIZE - SHARE_DATA_HEADER_SIZE
         );
-        // `expected` is the whole user_data, not a shortfall: nothing is missing.
-        assert!(
-            err.contains(&format!("expected {user_data} bytes")),
-            "expected should be the full MCS user_data ({user_data}), got: {err}"
-        );
-        // And it must be the branch the session loop keys off.
-        assert!(
-            err.contains("ShareControlHeader"),
-            "the skip in the session loop matches on this context: {err}"
-        );
+    }
+
+    /// The other half of the same contract: a genuinely short buffer must still
+    /// be rejected. Dropping the totalLength cross-check would be the wrong fix
+    /// if it also blinded us to real truncation — it doesn't, because a short
+    /// buffer fails inside the inner PDU's own decode, before the check ran.
+    #[test]
+    fn a_genuinely_truncated_share_control_pdu_is_still_rejected() {
+        use ironrdp_core::decode;
+        use ironrdp_pdu::rdp::headers::ShareControlHeader;
+
+        const PROTOCOL_VERSION: u16 = 0x10;
+        const DATA_PDU: u16 = 0x7;
+
+        // Share control header claiming a Data PDU, then nothing at all — the
+        // 8-byte share data header the type demands is simply not there.
+        let mut b = Vec::new();
+        b.extend_from_slice(&18u16.to_le_bytes());
+        b.extend_from_slice(&(PROTOCOL_VERSION | DATA_PDU).to_le_bytes());
+        b.extend_from_slice(&1002u16.to_le_bytes());
+        b.extend_from_slice(&0x0001_0000u32.to_le_bytes());
+
+        decode::<ShareControlHeader>(&b).expect_err("a missing share data header must not decode");
     }
 
     /// AlertReceived(InternalError) → still maps to the "rejected
@@ -3009,6 +3345,39 @@ mod framebuffer_publish_tests {
     const W: u16 = 64;
     const H: u16 = 32;
 
+    /// #477: the host drains these, so a second drain must come back empty or
+    /// every Audit Log view repeats the previous view's lines; and a long
+    /// session must not grow the buffer without bound while nobody drains.
+    #[test]
+    fn perf_log_drains_once_and_stays_bounded() {
+        let mut s = blank_state();
+
+        s.push_perf("first".to_owned());
+        s.push_perf("second".to_owned());
+        assert_eq!(
+            std::mem::take(&mut s.perf_log),
+            vec!["first".to_owned(), "second".to_owned()],
+            "drained in order",
+        );
+        assert!(s.perf_log.is_empty(), "a drain empties it");
+
+        // A session nobody ever looks at: the oldest go, the newest stay.
+        for i in 0..(MAX_PERF_LOG_LINES + 10) {
+            s.push_perf(format!("line {i}"));
+        }
+        assert_eq!(s.perf_log.len(), MAX_PERF_LOG_LINES, "capped");
+        assert_eq!(
+            s.perf_log.last().map(String::as_str),
+            Some(format!("line {}", MAX_PERF_LOG_LINES + 9).as_str()),
+            "keeps the most recent",
+        );
+        assert_eq!(
+            s.perf_log.first().map(String::as_str),
+            Some(format!("line {}", 10).as_str()),
+            "drops the oldest",
+        );
+    }
+
     fn blank_state() -> SessionState {
         SessionState {
             connected: true,
@@ -3020,6 +3389,7 @@ mod framebuffer_publish_tests {
             pointer_callback: None,
             avc_decoder: None,
             shutdown: false,
+            perf_log: Vec::new(),
         }
     }
 

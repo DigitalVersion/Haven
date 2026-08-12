@@ -178,4 +178,121 @@ class TerminalViewModelTest {
         viewModel.selectTabBySessionId("nonexistent")
         assertEquals(0, viewModel.activeTabIndex.value)
     }
+
+    // The toolbar dispatches its nav keys by key code, not bytes, so a tapped
+    // Ctrl only reaches them through this mask. It was hardcoded to 0, which is
+    // why Ctrl+End sent a bare End.
+    @Test
+    fun `a tapped Ctrl reaches the toolbar's own keys as the vterm mask`() {
+        assertEquals(0, viewModel.toolbarModifierMask())
+
+        viewModel.toggleCtrl()
+        assertEquals(4, viewModel.toolbarModifierMask())
+
+        viewModel.toggleAlt()
+        assertEquals(6, viewModel.toolbarModifierMask())
+    }
+
+    @Test
+    fun `a one-shot Ctrl is spent by the keystroke that used it`() {
+        viewModel.toggleCtrl()
+        viewModel.clearStickyModifiers()
+
+        assertEquals(false, viewModel.ctrlActive.value)
+        assertEquals(0, viewModel.toolbarModifierMask())
+    }
+
+    // #522, round two: the requester's follow-up settled the lock's meaning —
+    // locked (blue) means every keypress carries Ctrl until the user taps it
+    // off. No keystroke budget: v5.87.8's release-after-two was both broken in
+    // practice (a second consume site spent the modifier after ONE press) and
+    // not what the requester wanted once they had it under their fingers.
+    @Test
+    fun `a second Ctrl tap locks it, and it survives one keystroke`() {
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+
+        assertEquals(true, viewModel.ctrlLocked.value)
+        assertEquals(true, viewModel.ctrlActive.value)
+
+        viewModel.clearStickyModifiers()
+
+        assertEquals("a lock is not spent by one keystroke", true, viewModel.ctrlActive.value)
+        assertEquals(4, viewModel.toolbarModifierMask())
+    }
+
+    @Test
+    fun `a locked Ctrl survives any number of keystrokes`() {
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+
+        repeat(5) { viewModel.clearStickyModifiers() }
+
+        assertEquals(true, viewModel.ctrlLocked.value)
+        assertEquals(true, viewModel.ctrlActive.value)
+        assertEquals(4, viewModel.toolbarModifierMask())
+    }
+
+    // #522, round three: the lock outlived the sessions it was locked for.
+    // The requester's flow — lock Ctrl, C C to leave Claude Code, D for
+    // Ctrl+D to exit the shell — ends the last session with the lock still
+    // on, and the next connection started with Ctrl pre-locked. The lock
+    // now dies with the last tab. (Deliberately NOT on per-tab close: the
+    // toolbar state is shared and a surviving tab may be mid-use of it.)
+    @Test
+    fun `a locked Ctrl does not survive the last session ending`() {
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+        viewModel.toggleAlt()
+        viewModel.toggleAlt()
+        assertEquals(true, viewModel.ctrlLocked.value)
+        assertEquals(true, viewModel.altLocked.value)
+
+        // Every session manager is empty, so this reconciles to zero tabs —
+        // the state right after Ctrl+D closed the final session.
+        runBlocking { viewModel.syncSessions() }
+
+        assertEquals(false, viewModel.ctrlLocked.value)
+        assertEquals(false, viewModel.ctrlActive.value)
+        assertEquals(false, viewModel.altLocked.value)
+        assertEquals(false, viewModel.altActive.value)
+        assertEquals(0, viewModel.toolbarModifierMask())
+    }
+
+    @Test
+    fun `a third Ctrl tap unlocks it immediately`() {
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+
+        assertEquals(false, viewModel.ctrlLocked.value)
+        assertEquals(false, viewModel.ctrlActive.value)
+    }
+
+    @Test
+    fun `Ctrl can be locked again after a manual unlock`() {
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+
+        viewModel.toggleCtrl()
+        viewModel.toggleCtrl()
+        viewModel.clearStickyModifiers()
+
+        assertEquals(true, viewModel.ctrlLocked.value)
+        assertEquals(true, viewModel.ctrlActive.value)
+    }
+
+    @Test
+    fun `Alt locks independently of Ctrl`() {
+        viewModel.toggleAlt()
+        viewModel.toggleAlt()
+        viewModel.toggleCtrl()
+
+        viewModel.clearStickyModifiers()
+
+        assertEquals("the one-shot Ctrl is spent", false, viewModel.ctrlActive.value)
+        assertEquals("the locked Alt is not", true, viewModel.altActive.value)
+        assertEquals(2, viewModel.toolbarModifierMask())
+    }
 }

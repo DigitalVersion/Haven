@@ -37,6 +37,17 @@ versionCode = <increment>
 versionName = "<x.y.z>"
 ```
 
+★ **Two numbers are spoken for:**
+
+- **The next release is `5.87.0`**, not `5.86.54`. The minor bump marks the
+  era of two downloads (#510) — note the terminal flavour itself first shipped
+  in `5.86.53`, numbered as a patch before the decision was taken, so `5.87.0`
+  marks it a release late. Everything after goes back to patch increments.
+- **`6.0.0` is reserved for the SSH engine default flip (#58)** — JSch →
+  sshlib. That version was promised in the issue thread and is the one change
+  that alters the default behaviour of every SSH connection, so don't spend it
+  on anything else. It is blocked on connectbot/sshlib#238.
+
 Also update the static release badge in `README.md` to match — the
 `shields.io/badge/release-v<x.y.z>-blue` URL hard-codes the version
 because the dynamic shields lookup is unreliable behind GitHub's
@@ -141,7 +152,13 @@ The buildserver no longer pre-installs NDKs in its Docker image — `fdroidserve
 
 Things Haven's CI does **not** exercise but F-Droid does:
 
-- `build-proot/build.sh`, `build-ffmpeg/build.sh`, `wayland-android/build_liblabwc_android.sh`, `wayland-android/build-native-helpers.sh` — F-Droid `scandelete`s the committed `.so`s and rebuilds them from source; **our CI still ships the committed copies for ffmpeg and wayland**, so the two APKs are built differently and a regression in any of those scripts stays invisible until the F-Droid bot MR fails on GitLab. If you touch those scripts or their deps, smoke-test locally before tagging:
+- `build-proot/build.sh`, `build-ffmpeg/build.sh`, `wayland-android/build_liblabwc_android.sh`, `wayland-android/build-native-helpers.sh` — **this gap has narrowed** (2026-08-07): #493 removed the committed `.so`s, so no `jniLibs` directory has tracked files any more and each script is now invoked by a Gradle task (`:core:local:buildProotNatives`, `:core:ffmpeg:buildFfmpegNatives`, `:core:wayland:buildWaylandNatives`). Our packaging jobs build them from source like F-Droid does.
+
+  Two differences remain, and both can still hide a broken script:
+  - **F-Droid builds arm64 only, always cold.** CI keys these tasks on script contents and the submodule SHA and restores from the Gradle build cache, so an unchanged script's output can arrive without compiling. A newly missing build-time tool stays invisible until a cache miss; F-Droid hits it immediately.
+  - **A binary produced by a step the fdroiddata recipe does not name is `scandelete`d and never replaced.** Adding an output here means adding the build step there in the same change.
+
+  So if you touch those scripts or their deps, smoke-test locally before tagging:
   ```bash
   rm -rf core/ffmpeg/src/main/jniLibs core/wayland/src/main/jniLibs core/local/src/main/jniLibs
   ABI=arm64-v8a bash build-ffmpeg/build.sh
@@ -220,7 +237,7 @@ Watch [fdroid/fdroiddata merge requests tagged with our app](https://gitlab.com/
 
 ```bash
 ./gradlew --write-verification-metadata sha256 \
-  :app:assembleArm64Debug testDebugUnitTest :app:testArm64DebugUnitTest lintDebug \
+  :app:assembleArm64FullDebug testDebugUnitTest :app:testArm64FullDebugUnitTest lintDebug \
   --console=plain
 git diff gradle/verification-metadata.xml   # review the added checksums on a clean checkout
 ```

@@ -29,6 +29,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:redact"))
     implementation(project(":core:ui"))
     implementation(project(":core:ssh"))
     implementation(project(":core:security"))
@@ -49,7 +50,6 @@ dependencies {
     implementation(project(":core:fido"))
     implementation(project(":core:local"))
     implementation(project(":core:usb"))
-    implementation(project(":core:wayland"))
     implementation(project(":core:stepca"))
 
     implementation(libs.core.ktx)

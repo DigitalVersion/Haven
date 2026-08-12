@@ -140,9 +140,21 @@ class DesktopManager @Inject constructor(
         when (de.spec.launch) {
             is LaunchSpec.NativeCompositor -> {
                 if (!WaylandBridge.available) {
+                    // liblabwc_android.so is built for arm64 only, so it is
+                    // absent on other devices — but since #510 it is also
+                    // absent from the terminal build on arm64. Telling an
+                    // arm64 user their device is unsupported would send them
+                    // looking for the wrong thing entirely, so distinguish
+                    // the two rather than reuse one message for both.
+                    val arm64 = android.os.Build.SUPPORTED_64_BIT_ABIS.any { it == "arm64-v8a" }
                     _desktops.update { it + (de to DesktopInstance(
                         de, 0, 0, DesktopState.ERROR,
-                        errorMessage = "The native Wayland desktop requires an arm64 device",
+                        errorMessage = if (arm64) {
+                            "This build of Haven doesn't include the native Wayland desktop. " +
+                                "Desktops that run over VNC still work."
+                        } else {
+                            "The native Wayland desktop requires an arm64 device"
+                        },
                     )) }
                     return
                 }
@@ -1503,14 +1515,7 @@ class DesktopManager @Inject constructor(
         val xdg = "/tmp/xdg-runtime-$display"
         // environ is NUL-separated; tr → newlines, then exact-line match on the
         // full var so display 1 doesn't also match display 11.
-        val scanScript = """
-            for p in /proc/[0-9]*; do
-                [ -r ${'$'}p/environ ] || continue
-                if tr '\0' '\n' < ${'$'}p/environ 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$xdg"; then
-                    echo "${'$'}{p##*/}"
-                fi
-            done
-        """.trimIndent()
+        val scanScript = appWindowSessionScanScript(xdg)
         try {
             val proc = ProcessBuilder("sh", "-c", scanScript)
                 .redirectErrorStream(true).start()
@@ -1790,23 +1795,7 @@ class DesktopManager @Inject constructor(
 
     /** Kill orphaned Xvnc process for a specific display number. */
     private fun killOrphanedXvnc(display: Int) {
-        try {
-            val proc = ProcessBuilder("sh", "-c",
-                "ps -A 2>/dev/null | grep 'Xvnc' | grep ':$display' | grep -v grep | awk '{print \$2}'"
-            ).redirectErrorStream(true).start()
-            val pids = proc.inputStream.bufferedReader().readText().trim()
-            proc.waitFor()
-            if (pids.isNotEmpty()) {
-                Log.d(TAG, "Killing orphaned Xvnc[:$display] PIDs: $pids")
-                for (pid in pids.lines()) {
-                    try {
-                        ProcessBuilder("kill", "-9", pid.trim()).start().waitFor()
-                    } catch (_: Exception) {}
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "killOrphanedXvnc($display) failed: ${e.message}")
-        }
+        killPids("Xvnc[:$display]", scanCmdlines().filter { xvncMatches(it.cmdline, display) }.map { it.pid })
     }
 
     /**
@@ -1831,14 +1820,7 @@ class DesktopManager @Inject constructor(
         // PREFIX match (`token*`) so wrapper binaries are caught too — e.g.
         // the `imv` launcher execs `imv-wayland`, which an exact match misses.
         val targets = listOf(compositorCmd, "wayvnc", "foot", "swaynag")
-        val caseArm = targets.joinToString("|") { "\"$it\"*" }
-        val scanScript = """
-            for p in /proc/[0-9]*; do
-                [ -r ${'$'}p/cmdline ] || continue
-                first=${'$'}(tr '\0' ' ' < ${'$'}p/cmdline 2>/dev/null | awk '{print ${'$'}1}')
-                case "${'$'}{first##*/}" in $caseArm) echo "${'$'}{p##*/}";; esac
-            done
-        """.trimIndent()
+        val scanScript = nestedWaylandScanScript(targets)
         try {
             val proc = ProcessBuilder("sh", "-c", scanScript)
                 .redirectErrorStream(true).start()
@@ -1861,22 +1843,43 @@ class DesktopManager @Inject constructor(
 
     /** Kill all orphaned Xvnc processes. */
     fun killAllOrphanedXvnc() {
-        try {
-            val proc = ProcessBuilder("sh", "-c",
-                "ps -A 2>/dev/null | grep 'Xvnc' | grep -v grep | awk '{print \$2}'"
-            ).redirectErrorStream(true).start()
-            val pids = proc.inputStream.bufferedReader().readText().trim()
-            proc.waitFor()
-            if (pids.isNotEmpty()) {
-                Log.d(TAG, "Killing all orphaned Xvnc PIDs: $pids")
-                for (pid in pids.lines()) {
-                    try {
-                        ProcessBuilder("kill", "-9", pid.trim()).start().waitFor()
-                    } catch (_: Exception) {}
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "killAllOrphanedXvnc failed: ${e.message}")
+        killPids("Xvnc", scanCmdlines().filter { xvncMatches(it.cmdline, display = null) }.map { it.pid })
+    }
+
+    /**
+     * Every readable process as (pid, full command line), argv separated by
+     * spaces.
+     *
+     * `ps -A` cannot be used for this. It prints the command *name* and no
+     * arguments, so a filter on an Xvnc display (`:1`) matched nothing, ever
+     * — which is why the desktop's stop button appeared to do nothing and
+     * left Xvnc running (#501). `/proc/<pid>/cmdline` is also what
+     * [killOrphanedNestedWayland] already had to switch to, because Android
+     * shows proot-launched binaries under a bracketed COMM.
+     */
+    private fun scanCmdlines(): List<ProcessCmdline> = try {
+        val proc = ProcessBuilder("sh", "-c", CMDLINE_SCAN_SCRIPT).redirectErrorStream(true).start()
+        val text = proc.inputStream.bufferedReader().readText()
+        proc.waitFor()
+        text.lineSequence().mapNotNull { line ->
+            val tab = line.indexOf('\t')
+            if (tab <= 0) null else ProcessCmdline(line.substring(0, tab), line.substring(tab + 1).trim())
+        }.filter { it.cmdline.isNotEmpty() }.toList()
+    } catch (e: Exception) {
+        Log.w(TAG, "scanCmdlines failed: ${e.message}")
+        emptyList()
+    }
+
+    private fun killPids(label: String, pids: List<String>) {
+        if (pids.isEmpty()) {
+            Log.d(TAG, "No $label processes to kill")
+            return
+        }
+        Log.d(TAG, "Killing $label PIDs: ${pids.joinToString(" ")}")
+        for (pid in pids) {
+            try {
+                ProcessBuilder("kill", "-9", pid).start().waitFor()
+            } catch (_: Exception) {}
         }
     }
 
@@ -1958,4 +1961,68 @@ internal fun parseWxH(token: String): Pair<Int, Int>? {
 internal fun formatCageScale(scale: Float): String {
     val c = scale.coerceIn(0.5f, 3f)
     return if (c == c.toInt().toFloat()) c.toInt().toString() else c.toString()
+}
+
+/**
+ * The /proc scanners are shell source assembled by interpolation, and shell
+ * that reads correctly is not necessarily shell that parses — a splice that
+ * looked fine turned out to be invalid while fixing #501. Kept as pure
+ * functions of their inputs so a test can hand each one to `sh -n`, which is
+ * the only check that covers generated shell.
+ */
+
+/** PIDs whose environment names [xdg] as XDG_RUNTIME_DIR — one app-window session. */
+internal fun appWindowSessionScanScript(xdg: String): String = """
+    for p in /proc/[0-9]*; do
+        [ -r ${'$'}p/environ ] || continue
+        if tr '\0' '\n' < ${'$'}p/environ 2>/dev/null | grep -qx "XDG_RUNTIME_DIR=$xdg"; then
+            echo "${'$'}{p##*/}"
+        fi
+    done
+""".trimIndent()
+
+/**
+ * PIDs whose argv[0] basename starts with any of [targets].
+ *
+ * Prefix match, so a wrapper binary is caught too — the `imv` launcher execs
+ * `imv-wayland`, which an exact match misses.
+ */
+internal fun nestedWaylandScanScript(targets: List<String>): String {
+    val caseArm = targets.joinToString("|") { "\"$it\"*" }
+    return """
+        for p in /proc/[0-9]*; do
+            [ -r ${'$'}p/cmdline ] || continue
+            first=${'$'}(tr '\0' ' ' < ${'$'}p/cmdline 2>/dev/null | awk '{print ${'$'}1}')
+            case "${'$'}{first##*/}" in $caseArm) echo "${'$'}{p##*/}";; esac
+        done
+    """.trimIndent()
+}
+
+/** Every readable process as `pid<TAB>argv`, argv separated by spaces. */
+internal val CMDLINE_SCAN_SCRIPT: String = """
+    for p in /proc/[0-9]*; do
+        [ -r ${'$'}p/cmdline ] || continue
+        echo "${'$'}{p##*/}\t${'$'}(tr '\0' ' ' < ${'$'}p/cmdline 2>/dev/null)"
+    done
+""".trimIndent()
+
+/** A process id paired with its full command line, argv separated by spaces. */
+internal data class ProcessCmdline(val pid: String, val cmdline: String)
+
+/**
+ * Whether [cmdline] is an Xvnc serving [display] (any display when null).
+ *
+ * Matching on argv rather than on the process name is the point (#501): the
+ * display only ever appears as an argument, so the previous `ps -A` filter —
+ * which prints names and no arguments — could not match one and silently
+ * killed nothing, leaving Xvnc running after the user pressed stop.
+ *
+ * The display is compared as a whole argument, not a substring, or stopping
+ * `:1` would take `:10` and `:11` down with it.
+ */
+internal fun xvncMatches(cmdline: String, display: Int?): Boolean {
+    val argv = cmdline.trim().split(' ').filter { it.isNotEmpty() }
+    val program = argv.firstOrNull()?.substringAfterLast('/') ?: return false
+    if (!program.startsWith("Xvnc")) return false
+    return display == null || argv.drop(1).any { it == ":$display" }
 }

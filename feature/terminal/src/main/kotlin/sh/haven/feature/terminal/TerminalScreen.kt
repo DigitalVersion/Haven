@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.animation.AnimatedVisibility
@@ -83,6 +84,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.CompositionLocalProvider
@@ -133,6 +136,33 @@ private val TAB_STRIP_PADDING = 4.dp
 private val MIN_JUSTIFIED_TAB_WIDTH = 96.dp
 
 /** Distinct colors for grouping tabs by connection profile. */
+/**
+ * Above this relative luminance a background counts as bright enough to need
+ * dark system-bar icons (#523).
+ *
+ * Compose's [luminance] is already perceptual (Rec. 709, gamma-corrected), so
+ * a mid grey lands near 0.2 rather than 0.5 — the halfway point of the scale
+ * is well above mid grey, which is what we want: only genuinely light
+ * backgrounds such as Solarized Light flip the icons dark.
+ */
+private const val BRIGHT_BACKGROUND_LUMINANCE = 0.5f
+
+/**
+ * How recently the IME must have gone away for the backgrounding to be the cause (#515).
+ *
+ * Android takes the keyboard down as part of moving the app out, and the insets
+ * report it gone *before* ON_PAUSE arrives — so "was the keyboard up?" cannot be
+ * answered by reading them at pause. It has to be answered by how long ago it
+ * went. A system-driven hide lands within a couple of hundred milliseconds of
+ * the pause; a user tapping it away happened whenever they tapped, which is
+ * essentially never that recent.
+ *
+ * Generous rather than tight: restoring a keyboard the user had just dismissed
+ * is a nuisance they can undo with one tap, while failing to restore one they
+ * wanted is the bug being fixed.
+ */
+private const val IME_BACKGROUND_HIDE_WINDOW_MS = 400L
+
 private val TAB_GROUP_COLORS = listOf(
     Color(0xFF42A5F5), // blue
     Color(0xFF66BB6A), // green
@@ -202,6 +232,17 @@ fun TerminalScreen(
     // see-through) background, so the host can make the Scaffold/window
     // behind the terminal transparent. False otherwise.
     onTransparentChanged: (Boolean) -> Unit = {},
+    /**
+     * The active terminal's background colour while this pane is showing, or
+     * null when it isn't (#523).
+     *
+     * The terminal's colours come from its own colour scheme, independent of
+     * the app theme, so a black scheme under a light app theme left a white
+     * strip behind the status bar with the terminal starting abruptly beneath
+     * it. The host paints its container with this so the terminal reaches the
+     * top of the screen.
+     */
+    onBackgroundColorChanged: (Color?) -> Unit = {},
     onReorderModeChanged: (Boolean) -> Unit = {},
     onToolbarLayoutChanged: (ToolbarLayout) -> Unit = {},
     snippetLibrary: List<ToolbarItem.Custom> = emptyList(),
@@ -255,6 +296,9 @@ fun TerminalScreen(
     val activeTabIndex by viewModel.activeTabIndex.collectAsState()
     val ctrlActive by viewModel.ctrlActive.collectAsState()
     val altActive by viewModel.altActive.collectAsState()
+    val ctrlLocked by viewModel.ctrlLocked.collectAsState()
+    val altLocked by viewModel.altLocked.collectAsState()
+    val swipeArrowsMode by viewModel.swipeArrowsMode.collectAsState()
     // Push the live system light/dark mode to the ViewModel so its
     // [terminalColorScheme] flow can resolve the auto-switch pref correctly.
     // Must run before collecting the flow so the first emission reflects
@@ -476,11 +520,28 @@ fun TerminalScreen(
     // screen (e.g. typing on a VNC/Wayland desktop tab landed in the
     // terminal).
     val focusManager = LocalFocusManager.current
-    LaunchedEffect(isActive) {
+
+    // #511: on a Meta Quest 3 with a physical keyboard, every keypress popped the
+    // soft keyboard over the session. Where a real keyboard is attached and
+    // usable the soft one is an obstruction, not the input method, so it is never
+    // force-shown — the user can still raise it deliberately from the toolbar.
+    //
+    // hardKeyboardHidden is part of the test on purpose: a docked/folded device
+    // reports KEYBOARD_QWERTY with the keys physically inaccessible, and there the
+    // soft keyboard is the only way to type.
+    val screenConfiguration = LocalConfiguration.current
+    val physicalKeyboardAttached =
+        screenConfiguration.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS &&
+            screenConfiguration.hardKeyboardHidden ==
+            android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO
+
+    LaunchedEffect(isActive, physicalKeyboardAttached) {
         val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(window, view)
         if (isActive && tabs.isNotEmpty()) {
-            controller.show(WindowInsetsCompat.Type.ime())
+            if (!physicalKeyboardAttached) {
+                controller.show(WindowInsetsCompat.Type.ime())
+            }
         } else if (!isActive) {
             controller.hide(WindowInsetsCompat.Type.ime())
             focusManager.clearFocus(force = true)
@@ -490,11 +551,111 @@ fun TerminalScreen(
     // Detect keyboard hide → send Ctrl+L for Zellij profiles to trigger redraw
     val imeVisible = WindowInsets.isImeVisible
     var wasImeVisible by remember { mutableStateOf(imeVisible) }
+    // When the IME last went away, so the pause handler below can tell "the user
+    // dismissed it" from "the system took it as we were backgrounded" (#515).
+    var imeHiddenAtMs by remember { mutableLongStateOf(0L) }
     LaunchedEffect(imeVisible) {
         if (wasImeVisible && !imeVisible) {
+            imeHiddenAtMs = android.os.SystemClock.elapsedRealtime()
             viewModel.sendRedrawIfZellij()
         }
         wasImeVisible = imeVisible
+    }
+
+    // #515: Android drops the IME when Haven goes to the background and nothing
+    // ever brought it back, so returning to a session always found the keyboard
+    // down even though the user had left it up.
+    //
+    // The first attempt at this sampled the insets at ON_PAUSE, on the assumption
+    // that they were still intact there. @paour's logcat says otherwise:
+    //
+    //     I TerminalIme: ime pause: imeVisible=false (recording)
+    //
+    // The system has already taken the IME away by the time we are paused, so
+    // that version recorded "keyboard down" every time and had nothing to
+    // restore. It shipped in v5.87.2 and did nothing for two releases.
+    //
+    // So the question at pause is not "is the IME up right now" but "was it up
+    // until a moment ago". A hide caused by backgrounding lands within a few
+    // hundred milliseconds of the pause; a hide the *user* asked for happened
+    // whenever they tapped, which is almost never that recent. Hence the
+    // lookback rather than an instantaneous read.
+    //
+    // rememberSaveable so the answer survives the process death that a
+    // long backgrounding tends to end in; a plain remember would restore
+    // "keyboard down" and look like the original bug.
+    val currentImeVisible by rememberUpdatedState(imeVisible)
+    val currentImeHiddenAtMs by rememberUpdatedState(imeHiddenAtMs)
+    var imeVisibleBeforeBackground by rememberSaveable { mutableStateOf(false) }
+    // Handed to the active tab's HavenTerminal: a bump asks termlib to re-run
+    // its own ImeInputView.showIme(), the only show that works here.
+    var imeRestoreTick by remember { mutableIntStateOf(0) }
+    // A consumed tick must not replay: the inactive call sites pass 0, so a
+    // later tab switch would step a page's value 0 -> stale-N and pop the
+    // keyboard. Discard on any tab change.
+    LaunchedEffect(activeTabIndex) { imeRestoreTick = 0 }
+    androidx.lifecycle.compose.LifecycleResumeEffect(isActive, physicalKeyboardAttached) {
+        val willRestore = imeVisibleBeforeBackground && isActive && !physicalKeyboardAttached
+        // Device-verified on v5.87.8 (adb-driven app-switcher round trip,
+        // ImeTracker): any show issued from this layer — at ON_RESUME or even
+        // deferred to window-focus-gain — dies in the IMM with "Ignoring
+        // showSoftInput() as view android:id/content is not served", because
+        // ImeInputView deliberately drops focus and focusability while its
+        // window is invisible (its Android 16 warm-return crash guard), so at
+        // restore time the window holds no servable editor. Only the view's
+        // own showIme() can recover: it re-arms its focusability first. So
+        // this block decides WHETHER to restore and bumps imeRestoreTick once
+        // the window has focus; termlib does the actual show.
+        //
+        //  recorded=false  the insets had already dropped the IME by the time we
+        //                  were paused, so there was never anything to restore.
+        //  recorded=true   the restore path ran; await-focus below says how.
+        //
+        // Booleans only — this line is meant for logs users attach to issues (#518).
+        var awaitingFocus: android.view.ViewTreeObserver.OnWindowFocusChangeListener? = null
+        val action = when {
+            !willRestore -> "skip"
+            view.hasWindowFocus() -> "show"
+            else -> "await-focus"
+        }
+        android.util.Log.i(
+            "TerminalIme",
+            "ime restore: recorded=$imeVisibleBeforeBackground active=$isActive " +
+                "physicalKeyboard=$physicalKeyboardAttached action=$action",
+        )
+        if (willRestore) {
+            if (view.hasWindowFocus()) {
+                imeRestoreTick++
+            } else {
+                val listener = object : android.view.ViewTreeObserver.OnWindowFocusChangeListener {
+                    override fun onWindowFocusChanged(hasFocus: Boolean) {
+                        if (!hasFocus) return
+                        view.viewTreeObserver.removeOnWindowFocusChangeListener(this)
+                        awaitingFocus = null
+                        android.util.Log.i("TerminalIme", "ime restore: window focused -> tick")
+                        imeRestoreTick++
+                    }
+                }
+                awaitingFocus = listener
+                view.viewTreeObserver.addOnWindowFocusChangeListener(listener)
+            }
+        }
+        onPauseOrDispose {
+            awaitingFocus?.let { view.viewTreeObserver.removeOnWindowFocusChangeListener(it) }
+            awaitingFocus = null
+            // Up now, or taken away so recently that the backgrounding is the
+            // only plausible cause.
+            val hiddenAgoMs = android.os.SystemClock.elapsedRealtime() - currentImeHiddenAtMs
+            val takenByTheSystem = currentImeHiddenAtMs > 0L && hiddenAgoMs <= IME_BACKGROUND_HIDE_WINDOW_MS
+            val wasUp = currentImeVisible || takenByTheSystem
+            android.util.Log.i(
+                "TerminalIme",
+                "ime pause: imeVisible=$currentImeVisible hiddenAgo=${
+                    if (currentImeHiddenAtMs > 0L) "${hiddenAgoMs}ms" else "never"
+                } -> recording=$wasUp",
+            )
+            imeVisibleBeforeBackground = wasUp
+        }
     }
 
     // Navigate to specific tab if requested
@@ -612,6 +773,34 @@ fun TerminalScreen(
     val showWallpaper = isActive && effectiveBgOpacity < 1f
     LaunchedEffect(showWallpaper) { onTransparentChanged(showWallpaper) }
     DisposableEffect(Unit) { onDispose { onTransparentChanged(false) } }
+
+    // Carry the terminal's own background up to the host so it reaches behind
+    // the status bar, and match the status-bar icons to it (#523).
+    //
+    // Only while this pane is actually showing, and only when it is opaque —
+    // a translucent terminal already hands the host Color.Transparent above,
+    // and painting a solid colour underneath would defeat that.
+    val statusBarBg = if (isActive && effectiveBgOpacity >= 1f) terminalBg else null
+    LaunchedEffect(statusBarBg) { onBackgroundColorChanged(statusBarBg) }
+    DisposableEffect(Unit) { onDispose { onBackgroundColorChanged(null) } }
+
+    // Icon contrast follows the colour scheme's measured luminance rather than
+    // the app's light/dark theme. Deciding from the theme would put dark icons
+    // on a black terminal whenever the app is in light mode, which is the
+    // reported bug in mirror image; deciding from a scheme's *name* would fail
+    // for the light schemes (Solarized Light, Modern Light) that need the
+    // opposite treatment. `isAppearanceLightStatusBars` means "light
+    // background, so draw dark icons".
+    // Falling back to the app's own background when this pane isn't showing
+    // keeps it symmetric: the icons always contrast whatever is actually
+    // painted behind them, so leaving the terminal restores the theme's
+    // treatment without having to remember what it was.
+    val appBg = MaterialTheme.colorScheme.background
+    LaunchedEffect(statusBarBg, appBg, window) {
+        if (window == null) return@LaunchedEffect
+        WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars =
+            (statusBarBg ?: appBg).luminance() > BRIGHT_BACKGROUND_LUMINANCE
+    }
 
     val saveConnectionUi by viewModel.saveConnectionUi.collectAsState()
     saveConnectionUi?.let { ui ->
@@ -868,7 +1057,9 @@ fun TerminalScreen(
                                     val renameableName = viewModel.renameableSessionName(tab.sessionId)
                                     val canSaveConnection = viewModel.canSaveConnection(tab.sessionId)
                                     val canShowDetails = viewModel.canShowDetails(tab.sessionId)
-                                    if (renameableName != null || canSaveConnection || canShowDetails) {
+                                    if (renameableName != null || canSaveConnection || canShowDetails ||
+                                        viewModel.canOpenPlainShell(tab.sessionId)
+                                    ) {
                                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                     }
                                     if (canShowDetails) {
@@ -900,6 +1091,22 @@ fun TerminalScreen(
                                             onClick = {
                                                 tabMenuFor = null
                                                 renameDialogFor = renameableName
+                                            },
+                                        )
+                                    }
+                                    if (viewModel.canOpenPlainShell(tab.sessionId)) {
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.terminal_open_plain_shell)) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Filled.Terminal,
+                                                    null,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                tabMenuFor = null
+                                                viewModel.addPlainShellTab(tab.sessionId)
                                             },
                                         )
                                     }
@@ -1103,7 +1310,7 @@ fun TerminalScreen(
                     // scroll wheel forwards whenever the app requested mouse mode.
                     // Haven's local scrollback and row-based selection are reached
                     // with a two-finger swipe / tap-and-hold in non-mouse-mode.
-                    val gestureCallback = remember(activeTab, isMouseMode, isAltScreen, mouseInputEnabled, terminalRightClick) {
+                    val gestureCallback = remember(activeTab, isMouseMode, isAltScreen, mouseInputEnabled, terminalRightClick, swipeArrowsMode) {
                         if (isMouseMode) object : org.connectbot.terminal.TerminalGestureCallback {
                             override fun onTap(col: Int, row: Int): Boolean {
                                 if (!mouseInputEnabled) return false
@@ -1141,7 +1348,7 @@ fun TerminalScreen(
                                 }
                                 return true // claim the drag — terminal stops scroll fallback
                             }
-                        } else if (isAltScreen) object : org.connectbot.terminal.TerminalGestureCallback {
+                        } else if (isAltScreen || swipeArrowsMode) object : org.connectbot.terminal.TerminalGestureCallback {
                             // Alt screen without mouse tracking (tmux default,
                             // nano, vim, less): Haven's local scrollback is the
                             // frozen *primary* buffer, so scrolling it paints
@@ -1159,7 +1366,11 @@ fun TerminalScreen(
                                 // emulator: decline so the swipe falls back to
                                 // native local scrollback — which is exactly what
                                 // those opt-outs are for.
-                                if (!activeTab.emulator.isAltScreenActive()) return false
+                                // #524: swipe-arrows mode forces this branch at a
+                                // plain shell prompt too — command history without
+                                // arrow keys on the toolbar — so the emulator
+                                // check only gates the automatic path.
+                                if (!swipeArrowsMode && !activeTab.emulator.isAltScreenActive()) return false
                                 activeTab.sendInput(
                                     arrowKeyBytes(scrollUp, activeTab.cursorKeyAppMode.value),
                                 )
@@ -1264,6 +1475,10 @@ fun TerminalScreen(
                                 initialFontSize = fontSize.sp,
                                 typeface = hackTypeface,
                                 keyboardEnabled = true,
+                                // Only the active tab restores; adjacent pager
+                                // pages stay composed and must not fight over
+                                // the IME (#515).
+                                imeRestoreTick = if (isActive) imeRestoreTick else 0,
                                 // Reflow (resize) the PTY on a keyboard toggle
                                 // when a full-screen TUI is running, so its top
                                 // status/header row isn't shifted off the top
@@ -1416,10 +1631,21 @@ fun TerminalScreen(
                     // needed while typing. Fullscreen still hides the system + tab bars.
                     KeyboardToolbar(
                         onSendBytes = { bytes -> activeTab.sendInput(bytes) },
-                        onDispatchKey = { mods, key -> activeTab.emulator?.dispatchKey(mods, key) },
+                        // The toolbar's own keys dispatch with mods = 0, so a tapped
+                        // Ctrl/Alt never reached them — Ctrl+End sent a bare End. Fold
+                        // the active modifiers in here (bit 1 = Alt, bit 2 = Ctrl, per
+                        // Terminal.cpp's dispatchKey) and let libvterm build the
+                        // sequence: Ctrl+End becomes ESC[1;5F.
+                        onDispatchKey = { mods, key ->
+                            val tapped = viewModel.toolbarModifierMask()
+                            activeTab.emulator?.dispatchKey(mods or tapped, key)
+                            if (tapped != 0) viewModel.clearStickyModifiers()
+                        },
                         focusRequester = focusRequester,
                         ctrlActive = ctrlActive,
                         altActive = altActive,
+                        ctrlLocked = ctrlLocked,
+                        altLocked = altLocked,
                         bracketPasteMode = isBracketPaste,
                         layout = toolbarLayout,
                         navBlockMode = navBlockMode,
@@ -1482,6 +1708,8 @@ fun TerminalScreen(
                         onToggleStandardKeyboard = onToggleStandardKeyboard,
                         rawKeyboardMode = rawKeyboardMode,
                         onToggleRawKeyboard = onToggleRawKeyboard,
+                        swipeArrowsActive = swipeArrowsMode,
+                        onToggleSwipeArrows = { viewModel.toggleSwipeArrows() },
                         composeModeActive = composeController?.isComposeModeActive == true,
                         onToggleComposeMode = { composeController?.toggleComposeMode() },
                         onAttachTap = { attachSheetVisible = true },

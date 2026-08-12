@@ -33,6 +33,7 @@ import sh.haven.core.reticulum.ReticulumSessionManager
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import javax.inject.Inject
+import sh.haven.core.redact.LogRedact
 
 private const val TAG = "TerminalViewModel"
 
@@ -753,8 +754,42 @@ class TerminalViewModel @Inject constructor(
     private val _altActive = MutableStateFlow(false)
     val altActive: StateFlow<Boolean> = _altActive.asStateFlow()
 
-    fun toggleCtrl() { _ctrlActive.value = !_ctrlActive.value }
-    fun toggleAlt() { _altActive.value = !_altActive.value }
+    /**
+     * Locked modifiers survive more than one keystroke (#522). A lock is the
+     * second consecutive tap of the same modifier, so the three states cycle
+     * off → one-shot → locked → off on successive taps.
+     */
+    private val _ctrlLocked = MutableStateFlow(false)
+    val ctrlLocked: StateFlow<Boolean> = _ctrlLocked.asStateFlow()
+
+    private val _altLocked = MutableStateFlow(false)
+    val altLocked: StateFlow<Boolean> = _altLocked.asStateFlow()
+
+    fun toggleCtrl() {
+        when {
+            _ctrlLocked.value -> { _ctrlLocked.value = false; _ctrlActive.value = false }
+            _ctrlActive.value -> _ctrlLocked.value = true
+            else -> _ctrlActive.value = true
+        }
+    }
+
+    fun toggleAlt() {
+        when {
+            _altLocked.value -> { _altLocked.value = false; _altActive.value = false }
+            _altActive.value -> _altLocked.value = true
+            else -> _altActive.value = true
+        }
+    }
+
+    /**
+     * The active modifiers as libvterm's dispatchKey mask — bit 0 Shift, bit 1
+     * Alt, bit 2 Ctrl (`Terminal.cpp`). The toolbar's own keys dispatch a key
+     * code rather than bytes, so this is what carries a tapped Ctrl to them;
+     * without it Ctrl+End left as a bare End. Shift is the toolbar's own state
+     * and is not folded in here.
+     */
+    fun toolbarModifierMask(): Int =
+        (if (_altActive.value) 2 else 0) or (if (_ctrlActive.value) 4 else 0)
 
     /**
      * Clear the one-shot sticky Ctrl/Alt after a keystroke has consumed them.
@@ -762,10 +797,48 @@ class TerminalViewModel @Inject constructor(
      * so a tapped modifier can't get stuck — e.g. in Standard keyboard mode a
      * Ctrl that the IME composed past would otherwise persist and turn the next
      * Enter into Ctrl+Enter (`^[[13;5u`). (#298)
+     *
+     * A locked modifier is not transient at all: it applies to every keystroke
+     * until the user taps it off — the requester's follow-up on #522 settled
+     * that this, not a keystroke budget, is what "locked" means. Keeping the
+     * release policy in this one function also lets every consume site call it
+     * safely: it is idempotent, so a keystroke that passes through both the
+     * key-event path and the byte path can't spend anything twice.
      */
     fun clearStickyModifiers() {
-        if (_ctrlActive.value) _ctrlActive.value = false
-        if (_altActive.value) _altActive.value = false
+        if (!_ctrlLocked.value) _ctrlActive.value = false
+        if (!_altLocked.value) _altActive.value = false
+    }
+
+    /**
+     * #524: while on, a vertical swipe sends ↑/↓ even at a plain shell prompt
+     * (command history without arrow keys on the toolbar), instead of only on
+     * the alternate screen. A latched mode, not a modifier — it survives
+     * session end and app restart, because its point is to permanently free
+     * the four arrow-key toolbar slots.
+     */
+    val swipeArrowsMode: StateFlow<Boolean> = preferencesRepository.swipeArrowsMode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun toggleSwipeArrows() {
+        viewModelScope.launch {
+            preferencesRepository.setSwipeArrowsMode(!swipeArrowsMode.value)
+        }
+    }
+
+    /**
+     * Drop all modifier state, locks included. Runs when the tab list
+     * reconciles to empty: a lock is scoped to the sessions it was locked
+     * for, so exiting the last one (the #522 follow-up's Ctrl-locked
+     * Ctrl+D) must not hand the next connection a pre-locked key. Not
+     * called on individual tab closes — the toolbar state is shared, and
+     * a surviving tab may be mid-use of the lock.
+     */
+    private fun resetModifiers() {
+        _ctrlLocked.value = false
+        _altLocked.value = false
+        _ctrlActive.value = false
+        _altActive.value = false
     }
 
     fun setFontSize(sizeSp: Int) {
@@ -912,7 +985,11 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * Apply Ctrl/Alt modifiers to keyboard input, then reset them (one-shot).
+     * Apply Ctrl/Alt modifiers to keyboard input, then release them through
+     * [clearStickyModifiers] so a lock survives. This function clearing the
+     * state directly was the #522 follow-up bug: it knew nothing about locks,
+     * so a locked Ctrl worked for exactly one keypress and then sat there
+     * blue and inert — the byte path spent it while the visual said held.
      * Ctrl+letter -> char AND 0x1F (e.g. Ctrl+C = 0x03).
      * Alt+char -> ESC prefix.
      */
@@ -921,8 +998,7 @@ class TerminalViewModel @Inject constructor(
         val alt = _altActive.value
         if (!ctrl && !alt) return data
 
-        _ctrlActive.value = false
-        _altActive.value = false
+        clearStickyModifiers()
 
         var result = data
         if (ctrl && result.size == 1) {
@@ -1880,6 +1956,7 @@ class TerminalViewModel @Inject constructor(
                 onDataReceived = { data, offset, length ->
                     localFeedOutput(data, offset, length)
                 },
+                plain = plainSessionIds.remove(sessionId),
             ) ?: continue
 
             val localCoalescer = InputCoalescer { data -> localSession.sendInput(data) }
@@ -1947,7 +2024,25 @@ class TerminalViewModel @Inject constructor(
             }
         }
 
+        // Tabs that just disappeared: their session is gone, so nothing will
+        // write to their emulator again and the native terminal can go now
+        // rather than whenever the collector next runs (#509).
+        //
+        // SSH is excluded deliberately — its emulator outlives this ViewModel
+        // in SshTerminalEmulatorOwner (#290), which closes it in dispose(). A
+        // tab vanishing here does not mean that session is finished.
+        val droppedTabs = _tabs.value.filter { old ->
+            old.transportType != "SSH" && currentTabs.none { it.sessionId == old.sessionId }
+        }
+
         _tabs.value = currentTabs
+
+        if (currentTabs.isEmpty()) resetModifiers()
+
+        droppedTabs.forEach { tab ->
+            runCatching { tab.emulator.close() }
+                .onFailure { Log.w(TAG, "Closing emulator for ${tab.sessionId} failed", it) }
+        }
 
         // Mirror tab → registry so the MCP agent can find each tab's
         // emulator by sessionId. Selection / scroll controllers come in
@@ -2302,7 +2397,56 @@ class TerminalViewModel @Inject constructor(
      * the profile's display name when called from outside the
      * clone-current-tab path.
      */
-    fun addLocalTabForProfile(profileId: String, label: String? = null, desktopDeId: String? = null) {
+    /**
+     * Sessions opened as plain shells, consumed once when the PTY is created.
+     *
+     * The session manager takes `plain` at [LocalSessionManager.createTerminalSession] time,
+     * which happens later in syncSessions than the call that asked for the shell, so the
+     * request has to be parked somewhere in between. Removed on use so a session id that is
+     * later reused cannot inherit it.
+     */
+    private val plainSessionIds = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /**
+     * True when a plain shell is meaningful for this tab: a local shell (whose PTY can skip
+     * the session-manager wrapper) or an SSH profile configured with one.
+     *
+     * The point of the affordance is escaping a multiplexer, so it appears wherever there is
+     * a multiplexer to escape — not only on local tabs. Serial and other transports have no
+     * session-manager concept and are left alone.
+     */
+    fun canOpenPlainShell(sessionId: String): Boolean {
+        if (localSessionManager.sessions.value[sessionId] != null) return true
+        val profileId = sessionManager.getSession(sessionId)?.profileId ?: return false
+        return sessionManager.getConnectionConfigForProfile(profileId)?.second?.listCommand != null
+    }
+
+    /**
+     * Open a second shell on this tab's profile with the user's session-manager preference
+     * (tmux/zellij/screen/byobu) bypassed — a bare login shell.
+     *
+     * Worth having in reach: a multiplexer's status bar reserves the bottom row with DECSTBM,
+     * which defeats Haven's own scrollback capture, and a wedged multiplexer is easiest to
+     * debug from a shell that is not inside it. The agent-facing open_local_shell has had
+     * `plain` since #285; this is the same thing for the person holding the phone.
+     */
+    fun addPlainShellTab(sessionId: String) {
+        localSessionManager.sessions.value[sessionId]?.profileId?.let { profileId ->
+            addLocalTabForProfile(profileId, plain = true)
+            return
+        }
+        val profileId = sessionManager.getSession(sessionId)?.profileId ?: return
+        addSshTabForProfile(profileId, plain = true)
+    }
+
+    fun addLocalTabForProfile(
+        profileId: String,
+        label: String? = null,
+        desktopDeId: String? = null,
+        plain: Boolean = false,
+    ) {
         viewModelScope.launch {
             _newTabLoading.value = true
             try {
@@ -2320,6 +2464,7 @@ class TerminalViewModel @Inject constructor(
                     prootDistroId = existingSession?.prootDistroId ?: profile?.prootDistroId,
                     desktopEnv = desktopEnv,
                 )
+                if (plain) plainSessionIds.add(sessionId)
                 localSessionManager.connectSession(sessionId)
                 syncSessions()
                 selectTabBySessionId(sessionId)
@@ -2445,7 +2590,11 @@ class TerminalViewModel @Inject constructor(
      * Called from [addTab] (clone current tab) and from the Connections screen
      * "New Session" context menu item.
      */
-    fun addSshTabForProfile(profileId: String, preselectedSessionName: String? = null) {
+    fun addSshTabForProfile(
+        profileId: String,
+        preselectedSessionName: String? = null,
+        plain: Boolean = false,
+    ) {
         val configPair = sessionManager.getConnectionConfigForProfile(profileId)
         if (configPair == null) {
             Log.w(TAG, "addSshTabForProfile: no connection config for profile $profileId")
@@ -2533,7 +2682,7 @@ class TerminalViewModel @Inject constructor(
                         is HostKeyResult.NewHost -> {
                             client.disconnect()
                             sessionManager.removeSession(sessionId)
-                            Log.w(TAG, "Unknown host key for ${config.host}:${config.port} — aborting new tab")
+                            Log.w(TAG, "Unknown host key for ${LogRedact.host(config.host, config.port)} — aborting new tab")
                             _newTabMessage.value = appContext.getString(
                                 R.string.terminal_new_tab_host_key_unknown,
                                 "${config.host}:${config.port}",
@@ -2544,7 +2693,7 @@ class TerminalViewModel @Inject constructor(
                         is HostKeyResult.KeyChanged -> {
                             client.disconnect()
                             sessionManager.removeSession(sessionId)
-                            Log.w(TAG, "Host key changed for ${config.host}:${config.port} — aborting new tab")
+                            Log.w(TAG, "Host key changed for ${LogRedact.host(config.host, config.port)} — aborting new tab")
                             _newTabMessage.value = appContext.getString(
                                 R.string.terminal_new_tab_host_key_changed,
                                 "${config.host}:${config.port}",
@@ -2571,6 +2720,16 @@ class TerminalViewModel @Inject constructor(
                     sessionManager.setChosenSessionName(sessionId, preselectedSessionName)
                 }
 
+                // "Plain shell": never offer the session list, and tell the SSH side to
+                // ignore the profile's tmux/zellij/screen wrapper for this connection only.
+                // Same two calls the picker's own Plain shell row makes, so there is one
+                // implementation of what "plain" means on an SSH profile.
+                if (plain) {
+                    sessionManager.setBypassSessionManager(sessionId, true)
+                    sessionManager.setChosenSessionName(sessionId, "shell")
+                    finishNewSshTab(sessionId)
+                    return@launch
+                }
                 val listCmd = sshSessionMgr.listCommand
                 if (preselectedSessionName == null && listCmd != null) {
                     val existingSessions = withContext(Dispatchers.IO) {

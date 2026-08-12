@@ -4,10 +4,13 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
@@ -71,13 +74,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -166,6 +174,10 @@ fun RdpSessionContent(
      */
     onCycleOrientation: () -> Unit = {},
     onRetry: (() -> Unit)? = null,
+    /** Fullscreen menu-chip anchor; hold-drag to move, persisted by the host (#528). */
+    chipAnchor: sh.haven.core.data.preferences.RdpChipAnchor =
+        sh.haven.core.data.preferences.RdpChipAnchor.DEFAULT,
+    onChipAnchorChange: (sh.haven.core.data.preferences.RdpChipAnchor) -> Unit = {},
 ) {
     val connectedState by connected.collectAsState()
     val frameState by frame.collectAsState()
@@ -231,6 +243,8 @@ fun RdpSessionContent(
             onSetInputMode = onSetInputMode,
             currentOrientation = currentOrientation,
             onCycleOrientation = onCycleOrientation,
+            chipAnchor = chipAnchor,
+            onChipAnchorChange = onChipAnchorChange,
         )
     } else {
         DesktopPlaceholder(
@@ -502,6 +516,9 @@ private fun RdpViewer(
     onSetInputMode: ((String) -> Unit)? = null,
     currentOrientation: Int = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
     onCycleOrientation: () -> Unit = {},
+    chipAnchor: sh.haven.core.data.preferences.RdpChipAnchor =
+        sh.haven.core.data.preferences.RdpChipAnchor.DEFAULT,
+    onChipAnchorChange: (sh.haven.core.data.preferences.RdpChipAnchor) -> Unit = {},
 ) {
     // Map the activity-orientation constant to the local enum for
     // icon/description rendering. Source-of-truth for the value lives
@@ -561,6 +578,31 @@ private fun RdpViewer(
     val keyboardController = LocalSoftwareKeyboardController.current
     var keyboardVisible by remember { mutableStateOf(false) }
 
+    // #507: with a physical keyboard there is no reason to toggle the soft one,
+    // and the soft-keyboard toggle was the ONLY thing that ever focused the
+    // hidden text field — so nothing on this screen held focus, and hardware
+    // Enter/Space activated whatever Compose had focused instead (the nav
+    // drawer button, per @pawlosck's repro: "when I can't write, the menu
+    // opens every time"). The canvas is focusable so the screen can hold
+    // focus WITHOUT summoning the IME (focusing the text field shows it),
+    // and the scancode handler lives on the root Box, which sees the preview
+    // pass for every descendant — the text field included — so one handler
+    // covers both focus holders.
+    val hardwareKeyFocus = remember { FocusRequester() }
+    val handleHardwareKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = { event ->
+        val scancode = androidKeyToScancode(event.key)
+        if (scancode != null) {
+            when (event.type) {
+                KeyEventType.KeyDown -> onKeyDown(scancode)
+                KeyEventType.KeyUp -> onKeyUp(scancode)
+            }
+            true
+        } else {
+            false
+        }
+    }
+    LaunchedEffect(Unit) { hardwareKeyFocus.requestFocus() }
+
     // Modifier state for key toolbar
     var ctrlActive by remember { mutableStateOf(false) }
     var altActive by remember { mutableStateOf(false) }
@@ -578,13 +620,37 @@ private fun RdpViewer(
         }
     }
 
+    // #528: the summon chip dims to a ghost after a few idle seconds. It used
+    // to sit at 40% alpha forever — @pawlosck asked to move or hide it because
+    // it was parked over the remote's own window controls (top-right is where
+    // Windows keeps minimise/restore/close; the chip now lives top-centre,
+    // mstsc's convention, for the same reason). Full alpha returns whenever
+    // the overlay opens, so finding it again is one glance, not a hunt.
+    var chipDimmed by remember { mutableStateOf(false) }
+    LaunchedEffect(fullscreen, overlayVisible) {
+        chipDimmed = false
+        if (fullscreen && !overlayVisible) {
+            delay(5000)
+            chipDimmed = true
+        }
+    }
+    val chipAlpha by animateFloatAsState(
+        targetValue = if (chipDimmed) 0.35f else 1f,
+        animationSpec = tween(durationMillis = 800),
+        label = "fullscreenChipAlpha",
+    )
+
     // Sentinel for the hidden text field
     val sentinel = " "
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(sentinel, TextRange(sentinel.length)))
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent(handleHardwareKey),
+    ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // RDP canvas
         Box(
@@ -592,6 +658,8 @@ private fun RdpViewer(
                 .weight(1f)
                 .fillMaxWidth()
                 .background(Color.Black)
+                .focusRequester(hardwareKeyFocus)
+                .focusable()
                 .onSizeChanged { viewSize = it }
                 .pointerInput(frame.width, frame.height, viewSize, inputMode) {
                     val touchSlopPx = viewConfiguration.touchSlop
@@ -601,6 +669,11 @@ private fun RdpViewer(
                             pass = PointerEventPass.Initial,
                         )
                         firstDown.consume()
+                        // #507: a canvas tap re-claims hardware-key focus from
+                        // whatever took it (drawer, toolbar button) — but not
+                        // while the soft keyboard is up, where moving focus
+                        // off the text field would dismiss it.
+                        if (!keyboardVisible) hardwareKeyFocus.requestFocus()
                         var totalFingers = 1
                         var prevCentroid = firstDown.position
                         var prevSpan = 0f
@@ -829,21 +902,12 @@ private fun RdpViewer(
 
                 textFieldValue = TextFieldValue(sentinel, TextRange(sentinel.length))
             },
+            // Hardware keys are handled by the root Box's onPreviewKeyEvent
+            // (#507) — an ancestor of this field, so its preview pass fires
+            // whether focus sits here (soft keyboard) or on the canvas.
             modifier = Modifier
                 .size(1.dp)
-                .focusRequester(focusRequester)
-                .onPreviewKeyEvent { event ->
-                    val scancode = androidKeyToScancode(event.key)
-                    if (scancode != null) {
-                        when (event.type) {
-                            KeyEventType.KeyDown -> onKeyDown(scancode)
-                            KeyEventType.KeyUp -> onKeyUp(scancode)
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                },
+                .focusRequester(focusRequester),
         )
 
         // RDP key toolbar — hidden in fullscreen, and also hidden when the
@@ -889,6 +953,7 @@ private fun RdpViewer(
                         keyboardController?.show()
                     } else {
                         keyboardController?.hide()
+                        hardwareKeyFocus.requestFocus()
                     }
                 },
             )
@@ -922,6 +987,7 @@ private fun RdpViewer(
                         keyboardController?.show()
                     } else {
                         keyboardController?.hide()
+                        hardwareKeyFocus.requestFocus()
                     }
                 }) {
                     Icon(
@@ -973,15 +1039,53 @@ private fun RdpViewer(
             )
         }
 
+        // Top-centre by default, not top-end: the remote's OWN window controls
+        // live in the top-right corner (Windows minimise/restore/close), and
+        // the chip was sitting exactly on top of them (#528). mstsc parks its
+        // connection pill top-centre for the same reason. Hold-and-drag moves
+        // it to any of six edge anchors — same idiom as the terminal's
+        // fullscreen button (#445) — snapping to wherever it's released
+        // nearest and remembering the spot.
+        var chipDragOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+        var chipCoords by remember {
+            mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null)
+        }
         AnimatedVisibility(
             visible = !overlayVisible,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopEnd),
+            modifier = Modifier
+                .align(chipAnchor.toComposeAlignment())
+                .offset { androidx.compose.ui.unit.IntOffset(chipDragOffset.x.toInt(), chipDragOffset.y.toInt()) }
+                .onGloballyPositioned { chipCoords = it }
+                .pointerInput(Unit) {
+                    detectDragGesturesAfterLongPress(
+                        onDrag = { change, delta ->
+                            change.consume()
+                            chipDragOffset += delta
+                        },
+                        onDragEnd = {
+                            val coords = chipCoords
+                            val parent = coords?.parentLayoutCoordinates
+                            if (coords != null && parent != null) {
+                                val c = coords.boundsInParent().center
+                                onChipAnchorChange(
+                                    sh.haven.core.data.preferences.RdpChipAnchor.nearest(
+                                        c.x, c.y,
+                                        parent.size.width.toFloat(),
+                                        parent.size.height.toFloat(),
+                                    ),
+                                )
+                            }
+                            chipDragOffset = androidx.compose.ui.geometry.Offset.Zero
+                        },
+                    )
+                }
+                .graphicsLayer { alpha = chipAlpha },
         ) {
             Surface(
                 onClick = { overlayVisible = true },
-                shape = RoundedCornerShape(bottomStart = 12.dp),
+                shape = RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.4f),
             ) {
                 Icon(
@@ -999,10 +1103,10 @@ private fun RdpViewer(
             visible = overlayVisible,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopEnd),
+            modifier = Modifier.align(chipAnchor.toComposeAlignment()),
         ) {
             Surface(
-                shape = RoundedCornerShape(bottomStart = 16.dp),
+                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
                 // alpha-copied colour defeats contentColorFor, so set it
                 // explicitly or the icons render black on the dark sheet (#286).
@@ -1026,6 +1130,7 @@ private fun RdpViewer(
                             keyboardController?.show()
                         } else {
                             keyboardController?.hide()
+                            hardwareKeyFocus.requestFocus()
                         }
                     }) {
                         Icon(
@@ -1319,14 +1424,14 @@ private fun RdpRepeatingButton(
 ) {
     var isPressed by remember { mutableStateOf(false) }
     var didRepeat by remember { mutableStateOf(false) }
+    val currentOnClick by rememberUpdatedState(onClick)
 
     LaunchedEffect(isPressed) {
         if (isPressed) {
-            didRepeat = false
             delay(400)
             didRepeat = true
-            while (true) {
-                onClick()
+            while (isPressed) {
+                currentOnClick()
                 delay(80)
             }
         }
@@ -1334,18 +1439,28 @@ private fun RdpRepeatingButton(
 
     FilledTonalButton(
         onClick = {},
+        // #515 — the same latch fixed in core:toolbar's ToolbarKeyButton, which
+        // carries the full explanation. Short version: `action` misses the
+        // ACTION_POINTER_* forms a second finger produces, and `didRepeat` has to
+        // be cleared on release rather than at the top of the effect. Leaving
+        // either latched gives a button that highlights but sends nothing until
+        // the screen is recreated.
         modifier = modifier.pointerInteropFilter { motionEvent ->
-            when (motionEvent.action) {
-                android.view.MotionEvent.ACTION_DOWN -> {
+            when (motionEvent.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN,
+                android.view.MotionEvent.ACTION_POINTER_DOWN -> {
                     isPressed = true
                     true
                 }
-                android.view.MotionEvent.ACTION_UP -> {
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_POINTER_UP -> {
                     if (!didRepeat) onClick()
+                    didRepeat = false
                     isPressed = false
                     true
                 }
                 android.view.MotionEvent.ACTION_CANCEL -> {
+                    didRepeat = false
                     isPressed = false
                     true
                 }
@@ -1448,7 +1563,7 @@ private enum class OrientationMode(
 fun cycleRdpOrientation(current: Int): Int =
     OrientationMode.fromActivityValue(current).next().activityValue
 
-private fun androidKeyToScancode(key: Key): Int? = when (key) {
+internal fun androidKeyToScancode(key: Key): Int? = when (key) {
     Key.Enter -> SC_RETURN
     Key.Tab -> SC_TAB
     Key.Escape -> SC_ESCAPE
@@ -1463,10 +1578,20 @@ private fun androidKeyToScancode(key: Key): Int? = when (key) {
     Key.MoveEnd -> SC_END
     Key.PageUp -> SC_PGUP
     Key.PageDown -> SC_PGDN
-    Key.ShiftLeft, Key.ShiftRight -> SC_SHIFT_L
-    Key.CtrlLeft, Key.CtrlRight -> SC_CTRL_L
-    Key.AltLeft, Key.AltRight -> SC_ALT_L
-    Key.MetaLeft, Key.MetaRight -> SC_WIN_L
+    // Right-hand modifiers are their own keys, not aliases for the left ones
+    // (#504). A reporter ran `showkey` on the guest console and saw AltGr
+    // arrive as scancode 56 — left Alt — which is why AltGr+o gave him nothing
+    // instead of the Polish ó: the guest was told he pressed a modifier that
+    // does not compose anything. Right Ctrl, Alt and Win are E0-prefixed;
+    // right Shift is NOT extended, it is a separate base code (0x36).
+    Key.ShiftLeft -> SC_SHIFT_L
+    Key.ShiftRight -> SC_SHIFT_R
+    Key.CtrlLeft -> SC_CTRL_L
+    Key.CtrlRight -> SC_CTRL_R
+    Key.AltLeft -> SC_ALT_L
+    Key.AltRight -> SC_ALT_R
+    Key.MetaLeft -> SC_WIN_L
+    Key.MetaRight -> SC_WIN_R
     Key.F1 -> SC_F1
     Key.F2 -> SC_F2
     Key.F3 -> SC_F3
@@ -1479,6 +1604,97 @@ private fun androidKeyToScancode(key: Key): Int? = when (key) {
     Key.F10 -> SC_F10
     Key.F11 -> SC_F11
     Key.F12 -> SC_F12
+    // Numpad (#507). None of these were mapped at all, so numpad Enter, the
+    // digits and the arrows fell straight through to `else -> null` and reached
+    // the guest as nothing — invisible on a phone, but people do attach real
+    // keyboards, and a numeric keypad is exactly what someone doing data entry
+    // over RDP reaches for.
+    //
+    // These are the BARE Set-1 codes, and that is not an oversight: the numpad
+    // is what those values natively mean. The navigation cluster above borrows
+    // the same numbers with the 0xE000 marker precisely because it is the
+    // *extended* twin of this block. Numpad Enter and Divide are the two
+    // exceptions — they ARE E0-prefixed, sharing their bare codes with Return
+    // and the `/` key.
+    Key.NumPad0 -> SC_NUMPAD_0
+    Key.NumPad1 -> SC_NUMPAD_1
+    Key.NumPad2 -> SC_NUMPAD_2
+    Key.NumPad3 -> SC_NUMPAD_3
+    Key.NumPad4 -> SC_NUMPAD_4
+    Key.NumPad5 -> SC_NUMPAD_5
+    Key.NumPad6 -> SC_NUMPAD_6
+    Key.NumPad7 -> SC_NUMPAD_7
+    Key.NumPad8 -> SC_NUMPAD_8
+    Key.NumPad9 -> SC_NUMPAD_9
+    Key.NumPadEnter -> SC_NUMPAD_ENTER
+    Key.NumPadDivide -> SC_NUMPAD_DIVIDE
+    Key.NumPadMultiply -> SC_NUMPAD_MULTIPLY
+    Key.NumPadSubtract -> SC_NUMPAD_SUBTRACT
+    Key.NumPadAdd -> SC_NUMPAD_ADD
+    Key.NumPadDot -> SC_NUMPAD_DOT
+    Key.NumLock -> SC_NUMLOCK
+    // Main-row letters, digits and punctuation (#504). The #507 focus fix moved
+    // hardware-key focus off the hidden text field, which had been the only
+    // thing converting printable keypresses (via its IME InputConnection), so
+    // every key NOT in this table started reaching the guest as nothing —
+    // letters, digits and Space died while the mapped special keys kept
+    // working.
+    //
+    // These are BASE scancodes on purpose: physical Shift and AltGr are
+    // already forwarded as real modifier keys above, so the guest composes
+    // shifted and AltGr characters itself. Wrapping our own Shift around a
+    // pre-shifted character (the soft-keyboard path in typeRdpChar) would
+    // release a Shift the user is still holding. Values are Set-1 / US
+    // positions and must stay in agreement with asciiCharToRdpScancode's
+    // tables — RdpScancodeTest cross-checks the two.
+    Key.A -> 0x1E
+    Key.B -> 0x30
+    Key.C -> 0x2E
+    Key.D -> 0x20
+    Key.E -> 0x12
+    Key.F -> 0x21
+    Key.G -> 0x22
+    Key.H -> 0x23
+    Key.I -> 0x17
+    Key.J -> 0x24
+    Key.K -> 0x25
+    Key.L -> 0x26
+    Key.M -> 0x32
+    Key.N -> 0x31
+    Key.O -> 0x18
+    Key.P -> 0x19
+    Key.Q -> 0x10
+    Key.R -> 0x13
+    Key.S -> 0x1F
+    Key.T -> 0x14
+    Key.U -> 0x16
+    Key.V -> 0x2F
+    Key.W -> 0x11
+    Key.X -> 0x2D
+    Key.Y -> 0x15
+    Key.Z -> 0x2C
+    Key.One -> 0x02
+    Key.Two -> 0x03
+    Key.Three -> 0x04
+    Key.Four -> 0x05
+    Key.Five -> 0x06
+    Key.Six -> 0x07
+    Key.Seven -> 0x08
+    Key.Eight -> 0x09
+    Key.Nine -> 0x0A
+    Key.Zero -> 0x0B
+    Key.Spacebar -> 0x39
+    Key.Grave -> 0x29
+    Key.Minus -> 0x0C
+    Key.Equals -> 0x0D
+    Key.LeftBracket -> 0x1A
+    Key.RightBracket -> 0x1B
+    Key.Backslash -> 0x2B
+    Key.Semicolon -> 0x27
+    Key.Apostrophe -> 0x28
+    Key.Comma -> 0x33
+    Key.Period -> 0x34
+    Key.Slash -> 0x35
     else -> null
 }
 
@@ -1497,6 +1713,27 @@ private fun androidKeyToScancode(key: Key): Int? = when (key) {
 // advertises fast-path input. The native layer now falls back to slow-path
 // TS_INPUT_PDUs for such servers.
 internal const val EXT = 0xE000
+
+// Numpad, Set 1. Bare values — these ARE the meaning of these codes; the
+// navigation cluster above is the E0-prefixed twin of this same block.
+internal const val SC_NUMPAD_7 = 0x47
+internal const val SC_NUMPAD_8 = 0x48
+internal const val SC_NUMPAD_9 = 0x49
+internal const val SC_NUMPAD_SUBTRACT = 0x4A
+internal const val SC_NUMPAD_4 = 0x4B
+internal const val SC_NUMPAD_5 = 0x4C
+internal const val SC_NUMPAD_6 = 0x4D
+internal const val SC_NUMPAD_ADD = 0x4E
+internal const val SC_NUMPAD_1 = 0x4F
+internal const val SC_NUMPAD_2 = 0x50
+internal const val SC_NUMPAD_3 = 0x51
+internal const val SC_NUMPAD_0 = 0x52
+internal const val SC_NUMPAD_DOT = 0x53
+internal const val SC_NUMPAD_MULTIPLY = 0x37
+internal const val SC_NUMLOCK = 0x45
+// The two extended ones: their bare codes belong to Return and `/`.
+internal const val SC_NUMPAD_ENTER = EXT or 0x1C
+internal const val SC_NUMPAD_DIVIDE = EXT or 0x35
 internal const val SC_ESCAPE = 0x01
 internal const val SC_BACKSPACE = 0x0E
 internal const val SC_TAB = 0x0F
@@ -1515,6 +1752,13 @@ internal const val SC_DOWN = EXT or 0x50
 internal const val SC_LEFT = EXT or 0x4B
 internal const val SC_RIGHT = EXT or 0x4D
 internal const val SC_WIN_L = EXT or 0x5B
+// Right-hand modifiers (#504). AltGr is right Alt: a layout that puts
+// characters on it — Polish, German, most of Europe — produces nothing at all
+// when the guest is told left Alt instead.
+internal const val SC_SHIFT_R = 0x36
+internal const val SC_CTRL_R = EXT or 0x1D
+internal const val SC_ALT_R = EXT or 0x38
+internal const val SC_WIN_R = EXT or 0x5C
 internal const val SC_F1 = 0x3B
 private const val SC_F2 = 0x3C
 private const val SC_F3 = 0x3D
@@ -1586,4 +1830,13 @@ internal fun rdpErrorHint(error: String): RdpErrorHint? = when {
         linkUrl = "https://github.com/GlassHaven/Haven/issues/461",
     )
     else -> null
+}
+
+private fun sh.haven.core.data.preferences.RdpChipAnchor.toComposeAlignment(): Alignment = when (this) {
+    sh.haven.core.data.preferences.RdpChipAnchor.TOP_START -> Alignment.TopStart
+    sh.haven.core.data.preferences.RdpChipAnchor.TOP_CENTER -> Alignment.TopCenter
+    sh.haven.core.data.preferences.RdpChipAnchor.TOP_END -> Alignment.TopEnd
+    sh.haven.core.data.preferences.RdpChipAnchor.BOTTOM_START -> Alignment.BottomStart
+    sh.haven.core.data.preferences.RdpChipAnchor.BOTTOM_CENTER -> Alignment.BottomCenter
+    sh.haven.core.data.preferences.RdpChipAnchor.BOTTOM_END -> Alignment.BottomEnd
 }

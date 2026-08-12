@@ -2,7 +2,6 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.gradle.test.retry)
 }
 
 android {
@@ -44,6 +43,7 @@ if (providers.gradleProperty("excludeSshlibContractTests").orNull == "true") {
 }
 
 dependencies {
+    implementation(project(":core:redact"))
     api(libs.jsch)
     // Second SSH engine (#58). implementation, NOT api — no module outside
     // core:ssh may see sshlib types, same rule as ChannelSftp before it.
@@ -58,17 +58,6 @@ dependencies {
     implementation(libs.core.ktx)
     implementation(project(":core:data"))
     implementation(project(":core:security"))
-    implementation(project(":core:reticulum"))
-    implementation(project(":core:mosh"))
-    implementation(project(":core:et"))
-    implementation(project(":core:btserial"))
-    implementation(project(":core:bleserial"))
-    implementation(project(":core:usbserial"))
-    implementation(project(":core:local"))
-    implementation(project(":core:rclone"))
-    implementation(project(":core:rdp"))
-    implementation(project(":core:smb"))
-    implementation(project(":core:mail"))
     implementation(project(":core:fido"))
     implementation(libs.bouncycastle)
     implementation(libs.coroutines.core)
@@ -89,21 +78,5 @@ dependencies {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-    }
-}
-
-// Mitigate flaky test SshlibExecContractTest due to upstream sshlib CHANNEL_CLOSE race (#448).
-// failOnPassedAfterRetry=false (the plugin's own default) is required, not incidental: `true`
-// still fails the build on a test that passes on retry, which defeats the point of retrying a
-// known flake — GlassOnTin caught this in review with a standalone repro (PR #475) after our
-// first attempt shipped the plugin's example snippet (which sets it true) instead of reasoning
-// about what the flag does. Scoped to the one known-flaky class only, not the whole module —
-// #448 is real output loss, not test noise, so a genuinely new flake elsewhere in core:ssh must
-// still fail the build.
-tasks.withType<Test> {
-    retry {
-        maxRetries.set(2)
-        failOnPassedAfterRetry.set(false)
-        filter { includeClasses.add("sh.haven.core.ssh.sshlib.SshlibExecContractTest") }
     }
 }

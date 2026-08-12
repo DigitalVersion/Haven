@@ -162,7 +162,7 @@ class RdpSession(
      */
     fun start() {
         if (closed) return
-        log("D", "Starting RDP session $sessionId: $host:$port user=$username")
+        log("D", "Starting RDP session $sessionId: ${redactHost(host, port)} user=${redactUsername(username)}")
 
         try {
             // Trust-on-first-use pin: the fingerprint remembered from a prior
@@ -194,6 +194,20 @@ class RdpSession(
                 // #425: advertise H.264/AVC420 (KRDP). Only meaningful with a
                 // decoder registered below, so keep the two in lock-step.
                 avcEnabled = RdpDebugToggles.avcEnabled,
+                // #504: announce the device locale's keyboard layout instead
+                // of hardcoded US, for servers that honour the announcement.
+                keyboardLayout = keyboardLayoutKlid(),
+            )
+
+            // #477: record which settings this session actually ran with. Two
+            // reporter logs labelled "AVC420 enabled" negotiated different
+            // pipelines, and nothing in either log said which toggle was live —
+            // so whether the setting had failed to apply or the label was wrong
+            // could not be told apart without asking.
+            log(
+                "D",
+                "RDP settings: avc420=${config.avcEnabled} progressiveUpgrade=" +
+                    "${config.progressiveUpgrade} colorDepth=$colorDepth nla=$useNla",
             )
 
             val c = RdpClient(config)
@@ -204,6 +218,9 @@ class RdpSession(
             // calls it (blocking) on the session thread per frame.
             if (RdpDebugToggles.avcEnabled) {
                 val dec = Avc420MediaCodecDecoder()
+                // #466: route the decode split into the verbose log, so the
+                // number that settles this reaches a reporter without adb.
+                dec.perfSink = { line -> log("D", line) }
                 avcDecoder = dec
                 c.setAvcDecoder(dec)
             }
@@ -320,7 +337,7 @@ class RdpSession(
                 }
             })
 
-            log("D", "Connecting to $host:$port (worker thread will handle handshake, socks=${socksProxy != null})")
+            log("D", "Connecting to ${redactHost(host, port)} (worker thread will handle handshake, socks=${socksProxy != null})")
             c.connect(host, port.toUShort(), socksProxy)
         } catch (e: UnsatisfiedLinkError) {
             val msg = "RDP native library failed to load: ${e.message}"
@@ -517,9 +534,32 @@ class RdpSession(
         client?.sendClipboardText(text)
     }
 
+    /**
+     * Pull the native EGFX frame timings into the verbose buffer (#477).
+     *
+     * These say whether decode is actually the bottleneck, and they used to go
+     * only to the Android log — needing adb to read, so the one measurement
+     * that settles a lag report was invisible to the people filing them.
+     *
+     * Best-effort: a diagnostic that breaks the log it is being written into
+     * would be worse than no diagnostic.
+     */
+    private fun drainNativePerfLog() {
+        val lines = try {
+            client?.takePerfLog().orEmpty()
+        } catch (e: Exception) {
+            log("E", "Could not read native perf log: ${e.message}")
+            return
+        }
+        lines.forEach { log("D", it) }
+    }
+
     /** Drain captured verbose logs. Returns null if verbose logging was not enabled. */
     fun drainVerboseLog(): String? {
         val buf = verboseBuffer ?: return null
+        // Before the empty check, not after: a session whose only entries are
+        // perf lines would otherwise report having nothing to say.
+        drainNativePerfLog()
         if (buf.isEmpty()) return null
         val sb = StringBuilder()
         while (true) {

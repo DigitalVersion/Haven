@@ -73,6 +73,7 @@ class UserPreferencesRepository @Inject constructor(
     private val editModeControlsPlacementKey = stringPreferencesKey("edit_mode_controls_placement")
     private val desktopKeyPlacementKey = stringPreferencesKey("desktop_key_placement")
     private val fullscreenButtonCornerKey = stringPreferencesKey("fullscreen_button_corner")
+    private val rdpChipAnchorKey = stringPreferencesKey("rdp_fullscreen_chip_anchor")
     private val sessionCommandOverrideKey = stringPreferencesKey("session_command_override")
     private val sftpSortModeKey = stringPreferencesKey("sftp_sort_mode")
     private val lockTimeoutKey = stringPreferencesKey("lock_timeout")
@@ -98,6 +99,7 @@ class UserPreferencesRepository @Inject constructor(
     private val remoteClipboardToLocalKey = booleanPreferencesKey("remote_clipboard_to_local")
     private val verboseLoggingEnabledKey = booleanPreferencesKey("verbose_logging_enabled")
     private val mouseInputEnabledKey = booleanPreferencesKey("mouse_input_enabled")
+    private val swipeArrowsModeKey = booleanPreferencesKey("swipe_arrows_mode")
     private val terminalRightClickKey = booleanPreferencesKey("terminal_right_click")
     private val allowStandardKeyboardKey = booleanPreferencesKey("allow_standard_keyboard")
     private val rawKeyboardModeKey = booleanPreferencesKey("raw_keyboard_mode")
@@ -251,8 +253,11 @@ class UserPreferencesRepository @Inject constructor(
      * for capture verification before it becomes the default. Bridged to the
      * native decoder via `RdpDebugToggles` in HavenApp.
      */
+    // #496: on by default since v5.86.40. Windows sends 500+ refinement tiles
+    // per 15s even on an idle desktop, and dropping them is what produced the
+    // ringing around text reported there.
     val rdpProgressiveUpgrade: Flow<Boolean> = dataStore.data.map { prefs ->
-        prefs[rdpProgressiveUpgradeKey] ?: false
+        prefs[rdpProgressiveUpgradeKey] ?: true
     }
 
     suspend fun setRdpProgressiveUpgrade(enabled: Boolean) {
@@ -597,6 +602,22 @@ class UserPreferencesRepository @Inject constructor(
         }
     }
 
+    /**
+     * #524: swipes send arrow keys everywhere, not only on the alternate
+     * screen — command history at a shell prompt without arrow keys on the
+     * toolbar. Toggled from the toolbar's Swipe key; persisted because the
+     * point is to permanently replace the four arrow-key slots.
+     */
+    val swipeArrowsMode: Flow<Boolean> = dataStore.data.map { prefs ->
+        prefs[swipeArrowsModeKey] ?: false
+    }
+
+    suspend fun setSwipeArrowsMode(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[swipeArrowsModeKey] = enabled
+        }
+    }
+
     /** Send long-press as right-click to TUI apps instead of starting text selection. */
     val terminalRightClick: Flow<Boolean> = dataStore.data.map { prefs ->
         prefs[terminalRightClickKey] ?: false
@@ -806,8 +827,14 @@ class UserPreferencesRepository @Inject constructor(
      * because the whole point is reclaiming vertical space on a small phone,
      * and a collapse that resets on every visit to the tab does not.
      */
-    val keysCollapsedSections: Flow<Set<String>> = dataStore.data.map { prefs ->
-        prefs[keysCollapsedSectionsKey]?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
+    /**
+     * Which Keys-screen sections are collapsed, or **null when the user has never touched
+     * one** — which is not the same as "none collapsed" and must not be conflated with it.
+     * The caller supplies the first-run default; once anything is toggled, an empty set here
+     * means the user deliberately expanded everything and that choice has to survive.
+     */
+    val keysCollapsedSections: Flow<Set<String>?> = dataStore.data.map { prefs ->
+        prefs[keysCollapsedSectionsKey]?.split(",")?.filter { it.isNotBlank() }?.toSet()
     }
 
     suspend fun setKeysCollapsedSections(ids: Set<String>) {
@@ -1696,6 +1723,21 @@ class UserPreferencesRepository @Inject constructor(
     }
 
     /**
+     * Anchor of the fullscreen session-menu chip in remote-desktop sessions
+     * (#528 follow-up) — hold-and-drag to move it, same idiom as the terminal
+     * fullscreen button above, persisted across sessions.
+     */
+    val rdpChipAnchor: Flow<RdpChipAnchor> = dataStore.data.map { prefs ->
+        prefs[rdpChipAnchorKey]?.let { RdpChipAnchor.fromId(it) } ?: RdpChipAnchor.DEFAULT
+    }
+
+    suspend fun setRdpChipAnchor(anchor: RdpChipAnchor) {
+        dataStore.edit { prefs ->
+            prefs[rdpChipAnchorKey] = anchor.id
+        }
+    }
+
+    /**
      * User override for the session manager command template.
      * If non-null, replaces the built-in command. Use {name} for session name.
      */
@@ -1965,6 +2007,40 @@ class UserPreferencesRepository @Inject constructor(
                 0xFF82B1FF, 0xFF80D8FF, 0xFF18FFFF, 0xFFCFD8DC,
                 0xFF1F3A5F, 0xFFFF8A80, 0xFFA7FFEB, 0xFFFFE082,
                 0xFF8C9EFF, 0xFFB388FF, 0xFF84FFFF, 0xFFECEFF1,
+            ),
+        ),
+
+        // #516: three schemes whose default foreground is a plain grey rather
+        // than a tinted one. Palettes transcribed from upstream, not eyeballed:
+        // Campbell from microsoft/terminal's TerminalSettingsModel/defaults.json,
+        // the two Modern ones from microsoft/vscode's terminalColorRegistry.ts
+        // (`ansiColorMap` light/dark defaults) with fg/bg from the matching
+        // light_modern.json / dark_modern.json.
+        CAMPBELL(
+            "Campbell", 0xFF0C0C0C, 0xFFCCCCCC,
+            longArrayOf(
+                0xFF0C0C0C, 0xFFC50F1F, 0xFF13A10E, 0xFFC19C00,
+                0xFF0037DA, 0xFF881798, 0xFF3A96DD, 0xFFCCCCCC,
+                0xFF767676, 0xFFE74856, 0xFF16C60C, 0xFFF9F1A5,
+                0xFF3B78FF, 0xFFB4009E, 0xFF61D6D6, 0xFFF2F2F2,
+            ),
+        ),
+        MODERN_DARK(
+            "Modern Dark", 0xFF1F1F1F, 0xFFCCCCCC,
+            longArrayOf(
+                0xFF000000, 0xFFCD3131, 0xFF0DBC79, 0xFFE5E510,
+                0xFF2472C8, 0xFFBC3FBC, 0xFF11A8CD, 0xFFE5E5E5,
+                0xFF666666, 0xFFF14C4C, 0xFF23D18B, 0xFFF5F543,
+                0xFF3B8EEA, 0xFFD670D6, 0xFF29B8DB, 0xFFE5E5E5,
+            ),
+        ),
+        MODERN_LIGHT(
+            "Modern Light", 0xFFFFFFFF, 0xFF3B3B3B,
+            longArrayOf(
+                0xFF000000, 0xFFCD3131, 0xFF107C10, 0xFF949800,
+                0xFF0451A5, 0xFFBC05BC, 0xFF0598BC, 0xFF555555,
+                0xFF666666, 0xFFCD3131, 0xFF14CE14, 0xFFB5BA00,
+                0xFF0451A5, 0xFFBC05BC, 0xFF0598BC, 0xFFA5A5A5,
             ),
         );
 

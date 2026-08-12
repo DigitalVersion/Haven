@@ -1062,7 +1062,14 @@ class ProotManager @Inject constructor(
 
     sealed class DesktopSetupState {
         data object Idle : DesktopSetupState()
-        data class Installing(val step: String) : DesktopSetupState()
+        /**
+         * [de] is the desktop this work belongs to, or null when it belongs to
+         * none of them (add-on installs). Without it the Manage screen could
+         * only ask "is *something* installing", so starting one desktop
+         * replaced every other desktop's controls with a spinner — they all
+         * looked like they had been started too (#502).
+         */
+        data class Installing(val step: String, val de: DesktopEnvironment? = null) : DesktopSetupState()
         data object Complete : DesktopSetupState()
         /**
          * Failure attributed to a specific [DePhase]. [logTail] is
@@ -2192,12 +2199,31 @@ class ProotManager @Inject constructor(
      * Run a command inside the PRoot rootfs (non-interactive).
      * Returns (stdout+stderr, exitCode).
      */
-    suspend fun runCommandInProot(command: String): Pair<String, Int> = withContext(Dispatchers.IO) {
-        val process = startCommandInProot(command)
-        val output = process.inputStream.bufferedReader().readText()
-        val exitCode = process.waitFor()
-        Pair(output, exitCode)
-    }
+    suspend fun runCommandInProot(command: String, timeoutMs: Long? = null): Pair<String, Int> =
+        withContext(Dispatchers.IO) {
+            val process = startCommandInProot(command)
+            if (timeoutMs == null) {
+                // Unbounded, as every caller but one still is. Bounding a
+                // package install would turn a slow network into a failure,
+                // which is a worse trade than waiting; #503 is only fixed for
+                // the step that is already best-effort.
+                val output = process.inputStream.bufferedReader().readText()
+                Pair(output, process.waitFor())
+            } else {
+                val run = readProcessBounded(process, timeoutMs)
+                if (run.timedOut) {
+                    // Program name only. Which command hung is the diagnostic; its
+                    // arguments are where the secrets are — `mysql -p…`, an auth
+                    // header, a token in a URL (#518).
+                    Log.w(
+                        TAG,
+                        "Guest command exceeded ${timeoutMs}ms and was killed: " +
+                            "${command.substringBefore(' ')} (${command.length} chars)",
+                    )
+                }
+                Pair(run.output, run.exitCode)
+            }
+        }
 
     /**
      * Ensure a writable host dir to overlay at the guest's `/dev/shm`. Android's
@@ -2468,6 +2494,7 @@ class ProotManager @Inject constructor(
     private suspend fun runInstallWithSelfRepair(
         ops: PackageOps,
         pkgs: List<String>,
+        de: DesktopEnvironment? = null,
     ): Pair<String, Int> {
         val installCmd = "${ops.updateCmd()} && ${ops.installCmd(pkgs)}"
         val (output, code) = runCommandInProot(installCmd)
@@ -2477,6 +2504,7 @@ class ProotManager @Inject constructor(
         Log.d(TAG, "Install hit stale-DB symptom; auto-upgrading and retrying")
         _desktopState.value = DesktopSetupState.Installing(
             "Refreshing package database (one-time upgrade)…",
+            de,
         )
         val (upgOut, upgCode) = runCommandInProot(ops.upgradeCmd())
         Log.d(TAG, "Auto-upgrade exit=$upgCode tail=${upgOut.takeLast(300)}")
@@ -2507,7 +2535,8 @@ class ProotManager @Inject constructor(
             val needsInstall = !isDesktopInstalled(de)
             if (needsInstall) {
                 _desktopState.value = DesktopSetupState.Installing(
-                    "Installing ${de.label} (${de.sizeEstimate} download)..."
+                    "Installing ${de.label} (${de.sizeEstimate} download)...",
+                    de,
                 )
 
             val distro = activeDistro
@@ -2520,7 +2549,7 @@ class ProotManager @Inject constructor(
                 deId = de.spec.id,
                 message = "Installing ${de.label}: ${pkgs.joinToString(" ")}",
             )
-            val (installOutput, installExit) = runInstallWithSelfRepair(ops, pkgs)
+            val (installOutput, installExit) = runInstallWithSelfRepair(ops, pkgs, de)
             Log.d(TAG, "[de-package ${de.spec.id}] family=${distro.family} exit=$installExit tail=${installOutput.takeLast(1500)}")
 
             // Check if key binaries were installed — package managers may
@@ -2610,7 +2639,7 @@ class ProotManager @Inject constructor(
             }
 
             if (de.spec.launch is LaunchSpec.X11Vnc) {
-                _desktopState.value = DesktopSetupState.Installing("Configuring VNC...")
+                _desktopState.value = DesktopSetupState.Installing("Configuring VNC...", de)
 
                 // Write VNC password — use a temp file to avoid leaking
                 // the password in process arguments (visible in /proc)
@@ -2695,8 +2724,15 @@ chmod +x /root/.vnc/xstartup""")
                 // would have had anyway. A desktop that mostly works beats
                 // an install marked failed.
                 stageWayvncBuildScript()
-                _desktopState.value = DesktopSetupState.Installing("Checking wayvnc version...")
-                val (wayvncOut, wayvncExit) = runCommandInProot(wayvncBuildCommand)
+                _desktopState.value = DesktopSetupState.Installing("Checking wayvnc version...", de)
+                // Bounded, unlike the rest: this compiles wayvnc from source
+                // and is the one step a reporter watched sit at "Checking
+                // wayvnc version..." with nothing running in the guest behind
+                // it (#503). It is already best-effort — a failure leaves the
+                // distro's own wayvnc in place — so a bound costs nothing that
+                // waiting forever was buying.
+                val (wayvncOut, wayvncExit) =
+                    runCommandInProot(wayvncBuildCommand, timeoutMs = WAYVNC_BUILD_TIMEOUT_MS)
                 if (wayvncExit != 0) {
                     Log.w(
                         TAG,
@@ -2709,7 +2745,12 @@ chmod +x /root/.vnc/xstartup""")
                         deId = de.spec.id,
                         exit = wayvncExit,
                         ok = false,
-                        message = "wayvnc source build failed; using the distro's wayvnc",
+                        message = if (wayvncExit == -1) {
+                            "wayvnc source build exceeded ${WAYVNC_BUILD_TIMEOUT_MS / 60_000} " +
+                                "minutes and was stopped; using the distro's wayvnc"
+                        } else {
+                            "wayvnc source build failed; using the distro's wayvnc"
+                        },
                     )
                 } else {
                     Log.d(TAG, "[wayvnc-build] ${wayvncOut.trim().takeLast(300)}")
@@ -2998,7 +3039,7 @@ chmod +x /root/.vnc/xstartup""")
 
     suspend fun uninstallDesktop(de: DesktopEnvironment) {
         try {
-            _desktopState.value = DesktopSetupState.Installing("Removing ${de.label}...")
+            _desktopState.value = DesktopSetupState.Installing("Removing ${de.label}...", de)
             val distro = activeDistro
             val ops = PackageOps.forFamily(distro.family)
             val pkgs = de.spec.packagesPerFamily[distro.family]
@@ -3432,4 +3473,56 @@ chmod +x /root/.vnc/xstartup""")
         _state.value = if (isReady) SetupState.Ready else SetupState.NotInstalled
         Log.d(TAG, "Deleted distro: $distroId")
     }
+}
+
+/**
+ * How long the from-source wayvnc build may run before it is stopped (#503).
+ *
+ * Generous, because on a phone this really is a multi-minute compile and
+ * cutting a working build short would be worse than the bug. The point is only
+ * that "still going" and "never going to finish" stop looking identical.
+ */
+internal const val WAYVNC_BUILD_TIMEOUT_MS: Long = 20 * 60 * 1000
+
+/** Outcome of [readProcessBounded]. [timedOut] means the bound was hit, not that the command failed. */
+internal data class BoundedRun(val output: String, val exitCode: Int, val timedOut: Boolean)
+
+/**
+ * Read [process] to completion, giving up after [timeoutMs].
+ *
+ * The unbounded version of this — `readText()` then `waitFor()` — can wait
+ * forever in two separate ways, and a guest step that used it left the desktop
+ * install wedged with no way out (#503). `waitFor()` never returns if the
+ * command genuinely hangs; and `readText()` waits for the *pipe* to close, not
+ * for the command to exit, so a background grandchild still holding the write
+ * end keeps it blocked long after its parent is gone.
+ *
+ * So the wait is on the process, not on the pipe: a reader thread accumulates
+ * output, the bound applies to the process, and after it exits the reader is
+ * given [drainGraceMs] to finish rather than however long a stray grandchild
+ * feels like holding the pipe.
+ */
+internal fun readProcessBounded(
+    process: Process,
+    timeoutMs: Long,
+    drainGraceMs: Long = 2_000,
+): BoundedRun {
+    val out = StringBuilder()
+    val reader = Thread {
+        try {
+            process.inputStream.bufferedReader().forEachLine { out.appendLine(it) }
+        } catch (_: Exception) {
+            // Pipe torn down by destroyForcibly — whatever arrived is still worth keeping.
+        }
+    }
+    reader.isDaemon = true
+    reader.start()
+    val finished = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    if (!finished) {
+        process.destroyForcibly()
+        process.waitFor(drainGraceMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+    reader.join(drainGraceMs)
+    val exit = if (finished) runCatching { process.exitValue() }.getOrDefault(-1) else -1
+    return BoundedRun(out.toString(), exit, timedOut = !finished)
 }

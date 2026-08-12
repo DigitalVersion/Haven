@@ -162,7 +162,6 @@ class QemuManager @Inject constructor(
         }
         updateSession(busid) { DriveSession(busid, 0, emptyList(), State.STARTING, readOnly = readOnly) }
         return try {
-            ensureQemu(onStage)
             val disk = ensureProvisionedAppliance(onStage)
 
             var vm = sharedVm
@@ -230,7 +229,13 @@ class QemuManager @Inject constructor(
             }
             onStage("Booting Linux — $hint (${sec}s)…")
         }
-        if (!bootOk) fail("VM didn't reach a login prompt within ${BOOT_TIMEOUT_MS / 1000}s — the emulated boot is slow and varies with phone load; try again, ideally with less else running.")
+        if (!bootOk) {
+            fail(
+                instance.describeWaitFailure("The USB-drive VM never reached a login prompt") +
+                    "\n\nIf it simply ran out of time, the emulated boot is slow and varies with phone " +
+                    "load — try again with less else running.",
+            )
+        }
         instance.send("root\n")
         Thread.sleep(1500)
         // The tty echoes typed input back into the same stream awaitMarker/
@@ -249,7 +254,9 @@ class QemuManager @Inject constructor(
             "HAVEN_BOOTSTRAP_OK|HAVEN_BOOTSTRAP_FAIL",
             SETUP_TIMEOUT_MS,
         )
-        if (setupMarker == null || setupMarker == "HAVEN_BOOTSTRAP_FAIL") fail("VM setup (network/sshd) didn't finish within ${SETUP_TIMEOUT_MS / 1000}s")
+        if (setupMarker == null || setupMarker == "HAVEN_BOOTSTRAP_FAIL") {
+            fail(instance.describeWaitFailure("VM setup (network/sshd) did not finish"))
+        }
 
         onStage("Almost ready — connecting…")
         if (!awaitSshBanner(port, SSH_TIMEOUT_MS)) fail("sshd never answered on 127.0.0.1:$port")
@@ -463,6 +470,18 @@ class QemuManager @Inject constructor(
      * openDrive() calls this again, but it's a no-op once provisioned.
      */
     suspend fun ensureProvisionedAppliance(onStage: (String) -> Unit): String = provisioningMutex.withLock {
+        // The engine check belongs here, not in the caller (#506). It used to
+        // live only in openDriveLocked, and UsbDriveVmManager calls this one
+        // directly as its documented pre-step — so on a guest without QEMU the
+        // provisioning VM was launched anyway and died in a second with
+        // `/bin/sh: 1: exec: qemu-system-x86_64: not found`, reported as a
+        // 420-second boot timeout. A reporter chased three different flash
+        // drives before the message said what actually happened.
+        //
+        // Before the early returns below, deliberately: an appliance can be
+        // provisioned while the guest that provisioned it has since been
+        // reinstalled, and the caller boots the VM on that path too.
+        ensureQemu(onStage)
         val dir = File(context.cacheDir, "haven-vm").apply { mkdirs() }
         val disk = File(dir, APPLIANCE_DISK)
         val marker = File(dir, "$APPLIANCE_DISK.ok")
@@ -489,7 +508,7 @@ class QemuManager @Inject constructor(
             val bootOk = provisioning.awaitMarker("login:", BOOT_TIMEOUT_MS, nudge = true) { sec ->
                 onStage("Building the USB helper Linux — booting (${sec}s)…")
             }
-            if (!bootOk) fail("appliance provisioning: VM didn't reach a login prompt in ${BOOT_TIMEOUT_MS / 1000}s")
+            if (!bootOk) fail(provisioning.describeWaitFailure("Appliance provisioning: the VM never reached a login prompt"))
             provisioning.send("root\n"); Thread.sleep(1500)
             provisioning.send("stty -echo\n"); Thread.sleep(300) // see bootSharedVm's comment
             onStage("Building the USB helper Linux — installing (one-time)…")
@@ -497,7 +516,7 @@ class QemuManager @Inject constructor(
             val ok = provisioning.awaitMarker("HAVEN_PROVISION_DONE", PROVISION_TIMEOUT_MS) { sec ->
                 onStage("Building the USB helper Linux — installing (${sec}s)…")
             }
-            if (!ok) fail("appliance provisioning didn't finish in ${PROVISION_TIMEOUT_MS / 1000}s")
+            if (!ok) fail(provisioning.describeWaitFailure("Appliance provisioning did not finish"))
         } finally {
             runCatching { provisioning.send("\npoweroff\n") }
             provisioning.waitFor(6)
@@ -533,7 +552,7 @@ class QemuManager @Inject constructor(
             val bootOk = provisioning.awaitMarker("login:", BOOT_TIMEOUT_MS, nudge = true) { sec ->
                 onStage("Updating the USB helper Linux — booting (${sec}s)…")
             }
-            if (!bootOk) fail("appliance upgrade: VM didn't reach a login prompt in ${BOOT_TIMEOUT_MS / 1000}s")
+            if (!bootOk) fail(provisioning.describeWaitFailure("Appliance upgrade: the VM never reached a login prompt"))
             provisioning.send("root\n"); Thread.sleep(1500)
             provisioning.send("stty -echo\n"); Thread.sleep(300) // see bootSharedVm's comment
             onStage("Updating the USB helper Linux (one-time)…")
@@ -620,13 +639,13 @@ class QemuManager @Inject constructor(
         // One-time: apk download + setup-disk install over TCG can take a while.
         private const val PROVISION_TIMEOUT_MS = 720_000L
         // Persistent installed appliance (raw sparse image; usbip+ssh baked in).
-        private const val APPLIANCE_DISK = "usb_vm_appliance.img"
+        internal const val APPLIANCE_DISK = "usb_vm_appliance.img"
         private const val APPLIANCE_DISK_SIZE = "2G"
         // Bump when APPLIANCE_EXTRA_PACKAGES changes — an already-provisioned
         // appliance with an older/missing version runs a cheap in-place
         // `apk add` upgrade boot instead of a full ISO re-provision. Markers
         // from before this scheme existed ("ok\n") parse as version 0.
-        private const val APPLIANCE_PROVISION_VERSION = 3
+        internal const val APPLIANCE_PROVISION_VERSION = 3
         // cryptsetup = LUKS (unlockPartition). testdisk = partition-table +
         // deleted-file recovery (bundles photorec). gptfdisk = gdisk/sgdisk
         // (GPT repair). parted = MBR/GPT editing. smartmontools = smartctl
@@ -663,7 +682,7 @@ class QemuManager @Inject constructor(
  * as before the #287 multi-drive-VM-sharing refactor, just now genuinely
  * long-lived (a whole multi-drive session, not one drive's boot+setup).
  */
-private class VmInstance {
+internal class VmInstance {
     @Volatile var process: Process? = null
         private set
     @Volatile private var readerThread: Thread? = null
@@ -698,6 +717,36 @@ private class VmInstance {
     }
 
     fun bufferSnapshot(): String = synchronized(serialLock) { serial.toString() }
+
+    /**
+     * Why the last [awaitMarker] gave up. Empty until one has.
+     *
+     * [awaitMarker] returns false for two unrelated things — the VM died, or
+     * the deadline passed — and every caller reported the deadline. A
+     * GrapheneOS reporter was told their VM "didn't reach a login prompt in
+     * 420s" **1.7 seconds** after it started (#506), which sent them looking
+     * for a slow boot instead of a crash.
+     */
+    @Volatile
+    var lastWaitFailure: String = ""
+        private set
+
+    /**
+     * A failure message for [what] that says what actually happened and shows
+     * the VM's own last words.
+     *
+     * The serial buffer held the only evidence of the crash the whole time and
+     * was never put in front of anyone.
+     */
+    fun describeWaitFailure(what: String): String {
+        val why = lastWaitFailure.ifEmpty { "it did not complete" }
+        val tail = bufferSnapshot().trimEnd().takeLast(SERIAL_TAIL_IN_ERROR)
+        return if (tail.isEmpty()) {
+            "$what: $why, and the VM produced no output at all"
+        } else {
+            "$what: $why. Last output from the VM:\n$tail"
+        }
+    }
 
     /**
      * [since] restricts parsing to bytes at/after that buffer offset — the
@@ -745,8 +794,12 @@ private class VmInstance {
         val start = System.currentTimeMillis()
         val deadline = start + timeoutMs
         var nextTick = start + PROGRESS_TICK_MS_INTERNAL
+        fun secsSoFar() = (System.currentTimeMillis() - start) / 1000
         while (System.currentTimeMillis() < deadline) {
-            if (!isAlive) return false
+            if (!isAlive) {
+                lastWaitFailure = "the VM exited after ${secsSoFar()}s"
+                return false
+            }
             synchronized(serialLock) { if (serial.contains(marker)) return true }
             if (nudge) send("\n")
             val now = System.currentTimeMillis()
@@ -754,9 +807,16 @@ private class VmInstance {
                 onProgress((now - start) / 1000)
                 nextTick = now + PROGRESS_TICK_MS_INTERNAL
             }
-            try { Thread.sleep(1500) } catch (_: InterruptedException) { return false }
+            try {
+                Thread.sleep(1500)
+            } catch (_: InterruptedException) {
+                lastWaitFailure = "the wait was interrupted after ${secsSoFar()}s"
+                return false
+            }
         }
-        return synchronized(serialLock) { serial.contains(marker) }
+        val found = synchronized(serialLock) { serial.contains(marker) }
+        if (!found) lastWaitFailure = "nothing matched in ${timeoutMs / 1000}s"
+        return found
     }
 
     /**
@@ -822,6 +882,15 @@ private class VmInstance {
 // for clean multi-instance state — doesn't need an outer-class reference.
 private const val SERIAL_CAP_INTERNAL = 256 * 1024
 private const val PROGRESS_TICK_MS_INTERNAL = 15_000L
+
+/**
+ * How much of the VM's serial output to quote in a failure message (#506).
+ *
+ * Enough for a kernel panic or a qemu abort line and the few lines before it,
+ * short enough to belong in an error a user reads rather than a log they
+ * attach.
+ */
+internal const val SERIAL_TAIL_IN_ERROR = 800
 
 // tracee reaping — same approach as GuestServiceManager (proot ptrace).
 private fun descendantPids(rootPid: Int): List<Int> {

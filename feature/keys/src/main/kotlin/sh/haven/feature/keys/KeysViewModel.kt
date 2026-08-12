@@ -45,6 +45,7 @@ import sh.haven.core.ssh.SshKeyExporter
 import sh.haven.core.ssh.SshKeyImporter
 import sh.haven.core.stepca.StepCaSignFlow
 import javax.inject.Inject
+import sh.haven.core.redact.LogRedact
 
 /**
  * One row in the discovery picker after [KeysViewModel.discoverFromSecurityKey]
@@ -202,9 +203,21 @@ class KeysViewModel @Inject constructor(
         }
     }
 
-    /** Section ids the user has collapsed on this screen (#460). */
+    /**
+     * Section ids the user has collapsed on this screen (#460).
+     *
+     * First run collapses everything except TOTP: the codes are the one thing on this screen
+     * you open it *to read*, and they roll every 30 seconds, so making you scroll past five
+     * sections of keys to reach them is the wrong default. Everything else is reference
+     * material you go looking for deliberately.
+     *
+     * A null from the repository means the user has never toggled a section, which is the
+     * only time this default applies — an empty set is someone who expanded everything on
+     * purpose, and that has to stick.
+     */
     val collapsedSections: StateFlow<Set<String>> = preferencesRepository.keysCollapsedSections
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+        .map { it ?: DEFAULT_COLLAPSED_SECTIONS }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DEFAULT_COLLAPSED_SECTIONS)
 
     fun toggleSection(id: String) {
         viewModelScope.launch {
@@ -727,7 +740,7 @@ class KeysViewModel @Inject constructor(
                 }
                 repository.save(key.copy(privateKeyBytes = SkKeyData.serialize(sk.copy(flags = newFlags))))
                 _message.value = if (required) "Key now requires a PIN at sign-in" else "Key is now touch-only"
-                Log.d("KeysViewModel", "SK verify-required set to $required for ${key.label}")
+                Log.d("KeysViewModel", "SK verify-required set to $required for ${LogRedact.of(key.label)}")
             } catch (e: Exception) {
                 Log.e("KeysViewModel", "setSkVerifyRequired failed", e)
                 _error.value = "Couldn't update the key: ${e.message}"
@@ -1129,6 +1142,21 @@ class KeysViewModel @Inject constructor(
 
     fun deleteTotp(id: String) {
         viewModelScope.launch { totpSecretRepository.delete(id) }
+    }
+
+    /**
+     * Rename an authenticator entry. Enrolling the same client on several routers produces
+     * identical labels from the issuer alone, and an entry you cannot tell apart from its
+     * neighbour is one you have to identify by trying its code somewhere — so being able to
+     * fix the label after the fact matters more here than for keys.
+     *
+     * A blank label is ignored rather than accepted: an unnamed row is worse than the
+     * duplicate it was meant to fix.
+     */
+    fun renameTotp(id: String, newLabel: String) {
+        val trimmed = newLabel.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch { totpSecretRepository.rename(id, trimmed) }
     }
 
     fun showError(msg: String) {

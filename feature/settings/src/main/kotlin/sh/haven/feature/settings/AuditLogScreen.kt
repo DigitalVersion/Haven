@@ -1,6 +1,8 @@
 package sh.haven.feature.settings
 
+import android.os.Build
 import android.text.format.DateUtils
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -33,6 +35,8 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SyncProblem
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -47,6 +51,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +64,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.hilt.navigation.compose.hiltViewModel
+import java.text.DateFormat
+import java.util.Date
+import sh.haven.core.data.NativeCrashLog
+import sh.haven.core.data.NativeCrashRecord
 import sh.haven.core.data.db.entities.ConnectionLog
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -119,9 +128,33 @@ fun AuditLogScreen(
             }
         }
 
+        // #509/#517: native crashes recovered from the system on the next launch.
+        // Surfaced here rather than in the connection log itself, which is Room
+        // with a foreign key to a profile — a crash belongs to no connection, so
+        // an insert would be silently dropped by that constraint.
+        //
+        // Read once per composition rather than held in the ViewModel: the file
+        // only changes at process start, so there is nothing to observe.
+        val nativeCrashes = remember(context) {
+            NativeCrashLog(context).records().sortedByDescending { it.timestampMs }
+        }
+        var crashesDismissed by rememberSaveable { mutableStateOf(false) }
+        if (nativeCrashes.isNotEmpty() && !crashesDismissed) {
+            NativeCrashCard(
+                crashes = nativeCrashes,
+                onCopy = { text ->
+                    clipboardManager.setText(AnnotatedString(text))
+                },
+                onDismiss = {
+                    NativeCrashLog(context).clear()
+                    crashesDismissed = true
+                },
+            )
+        }
+
         if (logs.isEmpty()) {
             Column(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxWidth().weight(1f),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -132,7 +165,7 @@ fun AuditLogScreen(
                 )
             }
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 items(logs, key = { it.id }) { item ->
                     val isExpanded = expandedLogId == item.id
                     val currentVerbose = if (isExpanded && verboseLog?.first == item.id) verboseLog?.second else null
@@ -284,6 +317,107 @@ private fun LogItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Past native crashes, with the tombstone that names where Haven died.
+ *
+ * Deliberately prominent and dismissible rather than tucked away: it exists so a
+ * reporter can copy a backtrace into an issue in two taps. Dismissing clears the
+ * stored records, since the alternative is a banner that never goes away.
+ */
+@Composable
+private fun NativeCrashCard(
+    crashes: List<NativeCrashRecord>,
+    onCopy: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val copiedMessage = stringResource(R.string.settings_native_crash_copied)
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                stringResource(R.string.settings_native_crash_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            // Don't promise a backtrace we may not have (#526). The tombstone comes
+            // from the system, and on some devices none is kept — a reporter was told
+            // "the report below identifies where" above ten lines that identified
+            // nothing. Say which case they are in.
+            val anyTrace = crashes.any { it.trace != null }
+            Text(
+                stringResource(
+                    if (anyTrace) {
+                        R.string.settings_native_crash_subtitle
+                    } else {
+                        R.string.settings_native_crash_subtitle_no_trace
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+
+            for (crash in crashes) {
+                val when_ = DateFormat.getDateTimeInstance().format(Date(crash.timestampMs))
+                // Show the signal on the line itself (#526). A reporter sent ten
+                // entries that all read "— crash" and told me nothing; the signal was
+                // recorded the whole time and only reachable via Copy report. SIGABRT
+                // and SIGSEGV point at different causes, so this is the difference
+                // between a useful screenshot and a useless one.
+                Text(
+                    "$when_ — ${crash.description} (${crash.signalName})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .clickable { expanded = !expanded },
+                )
+                if (expanded) {
+                    Text(
+                        crash.trace ?: stringResource(R.string.settings_native_crash_no_trace),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+
+            Row(modifier = Modifier.padding(top = 8.dp)) {
+                TextButton(onClick = {
+                    // Lead with version and device: the first thing a crash report
+                    // needs is which build it came from, and #526 cost a round trip
+                    // asking for exactly that. Model and release only — nothing
+                    // identifying (#518).
+                    val version = runCatching {
+                        context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                    }.getOrNull() ?: "unknown"
+                    val header = "Haven $version — ${Build.MANUFACTURER} ${Build.MODEL}, " +
+                        "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
+                    onCopy(
+                        header + "\n\n" + crashes.joinToString("\n\n") { c ->
+                            val stamp = DateFormat.getDateTimeInstance().format(Date(c.timestampMs))
+                            "$stamp ${c.description} (${c.signalName})\n${c.trace ?: "no trace kept"}"
+                        },
+                    )
+                    Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
+                }) {
+                    Text(stringResource(R.string.settings_native_crash_copy))
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.settings_native_crash_dismiss))
+                }
             }
         }
     }

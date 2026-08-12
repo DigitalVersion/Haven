@@ -5,6 +5,487 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.15
+
+- RDP now tells the server your keyboard layout (from the phone's language) instead of always claiming US English — Windows, xrdp and KRDP set the session layout from it. VirtualBox-style servers ignore it either way.
+- RDP video decoding now asks the phone's chipset for its vendor low-latency mode — on chipsets that honour it, this can cut the per-frame wait substantially. An experiment in the open #477 investigation; the frame numbers in your logs will say whether your chip is one of them.
+
+⌨️ **The client that always claimed a US keyboard.** Every RDP connect announced keyboard layout 0x0409, US English. Servers that build the session's input layout from that announcement — Windows, xrdp, KRDP — would hand a Polish user a US layout no matter what the guest was configured for. Haven now maps the device's language to the matching Windows layout identifier (Polish, UK English, pt-BR vs pt-PT, Swiss/Belgian/Canadian French and more); anything unlisted still announces US, exactly as before. Surfaced by the #504 investigation: the reporter's VirtualBox guest was innocent (it ignores the announcement), but the announcement itself was wrong for every server that doesn't. (#504, @pawlosck)
+
+🎞️ **Asking the chipset for its fast lane.** #477's diagnosis found the display lag is pipeline *wait*, not decode work — and the standard Android low-latency request was already on, included in the reporter's measured 88–118 ms per frame. Many chipsets ignore the standard request and honour only their own vendor switch, so those are now set too, along with realtime codec priority. Harmless where unrecognised; measurable where honoured — the per-frame numbers in the EGFX log line are the verdict. The structural fix (decoding off the session loop so input stops queueing behind frames) is the next stage. (#477, from @skeezmoe's measured logs)
+
+## v5.87.14
+
+- Zooming or rotating no longer silently destroys scrollback content — wide history lines now wrap when pulled back onto a narrower screen instead of losing their tails.
+- An RDP/VNC/SPICE/SMB profile's "Route via" tunnel or proxy choice now actually saves — it used to revert to "None (direct)" every time.
+- A locked Ctrl or Alt now unlocks itself when your last session ends, instead of ambushing the next connection.
+- New optional "Swipe" toolbar key: while on, swiping sends ↑/↓ even at a plain shell prompt — command history without arrow keys on the bar.
+
+📜 **The scrollback that quietly stopped existing.** When the terminal gains rows — a zoom out, a rotation — it pulls lines back out of the scrollback to fill them. The engine asked for each line at the old width, deleted it from the store on handover, then kept only what fit the new width: on any resize where rows grew while columns shrank, every wide line's tail was destroyed, permanently and invisibly. "Scrollback isn't fully scrollable" was literal — the content was gone. The engine now asks at the width it can accept, and the store hands back one row's worth while re-queuing the rest as a soft-wrapped continuation, so wide lines wrap across the boundary instead of ceasing to exist. Reproduced and fixed under test against the real terminal engine: a 70-character line survives where it previously came back as its first 40. Not yet re-verified on a device — that retest is what #478 is waiting on. (#478, reopened by @skeezmoe's "the issue still exists" — they were right)
+
+🔀 **The routing picker that never saved.** The "Route via" picker (WireGuard/Tailscale tunnel or SOCKS/HTTP proxy) is shown for six connection types, but only the SSH and EMAIL save paths ever persisted what it wrote — for VNC, RDP, SPICE and SMB a picked tunnel or proxy silently reverted to "None (direct)" on save, every time. All four now go through one shared save helper. (#527, @VaneEcho)
+
+🔒 **The lock that outlived its sessions.** Lock Ctrl, exit your last session with Ctrl+D, connect somewhere else later — and the new session started with Ctrl still locked. The lock now dies with the last tab; closing one tab among several leaves it alone, since the toolbar state is shared and a surviving session may be mid-use of it. (#522, @a8645322's exact sign-off sequence is the regression test)
+
+👆 **Swipe as arrow keys, everywhere.** Haven already turns swipes into arrow keys inside full-screen apps and scrolls its own scrollback at the shell — automatically. But no automation can know you want *command history* at a plain prompt: the application state is identical either way. The new Swipe toolbar key (add it from toolbar customisation) latches that choice on, freeing the four arrow-key slots for other keys. Vertical only for now — horizontal swipes still switch tabs. (#524, argued for and won by @a8645322)
+
+## v5.87.13
+
+- With a physical keyboard on an RDP session, letters, digits and punctuation reach the remote again — v5.87.11's focus fix had quietly cut the only path that carried them.
+- The fullscreen menu chip can now be held and dragged to any edge of the screen, and it remembers where you parked it.
+
+⌨️ **The letters the focus fix left behind.** v5.87.11 fixed hardware Enter and Space driving Haven's own menus by taking keyboard focus away from a hidden text field — but that field's input path was also the only thing converting letter and digit presses, so those started reaching the remote as nothing. The bug report was the key table read back verbatim: numpad, F-keys, modifiers, Enter, Esc and Backspace (all explicitly mapped) kept working, while letters, digits and Space (unmapped) died. Every main-row key is now sent as its own scancode, with your real Shift and AltGr forwarded as keys so the remote composes shifted — and AltGr — characters itself. The new tests fail against v5.87.12's mapping and pass against this one; it has not yet been watched against a real VirtualBox guest, which is the retest #504 is waiting on. (#504, diagnosed from @pawlosck's logcat — the decisive clue was a drop counter reading zero)
+
+🖥️ **Park the menu chip where you like.** v5.87.12 moved the fullscreen chip to the top centre and out of the way of the remote's window controls; now you can hold and drag it to any edge anchor — corners included — and it stays there for that connection across restarts. (#528, @pawlosck)
+
+## v5.87.12
+
+- The fullscreen menu button moved to the top centre, so it no longer covers the remote's own minimise/restore/close buttons — and it fades out when you're not using it.
+
+🖥️ **The menu button that sat on the remote's close button.** In a fullscreen RDP session, Haven's menu chip lived in the top-right corner — exactly where Windows keeps minimise, restore and close — so the remote's own window controls were unreachable underneath it. It now sits top-centre, the spot desktop RDP clients reserve for their connection bar for precisely this reason, and after five idle seconds it fades to a ghost so it stops competing with the remote's content. It returns to full strength the moment you open it. Watched working on a device: chip top-centre with the corner clear, dimmed on idle, menu opens and exits fullscreen. (#528, from @pawlosck's "move or hide hamburger menu")
+
+## v5.87.11
+
+- With a physical keyboard on an RDP session, Enter and Space now go to the remote machine instead of opening Haven's own menus — one stray Enter could previously even drop you out of the session.
+
+⌨️ **The keyboard that drove the wrong computer.** Attach a real keyboard to an RDP session and some keys acted on Haven itself: Enter opened the navigation menu, Space activated buttons, and in the worst case a keystroke threw you out of the session entirely. The cause was that nothing on the session screen ever claimed keyboard focus unless you toggled the *soft* keyboard — which is the one thing you never do with a real keyboard attached — so every keypress went to whatever the system had focused instead. The session screen now takes focus the moment it opens, keeps hardware keys for the remote no matter which of its own controls is focused, and re-takes focus when you tap the screen or dismiss the soft keyboard. Reproduced and verified on a device against a test server: before, Enter+Space kicked Haven off the session with nothing reaching the remote; after, the session stays put and both keys arrive. (#507, pinned down by @pawlosck's "when I can't write, the menu opens every time")
+
+## v5.87.10
+
+- A locked Ctrl or Alt now stays on until you tap it off — it no longer dies after one keypress while still showing as locked.
+- The "delete key?" title now shows the count in Bengali, French, Hindi and Portuguese instead of assuming "one" means exactly one.
+
+🔒 **The lock that spent itself.** v5.87.8's double-tap Ctrl lock worked for exactly one keypress: the first Ctrl+C landed, the second sent a bare `c`, and the key sat there blue and inert. Keyboard input passes through two hand-off points and only one of them knew the lock existed — the other cleared Ctrl unconditionally after use, which is also why the indicator (a separate flag) never noticed. Fixing it also settled what "locked" means: v5.87.8 released the lock by itself after two keystrokes; the requester's follow-up said it plainly — locked means every keypress carries the modifier until you tap it off — and that is now the behaviour. Tap for one keypress, double-tap to hold, tap again to release. Watched working on a device: two Ctrl+C's, then a plain `c` after unlock. (#522, caught the day it shipped by @a8645322)
+
+🌐 **Plural titles that assumed "one" means 1.** In Bengali, French, Hindi and Portuguese the "one" plural category covers more than the number 1, so the bulk-delete confirmation title ("Delete this key?") could sit over a count it didn't show. Those four now say the number. (found by the nightly lint run)
+
+## v5.87.9
+
+- The keyboard now really does come back when you return to Haven — the previous fix remembered correctly but Android refused the request; this one was watched working on a device before shipping.
+
+⌨️ **The keyboard restore, round three — witnessed working this time.** v5.87.8 fixed the *recording* half of this bug: Haven correctly remembered that a keyboard was up when you switched away. But the restore it then issued was refused. Android ignores a keyboard request from a window whose input field isn't focused, and the terminal's input view deliberately gives up focus while Haven is in the background (a guard against an Android 16 crash on warm returns) — so the request had nothing to attach to. The half-second flash @paour reported was that refusal happening in real time. The restore now goes through the terminal's own show path, which takes its focus back before asking. Confirmed over adb against both reported gestures — app switcher and straight back, another app and back — with the keyboard still up seconds later, and a keyboard you dismissed yourself staying down. (#515, pinned by @paour's retest and one "tantalizing half second")
+
+## v5.87.8
+
+- The on-screen keyboard comes back when you return to Haven, instead of staying away and leaving the arrow buttons doing nothing.
+- Ctrl and Alt now apply to the extra keys above the keyboard, so Ctrl+End, Ctrl+Home and Ctrl+arrow finally do what they say.
+- Tap Ctrl twice to lock it on, for shortcuts you need to press twice.
+- The address of the machine you connect to over RDP no longer reaches the system log.
+
+⌨️ **The keyboard that didn't come back.** Switch away from Haven and switch back, and the keyboard stayed down — and with it the arrow and control buttons above it, which is how this was first reported. The fix shipped in v5.87.2 asked "is the keyboard up?" at the moment Haven was moved to the background, on the assumption that the answer was still intact there. It isn't: Android takes the keyboard away *as part of* moving the app out, so the answer was always "no" and there was never anything to restore. Haven now records *when* the keyboard went away instead, and treats a disappearance in the last fraction of a second before backgrounding as the system's doing rather than yours. (#515, diagnosed from @paour's logcat)
+
+⌃ **Ctrl that didn't reach half the keyboard.** The extra keys above the keyboard — End, Home, Page Up/Down, the arrows — sent themselves with no modifier attached, whatever Ctrl or Alt you had tapped. Ctrl worked for letters typed on the keyboard proper and nowhere else, so Ctrl+End did nothing but End. All of those combinations now work.
+
+🔒 **Ctrl that stays on.** Tap Ctrl twice and it locks: it applies to the next two keypresses instead of just one, then releases itself. A third tap releases it early, and a locked key is outlined so you can see it's on. Ctrl+C twice to get out of something — the case this was asked for — is exactly one lock. (#522, specified in detail by @a8645322)
+
+🛡️ **One address the log scrubber missed.** v5.87.7 stopped connection details reaching the system log, but an RDP server's address still got through, because the library underneath prints an address as a list of numbers rather than in the usual dotted form — and a scrubber looking for `192.168.1.100` cannot match `[192, 168, 1, 100]`. Both spellings are now scrubbed. (#477)
+
+## v5.87.7
+
+- Fixed the crash where Haven closes itself a second or two after connecting, or when a full-screen program starts.
+- Your keystrokes are no longer written to the system log — including anything typed into a `sudo` prompt.
+- Clipboard contents are no longer written to the system log either.
+- Crash reports now say what actually went wrong, instead of arriving empty or corrupted.
+
+💥 **Haven closing itself.** Two reports, one cause. The terminal library Haven is built on calls `abort()` when it cannot work out where the cursor should go while re-laying out the screen — and `abort()` ends the app instantly, with no error and nothing to catch. It happens during a resize, which is why it struck about a second after connecting, or as a full-screen program laid out its interface, and why it looked like one particular machine was to blame when it was really the size the terminal settled at. (#517 and #526, diagnosed from @Test-Account666's crash dump and @Bearmancer's logcat)
+
+🛡️ **Five more of those, and worse.** The same library aborts on unexpected text, control characters, malformed escape sequences and nonsensical scroll regions — all of it data the *server* sends. Any server, malicious or merely buggy, could have ended your session by emitting the wrong bytes. All six now recover and carry on.
+
+🔑 **Keystrokes and clipboard in the system log.** Every character typed was written to the device log, so a password typed at a `sudo` prompt was captured in plain text; the same went for 50 characters of anything copied in a remote desktop session, the text queued for the AI agent to type, and the arguments of guest commands. All fixed. Logs that people paste into bug reports were the exposure. (#518, found by @skeezmoe)
+
+🔍 **Crash reports that say something.** One reporter's showed ten crashes with no detail at all; another's arrived with a third of it destroyed, because Haven read the system's binary crash record as if it were text. Both fixed: reports now name the signal, and carry the abort message, the app version and the device. (#526, #517)
+
+## v5.87.6
+
+- The status bar now matches the terminal instead of clashing with it — no more white strip above a dark terminal.
+- Fixed a stray "%" in the background-opacity help text.
+- Groundwork for the keyboard-closing-on-return bug: Haven now records why, so a log can say which cause it is.
+
+🎨 **A white strip above a dark terminal.** If your app theme is light but your terminal colours are dark — Classic Green, Ocean, anything with a dark background — the top of the screen showed a band of app-theme colour with the terminal starting abruptly beneath it. The status bar was following the *theme*, while the terminal follows its own colour scheme, so the two disagreed by design. The status bar now takes its colour from the terminal that's actually on screen, and picks light or dark icons from how bright that colour really is — so a light scheme like Solarized Light gets dark icons rather than invisible ones. (#523, reported by @a8645322)
+
+🔤 **"Below 100%%" in the opacity help text.** A stray escape that was never being processed, in English and all eleven translations.
+
+⌨️ **Why the keyboard closes when you come back to Haven.** Not fixed yet — and worth being straight about that, because the fix I shipped for this in v5.87.2 has been running ever since and doing nothing. Rather than guess a second time, Haven now records whether the keyboard was up when it was sent to the background and whether it asked for it back, which separates the two possible causes. They need opposite fixes, so this is the step that decides which one to write. (#515, from @paour's testing)
+
+## v5.87.5
+
+- Number-pad keys now work in remote desktop sessions — previously they did nothing at all.
+- If SSH connections feel slow, Haven now records where the time went, so a log can say which part is slow.
+
+⌨️ **The number pad did nothing in remote desktop sessions.** Not the digits, not the arrows, not Enter, not the operators — every key on the pad was dropped before it left the phone. Invisible if you use a touchscreen, which is why it lasted; obvious the moment you attach a real keyboard. Fixed. (#507, from a report by @pawlosck)
+
+⏱️ **Haven now records how long each part of an SSH connection takes.** This is a diagnostic, not a fix: @frebib reported connections that used to take under a tenth of a second now reliably taking more than one, and there was no way to tell which part had got slow. (#519)
+
+Each connection now writes one line saying how long it spent looking up the address, preparing the session, and doing the SSH handshake — so a log can point at the culprit instead of just saying "it was slow". It deliberately contains no hostnames or usernames, so it is safe to attach to a bug report.
+
+**If SSH connecting feels slow to you**, updating and sending a log would genuinely help. The line begins `connect timing:`.
+
+
+- Haven no longer writes hostnames, usernames or clipboard contents to the device log.
+- If you have shared a log with anyone, it may contain more than you intended — worth checking.
+
+🔒 **Haven was writing private details into the device log.** Connection details — username, hostname, IP address, port — and, worse, **anything copied to the clipboard from a remote session** were being recorded in Android's log. A password taken from a password manager, an API token, a private key: if it went through the clipboard in a terminal session, it was written down in plain text. (#518, thanks @skeezmoe)
+
+**What this does and does not mean.** Since Android 4.1 no other app on your phone can read Haven's log, so nothing was quietly harvesting this. The exposure is **sharing**: the log is captured by `adb logcat` and by system bug reports, Haven displays it in Settings, and Haven asks you to send logs when reporting a problem — including through the crash-report feature added in v5.87.3. The person who reported this had to edit their own details out of a log before it was safe to attach.
+
+**If you have shared a Haven log with anyone** — attached one to a bug report, sent one to someone helping you — it is worth going back and checking what was in it. Sorry; it should not have been there.
+
+Haven still logs enough to diagnose problems. Hostnames and names you chose are replaced with a short marker that stays consistent within one run, so a support log still shows which connection did what without saying where it went. Clipboard contents are simply never logged.
+
+A test now fails the build if anyone reintroduces this, in any of the fifty-odd places it could happen.
+
+
+- If Haven closes unexpectedly, the crash report is now waiting for you in Settings → Connection log.
+- Fixed a crash that a remote program could trigger just by setting a window title.
+
+🐞 **Haven can finally tell you why it crashed.** Two open bug reports have been stuck for days on the same missing piece: the crash log stops at the moment of the crash, right before the part that says *where*. That was Haven's fault. It recorded its log from inside itself, so when it died the recorder died too, and the report the system writes afterwards arrived when Haven was no longer there to read it.
+
+Haven now picks that report up the next time it starts, and shows it in **Settings → Connection log** with a **Copy report** button. If Haven closes unexpectedly, please open that screen and paste what you find into a bug report — it names the exact place the crash happened, which is usually the difference between a fix and a guess. (#509, #517)
+
+Two caveats worth stating. It needs **Android 11 or newer**; on older versions the system simply doesn't offer this, and Haven says so rather than showing you an empty screen and letting you think nothing happened. And it only covers crashes of this specific low-level kind — the sort that close the app instantly, which is exactly the sort that has been hardest to diagnose.
+
+🔡 **Fixed a crash triggerable by a remote program.** When a program on the far end set a window title — or sent one of several other routine terminal messages — containing text Haven couldn't interpret as valid Unicode, Haven closed instantly, with no error and nothing to catch. A window title from a Windows console not set to UTF-8 does this as a matter of course.
+
+Such text is now shown as `�` instead. A terminal that displays a replacement character for a mis-encoded title is behaving correctly; one that vanishes is not.
+
+This was found while investigating #517 and is **not** that crash — that one is still open, and the report above is now the fastest way to solve it.
+
+
+- Toolbar arrows and other repeating keys no longer stop working after you hold one.
+- The keyboard comes back when you switch back to Haven, instead of always hiding.
+- Three new terminal colour schemes: Campbell, Modern Dark and Modern Light.
+
+⌨️ **Toolbar arrows could stop working until you closed the session.** Hold an arrow to repeat, tap another one, and the first arrow was dead — it still lit up when you touched it, but nothing reached the shell. Only closing and reopening the session brought it back. (#515, thanks @paour)
+
+Two separate faults caused it, either one on its own enough. Haven was reading the wrong field from the touch event, so once a second finger was involved it never saw the release; and the flag that tells a tap from the tail of a hold was cleared in a place that a fast tap could skip entirely. Both are fixed, and the key-repeat logic now has tests covering the exact sequence that was reported — it had none before, which is how this shipped.
+
+Arrows are what got reported, but Home, End, PgUp, PgDn and custom symbol keys behaved the same way, as did the equivalent buttons on the VNC and RDP screens. All fixed together.
+
+⌨️ **Haven remembers whether the keyboard was up.** Android hides the soft keyboard when an app goes to the background, and nothing brought it back — so returning to a session always found it down, even though you left it up. It now restores what you had, and survives Android killing Haven while it's away. (#515, thanks @paour)
+
+🥽 **The virtual keyboard no longer covers the screen when a real keyboard is attached.** On a Meta Quest 3 with a physical keyboard, every keypress raised the on-screen keyboard over the session. Haven was explicitly overriding Android's own rule that a usable hardware keyboard suppresses the soft one. You can still raise it deliberately from the toolbar. (#511, thanks @sae13)
+
+🎨 **Three more terminal colour schemes**, for anyone who wants a dark theme whose default text is plain grey rather than tinted: **Campbell** (Windows Terminal), **Modern Dark** and **Modern Light** (VS Code). Palettes taken from the upstream projects rather than approximated. Note that the 16 ANSI colours only apply if "Apply scheme palette" is switched on in settings — it's off by default so that full-screen terminal programs keep their own colours. (#516, thanks @connesc)
+
+📄 **Release pages now say what the two downloads are.** Every release lists a full APK and a smaller Terminal one per CPU, and nothing on the page explained the difference. Each release now carries a short guide. (#514, thanks @jeyjai)
+
+## v5.87.1
+
+- Backups now include your authenticator entries. They never did before — restoring onto a new device silently lost them.
+- Haven no longer shows settings for features a build doesn't include.
+- The lighter Terminal download is now 35 MB, down from 54 MB.
+
+🔐 **Your backups were missing your authenticator codes.** Haven's encrypted backup carried connections, SSH keys, known hosts, port-forwards, tunnels and settings — but not the TOTP entries from the Keys screen. Restore onto a new phone and they were simply gone, with nothing to say so.
+
+That is the worst thing in there to lose. A connection can be retyped and a key regenerated; an authenticator secret means going back to every service and enrolling again by QR, if it even lets you.
+
+They are included now. Old backup files still restore exactly as before — they just don't have the entries in them, because they were never written. **If you keep backups, make a fresh one.**
+
+📦 **The lighter build is a lot lighter: 35 MB, against 54 MB last release and 75 MB for the full app.** The largest thing left in it was the Go library behind cloud storage — but the same file also carries Tailscale, WireGuard and the Proton mail bridge, so removing it would have taken three things with it. It's now built twice, and the Terminal download gets the copy without rclone.
+
+So the Terminal build loses **cloud storage** (rclone remotes) on top of the desktop and media features. Tunnels and mail are unaffected. The full build is unchanged. (#510, thanks @paour)
+
+🔌 **Settings stopped offering what a build can't do.** The Terminal build still listed remote-desktop resolution, GPU stack, compositor shell command and media file extensions — settings for libraries it doesn't ship. They're hidden when the feature isn't there, and the connection screen no longer offers cloud storage in a build without it.
+
+Haven also stops claiming those features to a connected AI assistant. It answered from a fixed list before, whatever the build actually contained.
+
+## v5.87.0
+
+- Fixes SSH connections failing with a NullPointerException on the alternative sshlib engine.
+
+🔑 **SSH connections that died mid-handshake on the sshlib engine now work.** A reporter on a RedMagic 11 Air found that connecting failed with a `NullPointerException` during authentication — working on v5.86.50, broken from v5.86.51. Their log had everything needed, which is the only reason this was found and fixed the same day.
+
+The cause is a good illustration of why release builds break in ways debug builds never do. Haven's release build runs an optimiser that shrinks the app partly by flattening thousands of classes into one unnamed package. sshlib's Ed25519 component asks for its own package name while it starts up — and a class with no package has no name to give, so it got null and threw.
+
+It only happens on devices where Android's own Ed25519 support isn't usable and sshlib falls back to its own, which is why it hit one reporter and not everyone.
+
+The fix keeps that one class's name intact, and it has been added to the check that runs on every release build and asserts these classes survive — so a future change to the optimiser rules can't quietly bring it back. Debug builds don't run the optimiser at all, which is exactly why a check tied to the release build is the only thing that would catch it. (#513, thanks @Slayerx96)
+
+📦 **A round number for the two-download split.** The lighter *Haven Terminal* build arrived in v5.86.53 as an ordinary patch release, which undersold it. This version number marks it. Nothing about the split changes here — the full build and the terminal build are both on the [releases page](https://github.com/GlassHaven/Haven/releases), F-Droid carries the full one, and 6.0.0 stays reserved for when the alternative SSH engine becomes the default (#58).
+
+## v5.86.53
+
+- Haven no longer offers connection types a build can't actually run, and reports what it supports honestly.
+- GitHub now also carries a lighter 55 MB build without the desktop and media features. F-Droid keeps the full one, so nothing changes here.
+
+📦 **There are now two Haven downloads on GitHub, and you pick.** The full one is unchanged and is what F-Droid carries. Alongside it is **Haven Terminal** — the same app with the remote-desktop clients, the native Wayland desktop and the media tools left out. It is **55 MB against 75 MB**, and if you use Haven for SSH, terminals, files and storage, you lose nothing you were using.
+
+What it drops: RDP and SPICE, the native Wayland desktop, and media conversion, preview and streaming (which also removes video previews in the file browser). What it keeps: everything else, VNC included — that client is written in Kotlin, so a Linux desktop you run in the guest and view over VNC still works.
+
+The files are named `haven-<version>-<abi>-terminal-release.apk`. Both are signed with the same key, so you can install either over the other without losing your connections, keys or Linux guest. They carry the same version number, though, which means an updater won't offer to move you between them — switching is a deliberate download.
+
+If you are on F-Droid, nothing changes and nothing is asked of you. (#510)
+
+🔌 **Haven stops offering things it can't do.** The new-connection screen listed RDP and SPICE regardless of whether that build included them, so on the lighter build you could get three screens into creating a connection before meeting "native library failed to load". Those entries are now shown only when the build can honestly run them. Connections you already have still open and still show their own type.
+
+The same honesty reached the agent interface: a connected AI assistant asked Haven what it supports and was told "rdp, spice, ffmpeg" from a fixed list, whatever the build contained. It now answers from what actually shipped.
+
+And an error message that was quietly wrong: a missing Wayland desktop always said it "requires an arm64 device". True when the library is missing because your phone isn't arm64 — misleading on an arm64 phone running a build that simply omits it. It now says which of the two happened.
+
+## v5.86.52
+
+- The download is 9.3 MB smaller — 84.4 MB to 75.0 MB on arm64.
+- Release notes now start with a summary like this one, so there is something short to read.
+
+📦 **The same app, 9.3 MB less to download.** A reporter pointed out that an 80 MB download every few days adds up, and asked for a stripped-down build. Measuring the APK first turned up something better: two of its largest files were nearly the same file twice.
+
+Haven ships `ffmpeg` and `ffprobe`, the two programs behind media conversion, previews and streaming. They were 23.7 MB and 23.6 MB — and almost all of that was one shared body of codec, format and filter code, compiled into each of them separately. Building that code once as a library both programs link against leaves 345 KB and 167 KB of actual program.
+
+Nothing about what the app can do changes. Every codec, filter and container is still there, and the conversion path was exercised on a phone — x264, x265, MP3, Opus, scaling and media probing all encode and read as before.
+
+That is 11% off the download for everyone, including people who use the desktop features. The stripped-down build the reporter asked for is a bigger change and is still being looked at; this was the part worth doing first. (#510)
+
+📄 **Release notes you can read in ten seconds.** The same reporter noted the notes are long enough that nobody reads them. They now open with a few bullets, and F-Droid's "What's New" shows those instead of the first 500 characters of an essay. The reasoning stays underneath for anyone who wants it — several bug threads link back to it. (#510)
+
+## v5.86.51
+
+💥 **Fixed: Haven crashed after saving in `crontab -e`** (#509, thanks @ash-945). The crash was a native one — the C++ terminal being freed by the garbage collector's finalizer while a call into it was still running. Reproduced and fixed in termlib: every native call now holds the lock for its whole duration, and taking the lock away makes the crash come back, which is the evidence that it is the right fix.
+
+Terminals whose session has ended are now closed rather than left to the finalizer, so the race has less to happen in.
+
+🔑 **Authenticator entries can be renamed.** Enrol one client on several routers and you get entries identical down to the issuer, identifiable only by trying a code somewhere. SSH keys have had rename since #231; TOTP now does too.
+
+📂 **The Keys screen starts collapsed, except the codes.** Authenticator codes are what you open that screen to read; the rest is reference material. If you deliberately expand everything, that is remembered.
+
+🐚 **"New plain shell" now works on SSH tabs, not just local ones.** It opens a shell with your session-manager preference bypassed — the point being to escape a multiplexer, so it belongs where the multiplexer is: an SSH profile wrapped in tmux.
+
+The terminal changes are not yet exercised on a device; the unit tests for the modules they touch pass.
+
+## v5.86.50
+
+🔒 **Your Windows account name and your server's address are out of the remote-desktop logs.** A reporter has now redacted his own account name by hand from three separate log attachments, and asked for the address and port to go too. Haven had been redacting the username since v5.86.46 — at its own log lines. The ones that kept leaking belong to the RDP library underneath, which prints whole protocol messages when logging is turned up, and two of those messages carry the logon name and the server address verbatim.
+
+Redacting each place a name might appear is a game you lose eventually, so this does it at the other end: every line the RDP engine writes now passes through a filter that removes the values Haven already knows — your username, domain, password, the host you typed, any proxy host, and the address it resolved to. Anything the library starts printing later is covered without anyone having to notice it.
+
+What survives is shape rather than substance: `<ipv4>` or `<hostname>`, and a port only as "non-default". That is deliberate — a name that had to resolve versus an address that did not is the difference between a DNS failure and a routing one, and that distinction is what these logs are read for.
+
+The reporter's log is the test. The two lines he flagged are now fixtures in the test suite, and removing the filter makes them fail. His remaining 8,407 lines were swept for anything else identifying and came back clean.
+
+Still in the clear, and worth saying rather than leaving to be found: non-RDP connections log their host and port unredacted. Same leak, different part of the app.
+
+🔍 **A remote-desktop log line that read like a measurement when nothing had been measured.** The performance probe added last release printed `alloc+copy of 0KB took 0us` when it had not run at all — which reads as "copying is free", the exact opposite of what it means. Against a Windows 11 server it never runs, because Windows sends ordinary desktop updates as progressive images rather than H.264 even with AVC420 switched on.
+
+It now omits the clause instead of printing zeros. The test that was supposed to catch this only checked the path where the probe *does* fire, so it could never have failed — that is fixed too.
+
+🔊 **Guest audio latency is now measured rather than argued about.** A reporter proposed three progressively larger rewrites of the audio path to cut delay. Before building any of them, this release logs the two numbers that decide which one is even worth building: the size of the playback buffer in milliseconds, and whether the loop spends its time waiting for the guest to produce audio or waiting for the phone to play it.
+
+Reading the code first already turned up one number worth knowing: the playback buffer's floor is 341 ms at CD-quality stereo. No change of transport can get underneath that. No behaviour changes here — this is the measurement that picks the fix.
+
+## v5.86.49
+
+💾 **USB flash drives that never worked on some phones now get their VM engine installed.** A reporter's drive failed with "VM didn't reach a login prompt in 420s" — 1.7 seconds after starting — and did the same on three different drives, which is what ruled the drives out.
+
+Haven runs a small Linux VM to talk to a USB drive, and installs that VM engine into your Linux guest the first time it needs it. There were two ways into that boot, and only one of them ran the install. His went through the other, every time, so the VM launched on a guest with no engine and died instantly — reported as a seven-minute timeout, because that is what the wait reported for everything.
+
+The check now lives in the step that actually starts the VM, so nothing can reach it without going through the check. If the install then fails, you get your package manager's own reason instead of a timeout.
+
+🔑 **SSH output loss on the experimental engine is fixed.** If a command's output arrived while nothing was reading it yet, it could be discarded when the channel closed — whole stdout or stderr gone, or a large transfer cut short. A shell that wrote and exited quickly could lose everything, which showed up as a blank terminal instead of the error explaining why.
+
+Fixed upstream in the SSH library and picked up here. Measured on the same machine before and after: 1000 commands lost 11 stdouts, 12 stderrs and truncated 3 of 200 large transfers before, and none after. The workaround Haven carried for it, and the test retry that hid it, are both gone — a retry on a real defect is a temporary measure or it is a blindfold.
+
+This affects the opt-in alternative SSH engine only; the default engine was never affected.
+
+🔍 **Hardware-key sign-in failures now say why.** When a key held in OpenKeychain — and through it a YubiKey or similar — refused to sign, Haven's log showed the request going out and then nothing at all, followed by a generic authentication failure. Three unrelated causes look identical from inside that silence. The reason is now recorded, along with which prompt in the sequence it reached: permission, key chooser, or PIN and tap.
+
+That is a diagnosis rather than a cure. It is what makes the next report solvable instead of another round of guessing.
+
+## v5.86.48
+
+⚡ **Remote desktop colour conversion is roughly three times faster, and the next log will say where the rest of the time goes.**
+
+A reporter's KDE session at 2560x1440 was running at 6.6 fps, and his log carried the timings that split the frame up. 68 ms of every frame was going into converting the decoded picture to screen pixels — a step that had already been moved out of Kotlin and into Rust, and was still the second largest cost in the frame.
+
+The reason turned out to be the shape of the loop rather than the arithmetic: it appended the result one byte at a time, which at his resolution is 14.7 million append operations per frame, each one re-checking whether the buffer needed to grow. Writing into the buffer directly instead measured **24.5 ms → 7.9 ms** on a desktop, built the same size-optimised way the shipped library is. The output is byte-for-byte identical — the colour tests pass unchanged.
+
+Those are desktop numbers, and a ratio rather than a promise. What it is worth on a phone has to be measured on a phone.
+
+🔍 **A measurement, not a fix, for the largest remaining cost.** The same log showed the hardware decoder taking 6–8 ms and the frame packing 2–5 ms, inside a round trip that Haven measured at 83 ms. So around 72 ms per frame is spent handing the frame between Haven's Kotlin and Rust halves rather than doing anything with it.
+
+There are two plausible reasons for that, and they call for opposite fixes. Rather than guess, this release measures the one thing that separates them — what it costs *your* device to allocate and copy that many bytes — and prints it alongside. If you have been sending remote-desktop logs, the next one answers it.
+
+## v5.86.47
+
+⌨️ **Two keyboard and mouse bugs in remote desktop, both found by one reporter's measurements rather than his symptoms.**
+
+**Keys repeating forever, and buttons needing twenty presses.** Every discrete input — key down, key up, button press, button release — was dispatched on its own background task from a *pool* of threads. Nothing guaranteed the order they ran in, so a key release could reach the guest ahead of its own press. A guest that receives release-then-press is left holding the key down: it auto-repeats until some other key arrives, which is why pressing Tab appeared to "fix" it. The same inversion on a mouse button gives a click the guest never sees. Pointer *movement* was unaffected — it is a stream of positions where a swapped pair is invisible — which is exactly what the reporter observed and what identified the cause. Input now goes out in the order it was made.
+
+**AltGr typed nothing on non-English layouts.** All four right-hand modifiers — Alt, Ctrl, Shift and Win — were being sent as their left-hand twins. A reporter ran `showkey` on his guest's console and read back scancode 56 for AltGr; 56 is 0x38, which is *left* Alt. On a Polish layout that meant AltGr+o produced nothing instead of ó, because the guest had been told he pressed a modifier that composes nothing. Right Ctrl, Alt and Win are now sent E0-prefixed as the separate keys they are, and right Shift as its own code.
+
+This fixes what Haven sends. Whether an accented character then appears still depends on the guest having that keyboard layout loaded.
+
+## v5.86.46
+
+🔒 **Haven's logs no longer contain your account name** — and if you have ever attached one to a bug report, it did.
+
+A reporter on #477 deleted three log attachments mid-investigation after noticing his Windows account name was in every one. He was right, and it was in more places than he found: **six**, across remote desktop, file sharing and hardware-key authentication. Haven asks people to attach these logs to public issues, so anything written into one is published.
+
+Remote-desktop logs now record the name's *shape* instead of the name — its length, and whether it is an email-style or domain-style login. That much is kept on purpose rather than blanked: a bug earlier this year turned out to be the authentication library cutting `me@example.com` short at the `@`, and "does this name contain an @" was the question that identified it. Two different names of the same shape now produce identical text. File-sharing and hardware-key logs drop the name entirely.
+
+**Passwords were never in there.** They are not logged, and the underlying protocol library deliberately leaves them out of its own diagnostic output. The account name was the exposure — and it was enough to stop someone sharing the evidence needed to fix their problem, which is the part that actually cost something.
+
+This is not a setting. An option would leave the unsafe behaviour one tap away, and someone would post a log from it. If redacting ever costs a diagnosis, the fix is to add the specific detail that case needs, the way the email-style hint above was added. (#477)
+
+## v5.86.45
+
+🖥️ **Windows remote desktops stop looking pixelated** — and the honest version of this is that v5.86.43 caused it.
+
+That release stopped Windows hanging up on the modern graphics pipeline. It worked — a reporter's session went from 24201 old-style updates to none. But the modern pipeline had two defects sitting in it that nothing could reach while every Windows session was falling back to the old one. Both are now fixed, and both were found in his logs rather than here.
+
+**Part of the picture was being thrown away.** Windows sends some regions as a *difference* against the previous version of that same region — 137500 of them in one session. Haven did not implement that and skipped them, leaving the older, coarser version of each region on screen. That is what "pixelated" was. They are now decoded.
+
+**Cached tiles were being discarded.** When Windows reconfigures the display mid-session, Haven was throwing away its cache of tiles the server still believed it had. The server then said "redraw that cached tile here" 221 times and nothing was drawn, leaving each of those rectangles holding whatever was underneath.
+
+The second one is worth a note on how it was found: I suspected it a day earlier and **could not confirm it** — my own Windows machine only ever reconfigures the display at the start of a session, before the cache holds anything, and a fifty-second test showed zero misses in over a thousand cache operations. It needed a *second* reconfiguration arriving mid-session with a full cache, which his log had and mine never did.
+
+Difference decoding is checked against real Windows output, which is the only place it exists — the open-source server everything else here is tested against never produces it. The decoded frame matches a fresh full repaint to within rounding: of 7068 differing pixels, 72% differ by 8 or less, and every larger difference falls in five tiles out of 527, all in the taskbar — the clock and weather widget, which genuinely changed between the two captures. It has **not** been compared pixel-for-pixel against another decoder. (#477)
+
+🔁 **A single network blip no longer kills a release build** — the last release failed fetching one pinned source archive:
+
+```
+curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL
+```
+
+with a retry already configured on that download, having retried zero times. `curl`'s retry option covers a narrower set of failures than it reads like — timeouts and certain HTTP codes — and a TLS handshake failure is not among them. So the retry that existed specifically to absorb network flakes could not absorb this one. Measured rather than assumed: against a deliberately failing endpoint the old flags give up in 0 seconds, the new ones take 4. Applied to all three places Haven downloads pinned sources.
+
+## v5.86.44
+
+🎞️ **The slow remote desktops: the biggest cost is gone from where it was** — a reporter's logs finally showed where a frame's quarter-second actually went, on a 1920×1080 H.264 session:
+
+| | |
+|---|---|
+| the phone's video decoder | 9–25 ms — the real work |
+| converting its output to screen colours | 27–109 ms |
+| handing the finished frame from Java to the native side | 87–112 ms |
+| drawing it | 1–3 ms |
+
+About 25 ms of a ~250 ms frame was doing anything useful. The two biggest items sit on the same path and shrink for the same reason, so this is one change rather than two: the colour conversion now happens on the native side, and what crosses between the two is the video decoder's own output rather than the finished picture — **3.11 MB instead of 8.29 MB per frame**, so there is 2.67× less to allocate and copy every time.
+
+The drawing step is untouched. At 1–3 ms it was the other suspect, and measuring it is what ruled it out — worth saying, because it is the one that could have been "optimised" for no gain at all.
+
+The bar for the change was **identical pixels**, not similar ones, so the new conversion is checked against output captured from the old one — including a full-brightness-range frame compared by digest, because the first check turned out to be too small to notice a one-off rounding difference.
+
+**What is not established: whether this makes it faster on a phone.** It cannot be measured here — the only server that speaks this codec needs a desktop session this machine does not have. The per-frame report now breaks the conversion out separately, so the next log will say plainly whether the move paid off. If it did not, that will be visible immediately rather than assumed. (#466, #477)
+
+🔌 **A USB drive that fails instantly no longer claims it waited seven minutes** — a reporter on GrapheneOS got "the VM didn't reach a login prompt in 420s" **1.7 seconds** after plugging a flash drive in, which sent them looking for a slow boot instead of a crash.
+
+The wait behind that message ends for two unrelated reasons — the deadline passing, or the helper VM dying — and reported the deadline either way. Meanwhile the VM's own output, the one thing that would identify the crash, was being captured and shown to nobody.
+
+It now says which of the two happened, how long it actually took, and quotes the VM's last words. This does not fix the underlying failure; it makes the next report able to say what the failure is. (#506)
+
+## v5.86.43
+
+🖥️ **A remote desktop stops throwing away part of the picture** — Haven refused any screen update whose image was *taller* than the area it was meant to fill, while happily accepting one that was wider. One VirtualBox session was discarding **53915 updates — 51% of everything the server sent**, which is enough for a window to sit there looking frozen while the clock beside it keeps ticking.
+
+Nothing justified the difference. The code behind that check already handled a taller image correctly: it takes only as many rows as the destination needs, and for a bottom-up image it reverses first, so the rows it keeps are the top of the picture. It was ready to do the right thing and was being stopped at the door. The reference client, FreeRDP, does not check either dimension — it decodes at the image's own size and copies out just the part it wants.
+
+Verified against the path it touches rather than only in tests: the same VirtualBox desktop paints the same 941551 pixels before and after with zero discards, and two consecutive captures differ only in the 124×72 box holding the clock.
+
+Whether this is what that reporter was hitting is **not** established — their exact geometry has never been captured, and it could still be one of the other two rules. What is fixed is a rejection that was wrong on its own terms. The reporting added in v5.86.41 will say which. (#422)
+
+🤖 **Two things an AI agent could not see about Haven, it now can** — the desktop-install progress it polls now says *which* desktop is installing rather than only that something is, and it can switch on the per-session transport tracing that fills the connection log.
+
+The second one mattered more than it sounds: the decode breakdown, the negotiated graphics capabilities and the discarded-update detail behind the three open remote-desktop investigations exist *only* in that log, and an agent could read the log but had no way to turn on the thing that writes it. Every one of those diagnostics had to be run by hand. (#502, #466, #477, #422)
+
+## v5.86.42
+
+🖥️ **The stop button on a VNC desktop actually stops it now** — stopping a desktop kills the launcher and then sweeps up the VNC server, which survives on its own. That sweep looked for the server by asking the system for a process list and filtering on the display number — but that listing prints process *names* and no arguments, and the display number is only ever an argument. So it matched nothing, on every device, on every run, since the day it was written. It found nothing to kill and killed nothing, which is exactly the "I press terminate and nothing happens" reported.
+
+The equivalent sweep for the other desktop type had already been moved off process names for a related reason; the same reasoning had simply never been carried across. Both now look in the same place. Stopping display 1 also no longer risks taking 10 and 11 with it. Raised by @sugerpersion on #501. (#501)
+
+🐧 **A shell in the Linux guest is bash, if the guest has bash** — it was always the minimal shell, which on Debian is dash and on Alpine is busybox, even on a guest with bash sitting right there. Haven now asks the guest which it has. Distros without bash are unaffected and behave exactly as before. Raised by @sugerpersion on #501. (#501)
+
+🖥️ **Starting one Linux desktop no longer makes all the others look like they started too** — the install progress said which *step* was running but not which desktop it belonged to, so every row in the list showed the same spinner and it read as all of them having been launched at once. Each row now answers for itself. Install buttons still go inactive across the board while any install runs, because there is only one package database and a second install would collide with the first — but that is now a separate thing from the spinner rather than the same flag doing both jobs. Raised by @sugerpersion on #502. (#502)
+
+⏱️ **A desktop install can no longer wedge forever** — one step compiles a VNC server from source in the guest, and it waited for that with no limit of any kind. Worse, it waited for the *output pipe* to close rather than for the command to finish, so a stray background process still holding that pipe kept Haven waiting long after the work itself was over — which matches the report exactly: the install sat there while nothing at all was running inside the guest.
+
+It now waits on the command, with a 20-minute limit. Long, deliberately: on a phone this genuinely is a multi-minute compile and cutting a working build short would be worse than the bug. Every other step is untouched and still waits as long as it takes — putting a limit on a package install would turn a slow connection into a failure. This step was always best-effort, so a limit costs nothing. Raised by @sugerpersion on #503. (#503)
+
+🔑 **A key held in OpenKeychain is no longer offered where it cannot be used** — its stored bytes point at a key inside OpenKeychain rather than being key material, so handing them to the SSH library could only ever fail, and did, once per connection. The rule that should have caught it existed and was right; a second copy of it elsewhere had lost half its meaning. Found by @onatio22 on #487, whose log showed the rejection sitting between two connection attempts. The reconnect problem reported alongside it is not fixed. (#487)
+
+## v5.86.41
+
+🖥️ **Windows remote desktops get their modern graphics pipeline back** — with H.264 turned on, which has been the default since 22 July, Haven told a Windows server it could do H.264 and nothing else about how it wanted the screen sent. Windows responded by hanging up on the modern graphics pipeline half a second into every session, and the whole connection then fell back to the old bitmap method for as long as it lasted. No H.264, no progressive refinement, no ClearCodec — the very things the last several releases have been improving.
+
+Nothing announced this. The picture still arrived, just by the slowest route available, which is why it read as "Windows is noticeably slower than other clients" rather than as a fault.
+
+Found in a pair of logs from @skeezmoe on #477: same phone, same computer, two sessions minutes apart — one ran at 33 to 51 frames per second, the other sent twenty-four thousand old-style bitmap updates instead. Reproduced against a Windows 11 machine here and narrowed to a single bit in a single capability word: asking for H.264 *on its own* gets the channel closed, and asking for it alongside any other option is accepted. Why Windows refuses the one and not the other is genuinely unexplained — the message is byte-identical apart from that word — so this ships as a measured behaviour, not as a theory.
+
+This may also be the reason @ZGLinus saw an entirely black screen with H.264 on back in July (#418). Unconfirmed on their Windows version. KDE and other Linux servers were never affected — they always accepted it. (#477, #418, #425)
+
+🔎 **A remote desktop that discards half the picture now says so** — a VirtualBox session on #422 threw away 53915 screen updates, 51% of everything the server sent, and the log recorded only "invalid declared destination" over and over. It named neither the region nor which of three rules rejected it, and over half of that reporter's 24 MB log was that one line repeated, burying everything else in it.
+
+It now reports the region, the sizes involved and the rule that failed, once and then every five hundredth. No visible change — this is what makes the next report solvable. Haven also now records which graphics settings a session actually ran with, after two logs turned out to be labelled one way and negotiated another. (#422, #477)
+
+## v5.86.40
+
+🖥️ **Windows remote desktops look right at last — the haloing around text is gone** — with H.264 turned off, a Windows desktop sends each part of the picture roughly first and then sharpens it over the next few messages. Haven drew the rough version and threw every sharpening pass away, so text kept a dark halo around every letter and smooth areas came out blotchy. That is the "lots of artifacts" reported on #496.
+
+Haven now decodes the sharpening passes, and this is on by default.
+
+It was off because nobody had ever checked it against a real Windows desktop, and the fear was that decoding it wrongly would look worse than not decoding it at all. So it was checked: connected to a Windows 11 machine, an *idle* desktop turned out to send more than a thousand sharpening messages in thirty seconds, and dropping them is exactly what produced the haloing. Decoding them gives clean text, no errors, and a picture that matches what the desktop actually looks like.
+
+The cost was measured rather than hoped for: about twice the decoding work — from a small base — and roughly 12 MB more memory at this screen size. Along the way this also fixed a leak that would have arrived with it, where that memory was never released when a remote desktop changed resolution. (#496, #418)
+
+⌨️ **Haven no longer pretends to send characters a server won't take** — VirtualBox's remote desktop accepts only ordinary key presses, not the separate mechanism Haven used for characters with no key of their own, like accented letters and emoji. It was discarding them, and Haven had no idea: nothing failed, nothing was logged, the characters simply vanished.
+
+Normal typing was never affected — letters, digits and punctuation go the other way and always worked. But now the unusable ones are recognised and reported instead of disappearing silently. They still cannot be delivered to that kind of server; Haven just stops pretending otherwise. (#422)
+
+🔎 **Groundwork for the slow remote desktops** — a reporter's measurements finally showed where the time goes on a laggy 1080p connection: decoding each frame, not drawing it. Drawing takes under 3 milliseconds; decoding takes 120 to 240. So the drawing-speed work of the last few releases was never going to help them, which is worth saying plainly.
+
+This release adds the measurement that narrows it further — separating the video decoder's own time from the colour conversion afterwards — so the next fix can be the right one rather than a guess. No change you will notice yet. (#466, #477)
+
+🖥️ **A remote-desktop compatibility fix, corrected** — v5.86.38 taught Haven to accept a message whose stated length is smaller than the message itself, which is what VirtualBox sends. Review of the same change upstream found it was too permissive: it also accepted a message claiming *zero* length, which is malformed rather than merely miscounted. Narrowed. VirtualBox is unaffected. (#422)
+
+🖥️ **Linux desktop graphics keep working after a system update** — Haven builds a patched graphics driver inside the Linux guest for GPU acceleration. A guest system update cannot delete it, but it could leave it stale — silently paired with a newer driver it no longer matches — and nothing rebuilt it. Now the version is recorded and a mismatch rebuilds. Raised by @sugerpersion on #441, whose objection was half right and found a real bug. (#441)
+
+## v5.86.39
+
+🔑 **Keys from OpenKeychain can be imported again** — a reporter with a YubiKey could not add one: "The key provider refused the request", a couple of seconds after the prompt opened, and nothing in the message to act on. Nothing was wrong with their key, their card, or their permissions — they had already checked all three, which is what made this findable.
+
+Two faults, both Haven's.
+
+**Haven was throwing away the answer.** When OpenKeychain needs to ask you something, it hands Haven a prompt to show, and when you have answered it, it hands back Haven's own request *with what it learned added to it* — the key you picked, or the result of unlocking the card. That returned request is the answer, and it is what the next call has to carry. Haven kept only "did that come back OK?" and dropped the rest. So it asked again with the same empty request, and OpenKeychain, quite correctly, asked the same question again.
+
+**And Haven only ever answered one question.** It handled a single prompt and treated the next one as a refusal — though OpenKeychain routinely asks more than once, and asks something different each time: permission to talk to Haven, then which key you want, then the PIN and a tap on the card.
+
+Together those made the import impossible to complete, and made the failure look like a flat refusal with no explanation: a "please ask the user" reply carries no error with it, so once Haven had decided it was a failure there was nothing to report and it fell back to a generic sentence.
+
+Both are fixed, and not just for picking a key — the passphrase and card-unlock prompts answer by the same route, so signing needed it too.
+
+Separately, when a provider does refuse for a real reason, Haven now says what it was — "that key has no authentication subkey", "no key with that id", "incompatible API version" — instead of the same generic sentence every time, and an unrecognised reason prints its code rather than disappearing.
+
+Honest limit: **not verified on a device.** The sequence is read off OpenKeychain's own source rather than guessed, which is better than it was, but nobody here has run it against a real card. (#487)
+
+🖥️ **A remote-desktop warning pointed at a settings screen that does not exist** — when Haven skips picture-refinement data it cannot decode, it says so, and tells you which setting turns that decoding on. It named "Settings → RDP". There is no RDP section — the switch lives under Diagnostics. Anyone who hit the warning and went looking would not have found it. (#496, #418)
+
+📊 **Verbose connection logging now admits it covers RDP** — the setting's description listed SSH, Mosh and ET. It has covered RDP since March, and RDP is now where it matters most, because that is where the frame timings for a slow remote desktop turn up. (#477)
+
+## v5.86.38
+
+🖥️ **RDP on VirtualBox: the connection now completes instead of failing at the last step** — a reporter on v5.86.37 could not connect at all. The session got all the way through the handshake and then stopped on the final message of it, with "not enough bytes: received 18, expected 26".
+
+Nothing was missing. That message is the tail end of a check comparing the size a message *claims* against the size it *actually decoded to* — the same misleading error that sent the last two releases down the wrong path. VirtualBox's server states the length of that final message as 18, which counts its two headers and forgets the 8 bytes of content following them. All 26 bytes had arrived.
+
+v5.86.36 taught Haven to skip a message like that and carry on, but only once a session was running. This one arrives while the connection is still being set up, before there is a session to carry on with — so the connect failed outright, every time. The fix therefore sits in the RDP library itself, where it covers both: a length that under-states a message is now believed no more than it deserves to be, and the message is used as received. A genuinely short message is still rejected, because that fails earlier for a different reason.
+
+Confirmed by rebuilding both reporters' exact messages — this one and the 8565-byte one from the earlier report — and watching them go from their reported errors to decoding cleanly. Both ship as tests. (#422)
+
+📡 **Mosh no longer gives up on reconnecting after one bad moment** — a reporter's log showed Haven correctly noticing a dead session, scheduling a reconnect, trying it fifteen seconds after the network came back, failing to look up the host name, and then never trying again.
+
+The host name was a router-local one that had worked when the session was first opened. It failed once, most likely because Android had not yet picked up the DNS server from the network it had just rejoined. One transient miss ended automatic reconnection for good.
+
+The reason it was permanent: the retry schedule could only be started by a session *dying*. When the reconnect's own attempt failed, that was logged and dropped — and there was no session left to die a second time, so nothing could restart the sequence. A failed attempt now re-enters the same bounded schedule as before: three tries, backing off, then it stops and waits for you.
+
+This makes Haven recover from that stall. It does not stop the stall happening — that half of the report is still open, and needs a capture from the server side. (#421)
+
+📊 **Remote desktop timings you can actually send** — when a remote desktop is laggy, the numbers that say *why* — frame rate, and how long each frame spends being decompressed, decoded and drawn — were written only to the Android system log, which needs a cable and a terminal to read. So the people best placed to report a problem were the least able to measure it.
+
+Those numbers now also appear in the connection's verbose log, which is already in the Audit Log and already copyable. If you have reported a laggy RDP session, this is the thing worth pasting next. (#477)
+
+⚡ **A wasteful copy removed from the H.264 remote desktop path** — every decoded frame was being duplicated on its way out of the decoder: about 8 MB per frame at 1080p, roughly 250 MB a second of throwaway work at 30 frames per second.
+
+Being honest about what this is: real waste that is now gone, and almost certainly not what anyone reporting remote desktop lag is actually seeing. Expect to notice nothing. (#477)
+
 ## v5.86.37
 
 🖥️ **Remote desktop picks up a batch of upstream fixes, including one that could close the app** — Haven's RDP engine is the IronRDP library, and Haven had been using its published releases. The current published release has a fault where a picture update whose stated size disagrees with the area it is painting into writes past the end of the display buffer, which stops the app rather than the connection. That is one of the two crashes reported in #422. It is fixed upstream, but there is no published release carrying the fix, and waiting for one meant knowingly shipping a crash — so Haven now builds against the fixed upstream code directly, at a fixed point that cannot move underneath it.

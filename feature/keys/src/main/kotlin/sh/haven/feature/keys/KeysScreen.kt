@@ -117,12 +117,24 @@ import java.util.Locale
 
 // Section ids for the collapsed-set preference (#460). Stable strings, not
 // enum ordinals or resource ids — they are persisted.
-private const val SECTION_CA = "ca"
-private const val SECTION_SSH = "ssh"
-private const val SECTION_PASSWORDS = "passwords"
-private const val SECTION_TOTP = "totp"
-private const val SECTION_AGE = "age"
-private const val SECTION_IDENTITIES = "identities"
+internal const val SECTION_CA = "ca"
+internal const val SECTION_SSH = "ssh"
+internal const val SECTION_PASSWORDS = "passwords"
+internal const val SECTION_TOTP = "totp"
+internal const val SECTION_AGE = "age"
+internal const val SECTION_IDENTITIES = "identities"
+
+/**
+ * Collapsed on first run — everything except TOTP. Applied only when the user has never
+ * toggled a section; see [KeysViewModel.collapsedSections].
+ */
+internal val DEFAULT_COLLAPSED_SECTIONS = setOf(
+    SECTION_CA,
+    SECTION_SSH,
+    SECTION_PASSWORDS,
+    SECTION_AGE,
+    SECTION_IDENTITIES,
+)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -143,6 +155,7 @@ fun KeysScreen(
     val pendingCertKeyId by viewModel.pendingCertKeyId.collectAsState()
     var pendingPasswordWipe by remember { mutableStateOf<KeystoreEntry?>(null) }
     var renameTarget by remember { mutableStateOf<SshKey?>(null) }
+    var renameTotpTarget by remember { mutableStateOf<TotpSecret?>(null) }
     // #460. Null = not in multi-select mode; a set (possibly empty) = in it.
     var selection by remember { mutableStateOf<Set<String>?>(null) }
     var pendingBulkDelete by remember { mutableStateOf<Set<String>?>(null) }
@@ -454,7 +467,11 @@ fun KeysScreen(
                     if (SECTION_TOTP in collapsedSections) emptyList() else totpSecrets,
                     key = { "totp-${it.id}" },
                 ) { secret ->
-                    TotpSecretRow(secret = secret, onDelete = { viewModel.deleteTotp(secret.id) })
+                    TotpSecretRow(
+                        secret = secret,
+                        onRename = { renameTotpTarget = secret },
+                        onDelete = { viewModel.deleteTotp(secret.id) },
+                    )
                     HorizontalDivider()
                 }
             }
@@ -735,6 +752,17 @@ fun KeysScreen(
         )
     }
 
+    renameTotpTarget?.let { secret ->
+        RenameKeyDialog(
+            currentLabel = secret.label,
+            onConfirm = { newLabel ->
+                viewModel.renameTotp(secret.id, newLabel)
+                renameTotpTarget = null
+            },
+            onDismiss = { renameTotpTarget = null },
+        )
+    }
+
     renameTarget?.let { key ->
         RenameKeyDialog(
             currentLabel = key.label,
@@ -775,6 +803,7 @@ fun KeysScreen(
 @Composable
 private fun TotpSecretRow(
     secret: TotpSecret,
+    onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val algorithm = remember(secret.algorithm) {
@@ -794,7 +823,17 @@ private fun TotpSecretRow(
         }
     }
     val subtitle = listOfNotNull(secret.issuer, secret.accountName).joinToString(" · ")
+    // Tap the row to copy the code, the same as the age recipient row below.
+    // A code you have to retype by hand from a screen you are already holding
+    // is the one thing an authenticator should not make you do.
+    val clipboard = LocalClipboardManager.current
+    val copiedMsg = stringResource(R.string.keys_totp_code_copied)
+    val context = LocalContext.current
     ListItem(
+        modifier = Modifier.clickable {
+            clipboard.setText(AnnotatedString(code))
+            android.widget.Toast.makeText(context, copiedMsg, android.widget.Toast.LENGTH_SHORT).show()
+        },
         headlineContent = { Text(secret.label) },
         supportingContent = {
             Column {
@@ -808,8 +847,13 @@ private fun TotpSecretRow(
         },
         leadingContent = { Icon(Icons.Filled.Pin, contentDescription = null) },
         trailingContent = {
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.keys_totp_delete_desc))
+            Row {
+                IconButton(onClick = onRename) {
+                    Icon(Icons.Filled.Edit, contentDescription = stringResource(R.string.keys_rename))
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.keys_totp_delete_desc))
+                }
             }
         },
     )
@@ -1493,7 +1537,7 @@ private fun copyPublicKey(context: Context, sshKey: SshKey) {
 }
 
 private fun formatDate(timestamp: Long): String {
-    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    val sdf = SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(Locale.getDefault(), "yMd"), Locale.getDefault())
     return sdf.format(Date(timestamp))
 }
 
@@ -1601,7 +1645,7 @@ private fun KeySelectionBar(
             )
         }
         Text(
-            text = stringResource(R.string.keys_selected_count, count),
+            text = pluralStringResource(R.plurals.keys_selected_count, count, count),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(1f),

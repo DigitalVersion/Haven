@@ -20,6 +20,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.nio.ByteBuffer
+import sh.haven.core.redact.LogRedact
 
 
 private const val TAG = "SshClient"
@@ -356,7 +357,11 @@ class SshClient : SshConnection {
         hostVerifiedByCa = false
         verboseLogger?.let { jsch.setInstanceLogger(it) }
 
+        // #519: phase timing, so a slow connect names its own cause rather
+        // than arriving as an unattributed "took 1.2s".
+        val timing = ConnectTiming()
         val resolvedIp = if (proxy != null) config.host else resolveHost(config.host, family = config.addressFamily)
+        timing.mark("resolve")
         connectedViaProxy = proxy != null
         val sess = jsch.getSession(config.username, resolvedIp, config.port)
         if (proxy != null) sess.setProxy(requireJschProxy(proxy))
@@ -392,11 +397,19 @@ class SshClient : SshConnection {
         // Port-knock hook (when configured): runs after socket params are set
         // but before JSch opens the TCP connection. Throwing here aborts the
         // connect cleanly without leaving a half-built session behind.
+        timing.mark("setup")
         preConnect?.invoke()
+        timing.mark("knock")
 
         try {
             sess.connect(connectTimeoutMs)
+            timing.mark("handshake")
+            Log.i(TAG, "connect timing: ${timing.summary()}")
         } catch (e: JSchException) {
+            // Logged on the failure path too: a connect that times out is
+            // exactly the case a breakdown is wanted for.
+            timing.mark("handshake")
+            Log.i(TAG, "connect timing (failed): ${timing.summary()}")
             // A proxied connect that timed out waiting for the target's first
             // byte fails here as a generic "session is down" — the channel was
             // torn down under JSch to unblock it. Say what actually happened
@@ -588,7 +601,11 @@ class SshClient : SshConnection {
         hostVerifiedByCa = false
         verboseLogger?.let { jsch.setInstanceLogger(it) }
 
+        // #519: phase timing, so a slow connect names its own cause rather
+        // than arriving as an unattributed "took 1.2s".
+        val timing = ConnectTiming()
         val resolvedIp = if (proxy != null) config.host else resolveHost(config.host, family = config.addressFamily)
+        timing.mark("resolve")
         connectedViaProxy = proxy != null
         val sess = jsch.getSession(config.username, resolvedIp, config.port)
         if (proxy != null) sess.setProxy(requireJschProxy(proxy))
@@ -613,11 +630,17 @@ class SshClient : SshConnection {
         SshOptionsApplier.apply(sess, config.sshOptions)
 
         // See [connect] for the rationale on hook placement.
+        timing.mark("setup")
         preConnect?.invoke()
+        timing.mark("knock")
 
         try {
             sess.connect(connectTimeoutMs)
+            timing.mark("handshake")
+            Log.i(TAG, "connect timing: ${timing.summary()}")
         } catch (e: JSchException) {
+            timing.mark("handshake")
+            Log.i(TAG, "connect timing (failed): ${timing.summary()}")
             // Mirror of the async connect() path — see the comments there.
             val jump = (proxy?.jschProxy as? ProxyJump)
             if (jump?.timedOut == true) {
@@ -1051,11 +1074,11 @@ class SshClient : SshConnection {
                 }
                 future.get(5, java.util.concurrent.TimeUnit.SECONDS)
             } catch (e: java.util.concurrent.TimeoutException) {
-                Log.w(TAG, "DNS resolve timed out for $hostname")
+                Log.w(TAG, "DNS resolve timed out for ${LogRedact.of(hostname)}")
                 null
             } catch (e: Exception) {
                 val cause = if (e is java.util.concurrent.ExecutionException) e.cause ?: e else e
-                Log.w(TAG, "System DNS resolve failed for $hostname", cause)
+                Log.w(TAG, "System DNS resolve failed for ${LogRedact.of(hostname)}", cause)
                 null
             }
         }
@@ -1082,7 +1105,7 @@ class SshClient : SshConnection {
                     socket.close()
                 }
             } catch (e: Exception) {
-                Log.d(TAG, "mDNS resolve failed for $hostname: ${e.message}")
+                Log.d(TAG, "mDNS resolve failed for ${LogRedact.of(hostname)}: ${e.message}")
                 null
             }
         }

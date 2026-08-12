@@ -17,6 +17,8 @@ import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.rdp.RdpSession
 import sh.haven.core.rdp.RdpSessionManager
+import sh.haven.core.rdp.redactHost
+import sh.haven.core.rdp.redactUsername
 import sh.haven.core.ssh.SshClient
 import sh.haven.core.ssh.SshConnection
 import sh.haven.core.ssh.SshSessionManager
@@ -86,7 +88,7 @@ class RdpViewModel @Inject constructor(
                 )
                 tunnelPort = localPort
                 tunnelSessionId = sessionId
-                Log.d(TAG, "SSH tunnel: localhost:$localPort -> $remoteHost:$remotePort")
+                Log.d(TAG, "SSH tunnel: localhost:$localPort -> ${redactHost(remoteHost, remotePort)}")
                 doConnect(
                     "127.0.0.1", localPort, username, password, domain,
                     certHost = remoteHost, certPort = remotePort,
@@ -140,7 +142,7 @@ class RdpViewModel @Inject constructor(
         certHost: String = host,
         certPort: Int = port,
     ) {
-        Log.d(TAG, "doConnect: $host:$port user=$username domain=$domain")
+        Log.d(TAG, "doConnect: ${redactHost(host, port)} user=${redactUsername(username)} domain=${redactUsername(domain)}")
         val verboseEnabled = kotlinx.coroutines.runBlocking { preferencesRepository.verboseLoggingEnabled.first() }
         val verboseBuffer = if (verboseEnabled) ConcurrentLinkedQueue<String>() else null
         rdpVerboseBuffer = verboseBuffer
@@ -227,46 +229,68 @@ class RdpViewModel @Inject constructor(
 
     // --- Input forwarding ---
 
+    /**
+     * Every input event goes through here, in the order it happened.
+     *
+     * Each of these used to be its own `launch(Dispatchers.IO)`. That is a
+     * multi-threaded pool, so two launches have no ordering guarantee between
+     * them — a key *release* could reach the server before its own press. The
+     * guest then holds the key down, which is @pawlosck's "last letter is
+     * repeating forever" on #504, and the same inversion on a button press is
+     * his "I have to press 20 times to minimize".
+     *
+     * It also explains the part of his report that looked like a contradiction:
+     * "moving works correctly". Pointer movement is absolute and idempotent, so
+     * reordering it is invisible. Only the paired press/release events break,
+     * which is exactly the set that misbehaved.
+     *
+     * `limitedParallelism(1)` keeps the work off the main thread while running
+     * it one at a time, in submission order. Input all originates on the main
+     * thread, so submission order is the order the user did things.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val inputDispatcher = Dispatchers.IO.limitedParallelism(1)
+
     fun sendPointer(x: Int, y: Int) {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseMove(x, y) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseMove(x, y) }
     }
 
     fun sendClick(x: Int, y: Int, button: MouseButton = MouseButton.LEFT) {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseClick(x, y, button) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseClick(x, y, button) }
     }
 
     fun pressButton(button: MouseButton = MouseButton.LEFT) {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseButton(button, true) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseButton(button, true) }
     }
 
     fun releaseButton(button: MouseButton = MouseButton.LEFT) {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseButton(button, false) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseButton(button, false) }
     }
 
     fun sendKey(scancode: Int, pressed: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendKey(scancode, pressed) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendKey(scancode, pressed) }
     }
 
     fun typeKey(scancode: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(inputDispatcher) {
             rdpSession?.sendKey(scancode, true)
             rdpSession?.sendKey(scancode, false)
         }
     }
 
     fun typeUnicode(codepoint: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(inputDispatcher) {
             rdpSession?.sendUnicodeKey(codepoint, true)
             rdpSession?.sendUnicodeKey(codepoint, false)
         }
     }
 
     fun scrollUp() {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseWheel(true, 120) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseWheel(true, 120) }
     }
 
     fun scrollDown() {
-        viewModelScope.launch(Dispatchers.IO) { rdpSession?.sendMouseWheel(true, -120) }
+        viewModelScope.launch(inputDispatcher) { rdpSession?.sendMouseWheel(true, -120) }
     }
 
     fun sendClipboardText(text: String) {

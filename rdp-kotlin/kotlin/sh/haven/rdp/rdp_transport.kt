@@ -686,22 +686,22 @@ internal interface UniffiCallbackInterfaceSessionCallbackMethod2 : com.sun.jna.C
 internal interface UniffiCallbackInterfaceSessionCallbackMethod3 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`sha256`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "decode")
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "decodeToI420")
 internal open class UniffiVTableCallbackInterfaceAvc420Decoder(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
     @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `decode`: UniffiCallbackInterfaceAvc420DecoderMethod0? = null,
+    @JvmField internal var `decodeToI420`: UniffiCallbackInterfaceAvc420DecoderMethod0? = null,
 ) : Structure() {
     class UniffiByValue(
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
         `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `decode`: UniffiCallbackInterfaceAvc420DecoderMethod0? = null,
-    ): UniffiVTableCallbackInterfaceAvc420Decoder(`uniffiFree`,`uniffiClone`,`decode`,), Structure.ByValue
+        `decodeToI420`: UniffiCallbackInterfaceAvc420DecoderMethod0? = null,
+    ): UniffiVTableCallbackInterfaceAvc420Decoder(`uniffiFree`,`uniffiClone`,`decodeToI420`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAvc420Decoder) {
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
-        `decode` = other.`decode`
+        `decodeToI420` = other.`decodeToI420`
     }
 
 }
@@ -825,7 +825,7 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
-    external fun uniffi_rdp_transport_checksum_method_avc420decoder_decode(
+    external fun uniffi_rdp_transport_checksum_method_avc420decoder_decode_to_i420(
     ): Int
     external fun uniffi_rdp_transport_checksum_method_clipboardcallback_on_remote_clipboard(
     ): Int
@@ -877,6 +877,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_rdp_transport_checksum_method_rdpclient_set_session_callback(
     ): Int
+    external fun uniffi_rdp_transport_checksum_method_rdpclient_take_perf_log(
+    ): Int
     external fun uniffi_rdp_transport_checksum_method_sessioncallback_on_connected(
     ): Int
     external fun uniffi_rdp_transport_checksum_method_sessioncallback_on_error(
@@ -916,7 +918,7 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_rdp_transport_fn_init_callback_vtable_avc420decoder(`vtable`: UniffiVTableCallbackInterfaceAvc420Decoder,
     ): Unit
-    external fun uniffi_rdp_transport_fn_method_avc420decoder_decode(`ptr`: Long,`annexB`: RustBuffer.ByValue,`width`: Short,`height`: Short,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_rdp_transport_fn_method_avc420decoder_decode_to_i420(`ptr`: Long,`annexB`: RustBuffer.ByValue,`width`: Short,`height`: Short,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_rdp_transport_fn_clone_clipboardcallback(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
@@ -992,6 +994,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_rdp_transport_fn_method_rdpclient_set_session_callback(`ptr`: Long,`cb`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_rdp_transport_fn_method_rdpclient_take_perf_log(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_rdp_transport_fn_clone_sessioncallback(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_rdp_transport_fn_free_sessioncallback(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1125,7 +1129,7 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_rdp_transport_checksum_method_avc420decoder_decode() != 16062) {
+    if (lib.uniffi_rdp_transport_checksum_method_avc420decoder_decode_to_i420() != 23715) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_rdp_transport_checksum_method_clipboardcallback_on_remote_clipboard() != 26900) {
@@ -1201,6 +1205,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_rdp_transport_checksum_method_rdpclient_set_session_callback() != 53109) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_rdp_transport_checksum_method_rdpclient_take_perf_log() != 28309) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_rdp_transport_checksum_method_sessioncallback_on_connected() != 30846) {
@@ -1739,7 +1746,23 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
  */
 public interface Avc420Decoder {
     
-    fun `decode`(`annexB`: kotlin.ByteArray, `width`: kotlin.UShort, `height`: kotlin.UShort): kotlin.ByteArray
+    /**
+     * Decode one access unit and return the frame as **tightly-packed I420**
+     * — `width*height` luma, then two `((width+1)/2)*((height+1)/2)` chroma
+     * planes — or an empty vector if the frame could not be produced.
+     *
+     * I420 rather than the finished RGBA, which is what this used to return.
+     * Colour conversion moved to [`crate::yuv`] for two reasons that both
+     * showed up in one reporter's measurements (#466): the conversion itself
+     * cost 27-109 ms per frame in Kotlin against 9-25 ms for the hardware
+     * decode, and the crossing back into Rust cost a further 87-112 ms
+     * carrying 8.29 MB of RGBA. I420 is 3.11 MB for the same 1080p frame.
+     *
+     * The host is expected to edge-replicate to `width`/`height` if the
+     * decoder's own output is smaller, so the buffer size is a pure function
+     * of the arguments and a short one is a bug rather than a crop.
+     */
+    fun `decodeToI420`(`annexB`: kotlin.ByteArray, `width`: kotlin.UShort, `height`: kotlin.UShort): kotlin.ByteArray
     
     companion object
 }
@@ -1858,11 +1881,27 @@ open class Avc420DecoderImpl: Disposable, AutoCloseable, Avc420Decoder
         }
     }
 
-    override fun `decode`(`annexB`: kotlin.ByteArray, `width`: kotlin.UShort, `height`: kotlin.UShort): kotlin.ByteArray {
+    
+    /**
+     * Decode one access unit and return the frame as **tightly-packed I420**
+     * — `width*height` luma, then two `((width+1)/2)*((height+1)/2)` chroma
+     * planes — or an empty vector if the frame could not be produced.
+     *
+     * I420 rather than the finished RGBA, which is what this used to return.
+     * Colour conversion moved to [`crate::yuv`] for two reasons that both
+     * showed up in one reporter's measurements (#466): the conversion itself
+     * cost 27-109 ms per frame in Kotlin against 9-25 ms for the hardware
+     * decode, and the crossing back into Rust cost a further 87-112 ms
+     * carrying 8.29 MB of RGBA. I420 is 3.11 MB for the same 1080p frame.
+     *
+     * The host is expected to edge-replicate to `width`/`height` if the
+     * decoder's own output is smaller, so the buffer size is a pure function
+     * of the arguments and a short one is a bug rather than a crop.
+     */override fun `decodeToI420`(`annexB`: kotlin.ByteArray, `width`: kotlin.UShort, `height`: kotlin.UShort): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.uniffi_rdp_transport_fn_method_avc420decoder_decode(
+    UniffiLib.uniffi_rdp_transport_fn_method_avc420decoder_decode_to_i420(
         it,
         
         FfiConverterByteArray.lower(`annexB`),
@@ -1892,11 +1931,11 @@ open class Avc420DecoderImpl: Disposable, AutoCloseable, Avc420Decoder
 
 // Put the implementation in an object so we don't pollute the top-level namespace
 internal object uniffiCallbackInterfaceAvc420Decoder {
-    internal object `decode`: UniffiCallbackInterfaceAvc420DecoderMethod0 {
+    internal object `decodeToI420`: UniffiCallbackInterfaceAvc420DecoderMethod0 {
         override fun callback(`uniffiHandle`: Long,`annexB`: RustBuffer.ByValue,`width`: Short,`height`: Short,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
             val uniffiObj = FfiConverterTypeAvc420Decoder.handleMap.get(uniffiHandle)
             val makeCall = { ->
-                uniffiObj.`decode`(
+                uniffiObj.`decodeToI420`(
                     FfiConverterByteArray.lift(`annexB`),
                     FfiConverterUShort.lift(`width`),
                     FfiConverterUShort.lift(`height`),
@@ -1922,7 +1961,7 @@ internal object uniffiCallbackInterfaceAvc420Decoder {
     internal var vtable = UniffiVTableCallbackInterfaceAvc420Decoder.UniffiByValue(
         uniffiFree,
         uniffiClone,
-        `decode`,
+        `decodeToI420`,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -3222,6 +3261,15 @@ public interface RdpClientInterface {
     
     fun `setSessionCallback`(`cb`: SessionCallback)
     
+    /**
+     * Drain the EGFX per-frame timing summaries recorded since the last call
+     * (#477), so the host can put them in the verbose log a reporter can copy.
+     *
+     * Draining rather than reading: the host appends these to a log it already
+     * keeps, and returning them twice would duplicate lines in it.
+     */
+    fun `takePerfLog`(): List<kotlin.String>
+    
     companion object
 }
 
@@ -3599,6 +3647,26 @@ open class RdpClient: Disposable, AutoCloseable, RdpClientInterface
 }
     }
     
+    
+
+    
+    /**
+     * Drain the EGFX per-frame timing summaries recorded since the last call
+     * (#477), so the host can put them in the verbose log a reporter can copy.
+     *
+     * Draining rather than reading: the host appends these to a log it already
+     * keeps, and returning them twice would duplicate lines in it.
+     */override fun `takePerfLog`(): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_rdp_transport_fn_method_rdpclient_take_perf_log(
+        it,
+        _status)
+}
+    }
+    )
+    }
     
 
     
@@ -4180,6 +4248,16 @@ data class RdpConfig (
      * AVC tiles are dropped and the screen stays black.
      */
     var `avcEnabled`: kotlin.Boolean
+    , 
+    /**
+     * #504: the Windows keyboard-layout identifier (KLID, e.g. 0x0415 for
+     * Polish) announced in the GCC client core data. Servers that build the
+     * session's input layout from the announcement — Windows, xrdp, KRDP —
+     * would otherwise hand every non-US user a US layout. VirtualBox-style
+     * servers inject raw scancodes and ignore this entirely. Pass 0 to get
+     * the previous behaviour (0x0409, US English).
+     */
+    var `keyboardLayout`: kotlin.UInt
     
 ){
     
@@ -4206,6 +4284,7 @@ public object FfiConverterTypeRdpConfig: FfiConverterRustBuffer<RdpConfig> {
             FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterUInt.read(buf),
         )
     }
 
@@ -4219,7 +4298,8 @@ public object FfiConverterTypeRdpConfig: FfiConverterRustBuffer<RdpConfig> {
             FfiConverterBoolean.allocationSize(value.`enableCredssp`) +
             FfiConverterOptionalString.allocationSize(value.`pinnedCertSha256`) +
             FfiConverterBoolean.allocationSize(value.`progressiveUpgrade`) +
-            FfiConverterBoolean.allocationSize(value.`avcEnabled`)
+            FfiConverterBoolean.allocationSize(value.`avcEnabled`) +
+            FfiConverterUInt.allocationSize(value.`keyboardLayout`)
     )
 
     override fun write(value: RdpConfig, buf: ByteBuffer) {
@@ -4233,6 +4313,7 @@ public object FfiConverterTypeRdpConfig: FfiConverterRustBuffer<RdpConfig> {
             FfiConverterOptionalString.write(value.`pinnedCertSha256`, buf)
             FfiConverterBoolean.write(value.`progressiveUpgrade`, buf)
             FfiConverterBoolean.write(value.`avcEnabled`, buf)
+            FfiConverterUInt.write(value.`keyboardLayout`, buf)
     }
 }
 
@@ -4586,6 +4667,34 @@ public object FfiConverterOptionalTypeSocksProxyConfig: FfiConverterRustBuffer<S
         } else {
             buf.put(1)
             FfiConverterTypeSocksProxyConfig.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
         }
     }
 }

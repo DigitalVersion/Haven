@@ -88,6 +88,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.hilt.navigation.compose.hiltViewModel
+import sh.haven.core.data.NativeFeatures
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.rclone.RCLONE_OAUTH_PROVIDERS
@@ -1021,7 +1022,7 @@ fun ConnectionEditDialog(
                 // The list now shows Local profiles like every other
                 // transport, so this dropdown entry produces a visible,
                 // editable result again. (#114)
-                val transportOptions = listOf(
+                val allTransportOptions = listOf(
                     "SSH" to "SSH",
                     "MOSH" to "Mosh",
                     "ET" to "Eternal Terminal",
@@ -1037,13 +1038,40 @@ fun ConnectionEditDialog(
                     "EMAIL" to "Email (IMAP / Proton)",
                     "RETICULUM" to "Reticulum",
                 )
+                // #510: the terminal build ships no RDP or SPICE client, so
+                // offering them here would only produce a profile that fails
+                // at connect with "native library failed to load".
+                //
+                // Only what is OFFERED is filtered. An existing profile of a
+                // missing type still opens and still shows its own transport,
+                // because the label lookup below reads the unfiltered list —
+                // filtering that too would throw NoSuchElementException on a
+                // profile the user already has. VNC stays: its client is
+                // Kotlin and ships in every build.
+                val dialogContext = LocalContext.current
+                val transportOptions = remember(dialogContext) {
+                    val native = NativeFeatures(dialogContext)
+                    TransportAvailability.offered(
+                        allTransportOptions,
+                        rdp = native.rdp,
+                        spice = native.spice,
+                        // Probed, not looked for: libgojni.so is present in
+                        // every build, but the terminal flavour's copy is
+                        // built without rclone.
+                        rclone = sh.haven.rclone.bridge.RcloneBridge.available,
+                    )
+                }
                 var transportExpanded by remember { mutableStateOf(false) }
                 ExposedDropdownMenuBox(
                     expanded = transportExpanded,
                     onExpandedChange = { transportExpanded = it },
                 ) {
                     OutlinedTextField(
-                        value = transportOptions.first { it.first == selectedTransport }.second,
+                        // Unfiltered on purpose: a profile whose transport this
+                        // build cannot run still names it rather than crashing
+                        // the dialog on a missing entry (#510).
+                        value = allTransportOptions.firstOrNull { it.first == selectedTransport }
+                            ?.second ?: selectedTransport,
                         onValueChange = {},
                         readOnly = true,
                         label = { Text(stringResource(R.string.connections_field_transport)) },
@@ -3379,6 +3407,8 @@ fun ConnectionEditDialog(
                             spaExplicitIp = spaExplicitIp.ifBlank { null },
                             spaPort = spaPort.toIntOrNull()?.takeIf { it in 1..65535 }
                                 ?: SpaConfig.DEFAULT_SPA_PORT,
+                        ).withRoutingSelection(
+                            proxyType, proxyHost, proxyPort, proxyUser, proxyPassword, tunnelConfigId,
                         )
                     } else if (connectionType == "RDP") {
                         val rdpPortInt = port.toIntOrNull() ?: 3389
@@ -3415,6 +3445,8 @@ fun ConnectionEditDialog(
                             spaExplicitIp = spaExplicitIp.ifBlank { null },
                             spaPort = spaPort.toIntOrNull()?.takeIf { it in 1..65535 }
                                 ?: SpaConfig.DEFAULT_SPA_PORT,
+                        ).withRoutingSelection(
+                            proxyType, proxyHost, proxyPort, proxyUser, proxyPassword, tunnelConfigId,
                         )
                     } else if (connectionType == "SPICE") {
                         val spicePortInt = port.toIntOrNull() ?: 5900
@@ -3447,6 +3479,8 @@ fun ConnectionEditDialog(
                             spaExplicitIp = spaExplicitIp.ifBlank { null },
                             spaPort = spaPort.toIntOrNull()?.takeIf { it in 1..65535 }
                                 ?: SpaConfig.DEFAULT_SPA_PORT,
+                        ).withRoutingSelection(
+                            proxyType, proxyHost, proxyPort, proxyUser, proxyPassword, tunnelConfigId,
                         )
                     } else if (connectionType == "RCLONE") {
                         (existing ?: ConnectionProfile(
@@ -3556,6 +3590,8 @@ fun ConnectionEditDialog(
                             spaExplicitIp = spaExplicitIp.ifBlank { null },
                             spaPort = spaPort.toIntOrNull()?.takeIf { it in 1..65535 }
                                 ?: SpaConfig.DEFAULT_SPA_PORT,
+                        ).withRoutingSelection(
+                            proxyType, proxyHost, proxyPort, proxyUser, proxyPassword, tunnelConfigId,
                         )
                     } else if (connectionType == "SSH") {
                         // CF tunnel transport forces port 22 (the tunnel

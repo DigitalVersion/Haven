@@ -53,9 +53,9 @@
     <string name="settings_view_connection_log_title">View connection log</string>
     <string name="settings_view_connection_log_subtitle">Connection history and events</string>
     <string name="settings_verbose_logging_title">Verbose connection logging</string>
-    <string name="settings_verbose_logging_subtitle">Capture protocol details for SSH, Mosh, and ET connections. May include hostnames and usernames</string>
-    <string name="settings_rdp_progressive_upgrade_title">RDP: decode progressive upgrade tiles (experimental)</string>
-    <string name="settings_rdp_progressive_upgrade_subtitle">Fills the black squares seen on some Windows RDP desktops by decoding RemoteFX-Progressive refinement tiles. Experimental (#418) — if the picture looks worse, turn this off</string>
+    <string name="settings_verbose_logging_subtitle">Capture protocol details for SSH, Mosh, ET, and RDP connections — including RDP frame timings, which are what a slow remote desktop needs. May include hostnames and usernames</string>
+    <string name="settings_rdp_progressive_upgrade_title">RDP: decode progressive refinement tiles</string>
+    <string name="settings_rdp_progressive_upgrade_subtitle">On by default. Windows sends each part of the picture roughly first and then sharpens it; without this those areas stay coarse, which looks like haloing around text. Turn it off only to compare (#496)</string>
     <string name="settings_rdp_avc_title">RDP: H.264/AVC420 decoding</string>
     <string name="settings_rdp_avc_subtitle">On by default. Decodes H.264 graphics so servers that only speak H.264 — notably KRDP (KDE\'s RDP server) — render instead of a black screen; hardware-decoded on-device via MediaCodec. Turn off if a Windows or xrdp desktop renders wrong (#425)</string>
 
@@ -106,7 +106,6 @@
     <string name="settings_proot_idle_dialog_title">Auto-stop idle Linux guest</string>
     <string name="settings_proot_idle_dialog_body">After Haven has been in the background this long, stop the Linux guest\'s terminals and desktops to free memory. A running guest service keeps it up. A long job in a backgrounded terminal would be stopped too — leave this off unless you want idle reclamation.</string>
     <string name="settings_proot_idle_off_label">Off</string>
-    <string name="settings_proot_idle_minutes">%1$d minutes</string>
     <string name="settings_shizuku_title">Shizuku integration</string>
     <string name="settings_shizuku_enabled">Enabled — auto battery exemption, Wayland socket sharing</string>
     <string name="settings_shizuku_available">Shizuku running — tap to grant permission</string>
@@ -232,7 +231,7 @@
     <!-- Terminal background opacity -->
     <string name="settings_terminal_opacity_title">Background opacity</string>
     <string name="settings_terminal_opacity_value">%1$d%%</string>
-    <string name="settings_terminal_opacity_hint">Below 100%% Haven becomes translucent and shows your device wallpaper behind every screen (terminal, lists, settings). A per-connection override applies only to that terminal.</string>
+    <string name="settings_terminal_opacity_hint">Below 100% Haven becomes translucent and shows your device wallpaper behind every screen (terminal, lists, settings). A per-connection override applies only to that terminal.</string>
 
     <!-- Scrollback rows dialog -->
     <string name="settings_scrollback_rows_dialog_title">Scrollback rows per tab</string>
@@ -454,6 +453,15 @@
     <string name="settings_audit_log_clear_dialog_title">Clear all logs?</string>
     <string name="settings_audit_log_no_verbose">No verbose log for this entry</string>
     <string name="settings_audit_log_share_chooser">Share log</string>
+
+    <!-- #509 #517: native crashes recovered from the system on the next launch -->
+    <string name="settings_native_crash_title">App crashes</string>
+    <string name="settings_native_crash_subtitle">Haven closed unexpectedly. The report below identifies where — please attach it to a bug report.</string>
+    <string name="settings_native_crash_subtitle_no_trace">Haven closed unexpectedly. Android kept no detailed report for these, so only the time and the signal are known — please attach them to a bug report anyway, as the signal narrows it down.</string>
+    <string name="settings_native_crash_no_trace">No detailed report was kept for this crash.</string>
+    <string name="settings_native_crash_copy">Copy report</string>
+    <string name="settings_native_crash_copied">Crash report copied</string>
+    <string name="settings_native_crash_dismiss">Dismiss</string>
     <string name="settings_audit_log_status_sync">Sync</string>
     <string name="settings_audit_log_status_sync_failed">Sync failed</string>
 
@@ -499,4 +507,8 @@
     <string name="settings_paired_clients_unpair_message">It will have to be approved again the next time it connects, and any auto-approval is revoked.</string>
     <string name="settings_paired_clients_unpair_confirm">Un-pair</string>
     <string name="settings_paired_clients_unpaired_toast">Un-paired \'%1$s\'</string>
+    <plurals name="settings_proot_idle_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
 </resources>
