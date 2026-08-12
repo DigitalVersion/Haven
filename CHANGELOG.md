@@ -5,6 +5,11 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.16
+
+- Fork maintenance release (DigitalVersion/Haven): first sync against upstream after 53 fork-specific commits diverged — 150 upstream commits merged cleanly, no manual conflict resolution needed.
+- Fixed 2 log calls (Files quick-nav error path) that leaked a raw connection label, caught by upstream's new `NoRawPiiInLogsTest` (#518) guard.
+
 ## v5.87.15
 
 - RDP now tells the server your keyboard layout (from the phone's language) instead of always claiming US English — Windows, xrdp and KRDP set the session layout from it. VirtualBox-style servers ignore it either way.
