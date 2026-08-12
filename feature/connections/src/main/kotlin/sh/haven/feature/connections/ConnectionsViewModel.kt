@@ -612,7 +612,7 @@ class ConnectionsViewModel @Inject constructor(
             try {
                 silentSshDialer.dialFilesSession(profile)
             } catch (e: Exception) {
-                Log.e(TAG, "connectFiles failed for ${profile.label}: ${e.message}", e)
+                Log.e(TAG, "connectFiles failed for ${LogRedact.of(profile.label)}: ${e.message}", e)
                 _error.value = "Couldn't open Files for ${profile.label} — Terminal is unaffected.\n${e.message}"
             } finally {
                 _connectingProfileId.value = null

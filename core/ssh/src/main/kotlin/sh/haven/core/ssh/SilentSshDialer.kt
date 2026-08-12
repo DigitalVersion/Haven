@@ -7,6 +7,7 @@ import sh.haven.core.data.db.entities.ConnectionLog
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.fido.FidoAuthenticator
+import sh.haven.core.redact.LogRedact
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -94,7 +95,7 @@ class SilentSshDialer @Inject constructor(
             sshSessionManager.updateStatus(sessionId, SshSessionManager.SessionState.Status.CONNECTED)
             return sessionId
         } catch (e: Exception) {
-            Log.e(TAG, "dialFilesSession failed for ${profile.label}: ${e.message}", e)
+            Log.e(TAG, "dialFilesSession failed for ${LogRedact.of(profile.label)}: ${e.message}", e)
             connectionLogRepository.logEvent(
                 profile.id,
                 ConnectionLog.Status.FAILED,
