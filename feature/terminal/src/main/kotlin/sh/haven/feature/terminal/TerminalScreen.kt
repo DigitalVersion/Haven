@@ -410,7 +410,7 @@ fun TerminalScreen(
             }
             tab.sendInput(payload.toByteArray())
         } else {
-            viewModel.showNewTabMessage("Không có tab để dán vào")
+            viewModel.showNewTabMessage("No active tab to paste into")
         }
         viewModel.consumeScanInjection()
     }
@@ -430,7 +430,7 @@ fun TerminalScreen(
             }
             tab.sendInput(payload.toByteArray())
         } else {
-            viewModel.showNewTabMessage("Không có tab để dán vào")
+            viewModel.showNewTabMessage("No active tab to paste into")
         }
         viewModel.consumeAttachInjection()
     }
