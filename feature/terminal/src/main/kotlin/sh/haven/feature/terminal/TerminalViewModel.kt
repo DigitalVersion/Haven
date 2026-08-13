@@ -350,8 +350,7 @@ class TerminalViewModel @Inject constructor(
                 fileSize = fileSize,
                 initialProfileId = initialProfileId,
             ) ?: return@launch
-            val tab = _tabs.value.getOrNull(_activeTabIndex.value) ?: return@launch
-            tab.sendInput(payload.toByteArray())
+            _pendingAttachInjection.value = payload
         }
     }
 
@@ -368,6 +367,10 @@ class TerminalViewModel @Inject constructor(
     private val _pendingScanInjection = MutableStateFlow<String?>(null)
     val pendingScanInjection: StateFlow<String?> = _pendingScanInjection.asStateFlow()
     fun consumeScanInjection() { _pendingScanInjection.value = null }
+
+    private val _pendingAttachInjection = MutableStateFlow<String?>(null)
+    val pendingAttachInjection: StateFlow<String?> = _pendingAttachInjection.asStateFlow()
+    fun consumeAttachInjection() { _pendingAttachInjection.value = null }
 
     /**
      * Decode [sourceUri] into a bitmap, hand it to the appropriate scan

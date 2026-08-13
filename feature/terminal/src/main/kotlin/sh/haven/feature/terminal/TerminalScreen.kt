@@ -404,13 +404,31 @@ fun TerminalScreen(
         val tab = viewModel.tabs.value.getOrNull(viewModel.activeTabIndex.value)
         if (tab != null) {
             val payload = if (tab.bracketPasteMode.value) {
-                "[200~$text[201~"
+                "\u001b[200~$text\u001b[201~"
             } else {
                 text
             }
             tab.sendInput(payload.toByteArray())
         }
         viewModel.consumeScanInjection()
+    }
+
+    // Inject attached file path at the cursor on the active tab, honouring
+    // bracket-paste to prevent zsh/tmux filtering or raw text issues.
+    // Drains the StateFlow via consumeAttachInjection.
+    val pendingAttachInjection by viewModel.pendingAttachInjection.collectAsState()
+    LaunchedEffect(pendingAttachInjection) {
+        val text = pendingAttachInjection ?: return@LaunchedEffect
+        val tab = viewModel.tabs.value.getOrNull(viewModel.activeTabIndex.value)
+        if (tab != null) {
+            val payload = if (tab.bracketPasteMode.value) {
+                "\u001b[200~$text\u001b[201~"
+            } else {
+                text
+            }
+            tab.sendInput(payload.toByteArray())
+        }
+        viewModel.consumeAttachInjection()
     }
 
     // Read at composition time — stringResource is @Composable and so
