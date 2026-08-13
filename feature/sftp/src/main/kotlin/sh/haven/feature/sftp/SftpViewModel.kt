@@ -4806,6 +4806,9 @@ class SftpViewModel @Inject constructor(
             try {
                 if (!pasteInProgress.get()) _loading.value = true
 
+                // Probe active sessions and reconnect if stale/dead
+                sessionManager.probeAndReconnectStale()
+
                 // SSH/SFTP calls below open or write to channels over the
                 // network, so they must run off the Main dispatcher.
                 //

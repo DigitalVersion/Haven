@@ -102,23 +102,6 @@ class SshSessionManager @Inject constructor(
     // ioExecutor; logEvent self-gates on the connection-logging preference.
     private val logScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    init {
-        logScope.launch {
-            while (true) {
-                kotlinx.coroutines.delay(10_000)
-                try {
-                    _sessions.value.forEach { (sessionId, session) ->
-                        if (session.status == SessionState.Status.CONNECTED && !session.client.isConnected) {
-                            Log.d(TAG, "Watchdog detected dead session $sessionId (client.isConnected is false) — updating status to DISCONNECTED")
-                            updateStatus(sessionId, SessionState.Status.DISCONNECTED)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in sessions watchdog", e)
-                }
-            }
-        }
-    }
 
     /**
      * Registered by the feature-layer emulator owner (#290 issue #2) so the
