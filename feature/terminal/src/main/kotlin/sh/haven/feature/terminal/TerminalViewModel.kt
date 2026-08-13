@@ -2329,6 +2329,7 @@ class TerminalViewModel @Inject constructor(
     private val _newTabMessage = MutableStateFlow<String?>(null)
     val newTabMessage: StateFlow<String?> = _newTabMessage.asStateFlow()
     fun dismissNewTabMessage() { _newTabMessage.value = null }
+    fun showNewTabMessage(message: String) { _newTabMessage.value = message }
 
     /**
      * FIDO2/security-key touch/PIN prompt, surfaced so the terminal screen can

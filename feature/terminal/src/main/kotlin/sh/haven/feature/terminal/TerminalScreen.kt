@@ -409,6 +409,8 @@ fun TerminalScreen(
                 text
             }
             tab.sendInput(payload.toByteArray())
+        } else {
+            viewModel.showNewTabMessage("Không có tab để dán vào")
         }
         viewModel.consumeScanInjection()
     }
@@ -427,6 +429,8 @@ fun TerminalScreen(
                 text
             }
             tab.sendInput(payload.toByteArray())
+        } else {
+            viewModel.showNewTabMessage("Không có tab để dán vào")
         }
         viewModel.consumeAttachInjection()
     }
