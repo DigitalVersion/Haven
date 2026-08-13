@@ -498,6 +498,9 @@ class SftpViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _listError = MutableStateFlow<String?>(null)
+    val listError: StateFlow<String?> = _listError.asStateFlow()
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
@@ -4819,10 +4822,27 @@ class SftpViewModel @Inject constructor(
                 // re-ran this same function — turned out to be a live
                 // session. Wait briefly for the handshake to resolve (either
                 // way) before falling through to the existing fallback chain.
+                val profile = repository.getById(profileId)
                 withTimeoutOrNull(5_000) {
-                    sessionManager.sessions.first { sessions ->
-                        sessions.values.filter { it.profileId == profileId }
-                            .let { forProfile -> forProfile.isEmpty() || forProfile.any { it.status != SessionState.Status.CONNECTING } }
+                    when {
+                        profile?.isMosh == true -> {
+                            moshSessionManager.sessions.first { sessions ->
+                                sessions.values.filter { it.profileId == profileId }
+                                    .let { forProfile -> forProfile.isEmpty() || forProfile.any { it.status != MoshSessionManager.SessionState.Status.CONNECTING } }
+                            }
+                        }
+                        profile?.isEternalTerminal == true -> {
+                            etSessionManager.sessions.first { sessions ->
+                                sessions.values.filter { it.profileId == profileId }
+                                    .let { forProfile -> forProfile.isEmpty() || forProfile.any { it.status != EtSessionManager.SessionState.Status.CONNECTING } }
+                            }
+                        }
+                        else -> {
+                            sessionManager.sessions.first { sessions ->
+                                sessions.values.filter { it.profileId == profileId }
+                                    .let { forProfile -> forProfile.isEmpty() || forProfile.any { it.status != SessionState.Status.CONNECTING } }
+                            }
+                        }
                     }
                 }
 

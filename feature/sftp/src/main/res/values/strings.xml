@@ -336,4 +336,5 @@
     <string name="sftp_compression_audio_bitrate">Audio bitrate</string>
     <string name="sftp_filter_title">Filters</string>
     <string name="sftp_filter_rotation">Rotation</string>
+    <string name="sftp_retry">Retry</string>
 </resources>
