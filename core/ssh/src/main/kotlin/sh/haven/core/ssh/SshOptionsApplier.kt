@@ -25,6 +25,8 @@ object SshOptionsApplier {
     interface Target {
         fun getConfig(key: String): String?
         fun setConfig(key: String, value: String)
+        fun setServerAliveInterval(intervalMs: Int) {}
+        fun setServerAliveCountMax(count: Int) {}
     }
 
     private val OPENSSH_TO_JSCH: Map<String, List<String>> = mapOf(
@@ -65,6 +67,20 @@ object SshOptionsApplier {
                     target.setConfig(jschKey, mergeAlgorithmList(base, value))
                 }
                 lower == "pubkeyauthentication" -> applyPubkeyAuthentication(target, value)
+                lower == "serveraliveinterval" -> {
+                    val sec = value.toIntOrNull() ?: 0
+                    if (sec > 0) {
+                        target.setServerAliveInterval(sec * 1000)
+                    }
+                    target.setConfig(key, value)
+                }
+                lower == "serveralivecountmax" -> {
+                    val count = value.toIntOrNull() ?: 0
+                    if (count > 0) {
+                        target.setServerAliveCountMax(count)
+                    }
+                    target.setConfig(key, value)
+                }
                 else -> target.setConfig(key, value)
             }
         }
@@ -73,6 +89,12 @@ object SshOptionsApplier {
     private fun targetOf(session: Session): Target = object : Target {
         override fun getConfig(key: String): String? = session.getConfig(key)
         override fun setConfig(key: String, value: String) { session.setConfig(key, value) }
+        override fun setServerAliveInterval(intervalMs: Int) {
+            try { session.setServerAliveInterval(intervalMs) } catch (_: Exception) {}
+        }
+        override fun setServerAliveCountMax(count: Int) {
+            try { session.setServerAliveCountMax(count) } catch (_: Exception) {}
+        }
     }
 
     private fun applyPubkeyAuthentication(target: Target, value: String) {

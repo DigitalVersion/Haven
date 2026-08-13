@@ -374,7 +374,7 @@ class SshClient : SshConnection {
         val caRepo = installHostCaRepository(sess, trustedHostCaKeys)
         // Disable GSSAPI auth — it causes multi-second timeouts on most servers
         sess.setConfig("PreferredAuthentications", "publickey,keyboard-interactive,password")
-        sess.serverAliveInterval = 15_000
+        sess.serverAliveInterval = 20_000
         sess.serverAliveCountMax = 3
 
         val fallbackKiPassword: CharArray? = applyAuthMethods(config, sess)
@@ -612,7 +612,7 @@ class SshClient : SshConnection {
         sess.setConfig("StrictHostKeyChecking", "no")
         val caRepo = installHostCaRepository(sess, trustedHostCaKeys)
         sess.setConfig("PreferredAuthentications", "publickey,keyboard-interactive,password")
-        sess.serverAliveInterval = 15_000
+        sess.serverAliveInterval = 20_000
         sess.serverAliveCountMax = 3
 
         val fallbackKiPassword: CharArray? = applyAuthMethods(config, sess)
