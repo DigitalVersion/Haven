@@ -35,4 +35,22 @@ class SwipeArrowsTest {
         assertEquals(0x1b, bytes[0].toInt())
         assertEquals("[A", String(bytes.copyOfRange(1, bytes.size)))
     }
+
+    /** #524b: all four held-swipe directions map literally, CSI and SS3. */
+    @Test
+    fun `held swipe directions map to the four arrows`() {
+        fun tail(bytes: ByteArray) = String(bytes.copyOfRange(1, bytes.size))
+        assertEquals("[A", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Up, appMode = false)))
+        assertEquals("[B", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Down, appMode = false)))
+        assertEquals("[C", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Right, appMode = false)))
+        assertEquals("[D", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Left, appMode = false)))
+        assertEquals("OA", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Up, appMode = true)))
+        assertEquals("OD", tail(arrowKeyBytesFor(org.connectbot.terminal.SwipeHoldDirection.Left, appMode = true)))
+    }
+
+    /** #524b cadence sanity: arm delay is longer than the repeat period. */
+    @Test
+    fun `hold cadence arms before it repeats`() {
+        assertTrue(SWIPE_HOLD_INITIAL_DELAY_MS > SWIPE_HOLD_REPEAT_MS)
+    }
 }

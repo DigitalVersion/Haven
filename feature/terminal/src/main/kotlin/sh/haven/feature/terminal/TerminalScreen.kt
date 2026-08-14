@@ -228,6 +228,9 @@ fun TerminalScreen(
     onNavigateToConnections: () -> Unit = {},
     onNavigateToVnc: (host: String, port: Int, username: String?, password: String?, sshForward: Boolean, sshSessionId: String?, colorDepth: String) -> Unit = { _, _, _, _, _, _, _ -> },
     onSelectionActiveChanged: (Boolean) -> Unit = {},
+    // Reports the latched swipe-arrows mode (#524b) so the host can suppress
+    // the tab-switch pager gesture while the Swipe key owns horizontal swipes.
+    onSwipeArrowsActiveChanged: (Boolean) -> Unit = {},
     // Reports when the active terminal wants a translucent (wallpaper
     // see-through) background, so the host can make the Scaffold/window
     // behind the terminal transparent. False otherwise.
@@ -299,6 +302,7 @@ fun TerminalScreen(
     val ctrlLocked by viewModel.ctrlLocked.collectAsState()
     val altLocked by viewModel.altLocked.collectAsState()
     val swipeArrowsMode by viewModel.swipeArrowsMode.collectAsState()
+    LaunchedEffect(swipeArrowsMode) { onSwipeArrowsActiveChanged(swipeArrowsMode) }
     // Push the live system light/dark mode to the ViewModel so its
     // [terminalColorScheme] flow can resolve the auto-switch pref correctly.
     // Must run before collecting the flow so the first emission reflects
@@ -1407,6 +1411,53 @@ fun TerminalScreen(
                                 )
                                 return true
                             }
+
+                            // Hold-to-repeat (#524b): in latched swipe-arrows mode
+                            // the swipe direction SELECTS the arrow and holding
+                            // repeats it at a fixed cadence — lift to stop.
+                            // Distance stops mattering past the initial direction
+                            // threshold, so a flick is one keystroke and a held
+                            // drag is continuous. Reversing the finger switches
+                            // arrows mid-hold. Claiming horizontal swipes here
+                            // also keeps them from the tab pager (the NavHost
+                            // gate suppresses the pager override too).
+                            private var holdDirection: org.connectbot.terminal.SwipeHoldDirection? = null
+                            private var holdJob: kotlinx.coroutines.Job? = null
+
+                            private fun holdArrowBytes(dir: org.connectbot.terminal.SwipeHoldDirection) =
+                                arrowKeyBytesFor(dir, activeTab.cursorKeyAppMode.value)
+
+                            override fun onSwipeHoldStart(
+                                col: Int,
+                                row: Int,
+                                direction: org.connectbot.terminal.SwipeHoldDirection,
+                            ): Boolean {
+                                // Only the latched mode gets hold-to-repeat; the
+                                // automatic alt-screen path keeps quantized
+                                // scrolling, which matches touch-scroll feel.
+                                if (!swipeArrowsMode) return false
+                                holdDirection = direction
+                                holdJob?.cancel()
+                                holdJob = coroutineScope.launch {
+                                    activeTab.sendInput(holdArrowBytes(direction))
+                                    kotlinx.coroutines.delay(SWIPE_HOLD_INITIAL_DELAY_MS)
+                                    while (true) {
+                                        holdDirection?.let { activeTab.sendInput(holdArrowBytes(it)) }
+                                        kotlinx.coroutines.delay(SWIPE_HOLD_REPEAT_MS)
+                                    }
+                                }
+                                return true
+                            }
+
+                            override fun onSwipeHold(direction: org.connectbot.terminal.SwipeHoldDirection) {
+                                holdDirection = direction
+                            }
+
+                            override fun onSwipeHoldEnd() {
+                                holdJob?.cancel()
+                                holdJob = null
+                                holdDirection = null
+                            }
                         } else null
                     }
 
@@ -2014,6 +2065,28 @@ internal fun arrowKeyBytes(up: Boolean, appMode: Boolean): ByteArray {
     val prefix = if (appMode) "\u001bO" else "\u001b["
     return (prefix + if (up) "A" else "B").toByteArray()
 }
+
+/**
+ * Arrow bytes for a held-swipe direction (#524b) — literal finger mapping in
+ * all four directions, SS3 in cursor-application mode like [arrowKeyBytes].
+ */
+internal fun arrowKeyBytesFor(
+    direction: org.connectbot.terminal.SwipeHoldDirection,
+    appMode: Boolean,
+): ByteArray {
+    val prefix = if (appMode) "\u001bO" else "\u001b["
+    val letter = when (direction) {
+        org.connectbot.terminal.SwipeHoldDirection.Up -> "A"
+        org.connectbot.terminal.SwipeHoldDirection.Down -> "B"
+        org.connectbot.terminal.SwipeHoldDirection.Right -> "C"
+        org.connectbot.terminal.SwipeHoldDirection.Left -> "D"
+    }
+    return (prefix + letter).toByteArray()
+}
+
+/** Hold-to-repeat cadence (#524b): held-key feel — brief arm, then steady. */
+internal const val SWIPE_HOLD_INITIAL_DELAY_MS = 350L
+internal const val SWIPE_HOLD_REPEAT_MS = 90L
 
 /**
  * Which arrow a swipe sends. The gesture layer reports [scrollUp] in

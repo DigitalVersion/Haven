@@ -519,6 +519,9 @@ fun HavenNavHost(
 
     // Disable pager swipe while terminal text selection is active
     var terminalSelectionActive by remember { mutableStateOf(false) }
+    // #524b: while the Swipe key is latched, horizontal swipes inside the
+    // terminal are arrow keys — the pager override must not fight them.
+    var terminalSwipeArrowsActive by remember { mutableStateOf(false) }
     // True while the active terminal wants a wallpaper see-through background;
     // makes the Scaffold container transparent so the (window-level)
     // FLAG_SHOW_WALLPAPER actually reaches the eye behind the terminal.
@@ -702,6 +705,7 @@ fun HavenNavHost(
                             }
                         },
                         onSelectionActiveChanged = { terminalSelectionActive = it },
+                        onSwipeArrowsActiveChanged = { terminalSwipeArrowsActive = it },
                         onTransparentChanged = { terminalTransparent = it },
                         onBackgroundColorChanged = { terminalBackground = it },
                         onReorderModeChanged = { terminalReorderMode = it },
@@ -729,7 +733,7 @@ fun HavenNavHost(
                         },
                         terminalModifier = Modifier.pagerSwipeOverride(
                             pagerState, coroutineScope,
-                            isSelectionActive = { terminalSelectionActive || terminalReorderMode },
+                            isSelectionActive = { terminalSelectionActive || terminalReorderMode || terminalSwipeArrowsActive },
                             onSwipeActiveChange = { isUserSwiping = it },
                             onAdoptPage = { page -> screens.getOrNull(page)?.let { requestScreen(it) } },
                         ),
