@@ -5,6 +5,13 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.24
+
+- The toolbar's Swipe mode now repeats: hold a swipe and the arrow key repeats until you let go — drag a bit further to speed through, reverse direction mid-hold without lifting (#524, thanks a8645322). Before, each swipe sent exactly one arrow, which made cursoring across a long shell line an exercise in wrist endurance. Tab-switch gestures are suppressed while Swipe mode is latched, so a horizontal swipe means ← / → and never "jump to the Files tab".
+- RDP now types accented characters on AltGr-overlay layouts by synthesising real AltGr scancode sequences (#504, thanks pawlosck). Polish programmers layout ships first: ą ć ę ł ń ó ś ź ż (both cases) reach servers that only accept scancodes — VirtualBox's VRDP being the reporter's case, where these letters previously vanished. QWERTZ/AZERTY-style base-remapped layouts are a separate, tracked follow-up.
+
+⌨️ **Input is a conversation with a stubborn listener.** Both fixes are about meeting the other side where it is: a VRDP server that refuses Unicode gets the raw scancode dance a physical Polish keyboard would send; a touchscreen that has no key-repeat hardware gets repeat synthesised from what a finger naturally does — staying put.
+
 ## v5.87.23
 
 - VNC through an SSH tunnel now connects to the VNC host you configured (#538, thanks connesc). The tunnel's remote target was hardcoded to the SSH server's own loopback — fine when the VNC server *is* the jump host, wrong for every server behind it. The field is now honoured verbatim, with loopback kept only when it names the jump host itself.
