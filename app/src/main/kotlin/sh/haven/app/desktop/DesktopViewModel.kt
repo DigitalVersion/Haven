@@ -1260,18 +1260,25 @@ class DesktopViewModel @Inject constructor(
                 if (sshForward && sshSessionId != null) {
                     val sshClient = findSshClient(sshSessionId)
                         ?: throw IllegalStateException("SSH session not found")
-                    // Tunnel target is 127.0.0.1 on the SSH server, not the
-                    // SSH profile's external host. VNC servers like wayvnc
-                    // typically bind loopback only; using the SSH host's
-                    // external address makes sshd try to connect back to
-                    // itself over the public interface and hit ECONNREFUSED.
-                    // This was #104's actual cause; the earlier 127.0.0.1
-                    // fix in VncScreen covered the pure VNC→tunnel path
-                    // but missed the saved-on-SSH Desktop-tab path.
-                    val lp = sshClient.setPortForwardingL("127.0.0.1", 0, "127.0.0.1", port)
+                    // Forward target as seen FROM the SSH server. When the VNC
+                    // server is the jump host itself (#104: wayvnc binds
+                    // loopback only, and dialing the host's own external
+                    // address back through sshd hits ECONNREFUSED), the target
+                    // must be 127.0.0.1 — detected by the VNC host matching
+                    // the jump profile's host. Any OTHER value is a distinct
+                    // machine behind the jump host and must be honoured
+                    // verbatim; hardcoding loopback here sent every jump-host
+                    // topology to the wrong machine (#538). RDP/SPICE below
+                    // already pass the host through.
+                    val jumpHost = profileId?.let { pid ->
+                        connectionRepository.getById(pid)?.vncSshProfileId
+                            ?.let { connectionRepository.getById(it)?.host }
+                    }
+                    val target = vncForwardTarget(host, jumpHost)
+                    val lp = sshClient.setPortForwardingL("127.0.0.1", 0, target, port)
                     actualHost = "127.0.0.1"
                     actualPort = lp
-                    Log.d(TAG, "VNC SSH tunnel: localhost:$lp -> 127.0.0.1:$port (via ${LogRedact.of(host)})")
+                    Log.d(TAG, "VNC SSH tunnel: localhost:$lp -> ${LogRedact.of(target)}:$port (via ${LogRedact.of(host)})")
                     // Tie this tab to the SSH session: if the SSH is torn down
                     // for any reason (Connections-list disconnect, network
                     // death, jump cascade), the lease fires and closes the tab
@@ -2186,4 +2193,18 @@ class DesktopViewModel @Inject constructor(
         super.onCleared()
         _tabs.value.forEach { disconnectTab(it) }
     }
+}
+
+/**
+ * The remote target for a VNC-over-SSH local forward, as dialled FROM the
+ * SSH server. The configured VNC host is honoured verbatim (#538: a distinct
+ * machine behind the jump host) except when it names the jump host itself —
+ * then loopback, because the server there typically binds 127.0.0.1 only and
+ * sshd dialling its own external address refuses (#104). Blank falls back to
+ * loopback too.
+ */
+internal fun vncForwardTarget(vncHost: String?, jumpHost: String?): String = when {
+    vncHost.isNullOrBlank() -> "127.0.0.1"
+    !jumpHost.isNullOrBlank() && vncHost.trim() == jumpHost.trim() -> "127.0.0.1"
+    else -> vncHost.trim()
 }
