@@ -5,6 +5,14 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.26
+
+- Two diagnostics that turn open bug reports into readable data. For GNOME Remote Desktop's session-redirection black screen (#117, thanks MrTomiCZ), the redirect error now logs the packet's parsed structure — which fields the server populated and the routing token the eventual reconnect must replay, with the one-time password reduced to a length. For the runaway-scroll report (#524 follow-up in #542), the gesture classifier's one-line-per-swipe outcome record now survives release builds, so `adb logcat -s HavenGesture` shows exactly which path claimed a swipe.
+- Fixed the F-Droid build of the two previous releases: the new Reticulum engine's JVM bindings demanded a specific Java 17 toolchain, which F-Droid's single-JDK build server cannot satisfy (fdroiddata!45740). The bindings already target JVM 1.8, so the pin bought nothing — dropped.
+- Otherwise no behaviour changes — the rest is log lines.
+
+🔬 **A bug report is a measurement problem.** Both of these issues stalled at the same wall: the reporter could see the symptom, but the build they were holding couldn't record the cause. The cheapest fix Haven can ship is the instrument.
+
 ## v5.87.25
 
 - RDP to a VirtualBox VM no longer starts as a permanent black screen after the guest has sat idle (#422, thanks pawlosck). The cause was hiding in plain sight for months: an idle Windows guest turns its virtual display *off*, VirtualBox's RDP server only ever transmits changed regions, and the one kind of input that wakes the display is a keyboard event — pointer motion is filtered as noise. Touch input is all pointer-class, so on Android there was no way to wake it. Haven now watches the first 1.5 seconds of a session; if nothing at all has been painted, it sends a single silent Ctrl tap and the full screen streams in. If the server painted anything, the nudge never fires.
