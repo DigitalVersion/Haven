@@ -1638,6 +1638,25 @@ fn run_rdp_session(
         error!("set_read_timeout post-handshake failed (non-fatal): {}", e);
     }
 
+    // #422: a VirtualBox guest whose virtual display has gone to sleep sends a
+    // new client NOTHING — VRDP only pushes dirty regions, a sleeping display
+    // produces none, and connecting does not invalidate the retained frame.
+    // Only a KEYBOARD event wakes the guest display (device-verified: 10s of
+    // pointer motion is filtered as noise, a lone Ctrl tap repaints within
+    // ~150ms via Display::i_handleDisplayResize). Touch clients never send
+    // keys naturally, so without this the session stays black forever.
+    //
+    // The wake fires only when NO visual update has arrived for the whole
+    // grace window after activation — i.e. the screen is provably blank — so
+    // it can never inject a key into a session the user can see.
+    // HAVEN_RDP_NO_WAKE=1 disables it.
+    let wake_enabled = std::env::var("HAVEN_RDP_NO_WAKE").as_deref() != Ok("1");
+    let wake_deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    let mut wake_sent = false;
+    // Deliberately NOT perf.frames — the perf counters reset on every periodic
+    // report, which made this gate re-arm after each report window.
+    let mut any_visual_update = false;
+
     // Input state tracking
     let mut input_db = ironrdp_input::Database::new();
     let mut input_dumps = 0usize;
@@ -1794,6 +1813,40 @@ fn run_rdp_session(
             }
         }
 
+        // #422: display-wake nudge (see the state setup above the loop). The
+        // read timeout is 100ms, so this check runs at least ~10x/second.
+        if wake_enabled && !wake_sent && !any_visual_update && std::time::Instant::now() >= wake_deadline {
+            wake_sent = true;
+            use ironrdp_pdu::input::sync::SyncToggleFlags;
+            use ironrdp_pdu::input::{InputEvent, InputEventPdu, ScanCodePdu, SyncPdu, scan_code::KeyboardFlags};
+            use ironrdp_pdu::rdp::headers::ShareDataPdu;
+            const SC_LCTRL: u16 = 0x1D;
+            let events = vec![
+                InputEvent::Sync(SyncPdu {
+                    flags: SyncToggleFlags::empty(),
+                }),
+                InputEvent::ScanCode(ScanCodePdu {
+                    flags: KeyboardFlags::empty(),
+                    key_code: SC_LCTRL,
+                }),
+                InputEvent::ScanCode(ScanCodePdu {
+                    flags: KeyboardFlags::RELEASE,
+                    key_code: SC_LCTRL,
+                }),
+            ];
+            let mut buf = ironrdp_core::WriteBuf::new();
+            match active_stage.encode_static(&mut buf, ShareDataPdu::Input(InputEventPdu(events))) {
+                Ok(_) => match tls_framed.write_all(buf.filled()) {
+                    Ok(()) => info!(
+                        "#422: no visual update {}ms after activation; sent display-wake nudge (sync + Ctrl tap)",
+                        1500
+                    ),
+                    Err(e) => error!("#422 wake nudge send failed: {e:?}"),
+                },
+                Err(e) => error!("#422 wake nudge encode failed: {e}"),
+            }
+        }
+
         // Slow-path servers only — the fast-path case is handled on the input
         // thread, which leaves `pending_inputs` empty here (#477).
         if !pending_inputs.is_empty() {
@@ -1864,6 +1917,7 @@ fn run_rdp_session(
                                 ActiveStageOutput::GraphicsUpdate(rect) => {
                                     debug!("GraphicsUpdate at ({},{}) to ({},{})",
                                         rect.left, rect.top, rect.right, rect.bottom);
+                                    any_visual_update = true;
                                     let t_pub = std::time::Instant::now();
                                     update_framebuffer(state, &image, &rect);
                                     perf.publish_us += t_pub.elapsed().as_micros() as u64;
