@@ -5,6 +5,7 @@ import com.jcraft.jsch.SocketFactory
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
+import sh.haven.core.ssh.TunnelPeerAware
 
 /**
  * JSch [Proxy] adapter over a [Tunnel]. JSch hands us `(host, port)` at
@@ -17,9 +18,17 @@ import java.net.Socket
  * proxy for jump-host tunneling. Same lifecycle (`connect` → stream I/O →
  * `close`), just a different source of bytes.
  */
-class TunnelProxy(private val tunnel: Tunnel) : Proxy {
+class TunnelProxy(private val tunnel: Tunnel) : Proxy, TunnelPeerAware {
 
     private var connection: TunneledConnection? = null
+
+    /**
+     * The tunnel-resolved peer IP of the most recent [connect] (#539) —
+     * what the tailnet/netstack actually dialled, MagicDNS names included.
+     * Null before connect or when the backend can't report it.
+     */
+    override val tunnelPeerAddress: String?
+        get() = connection?.remoteAddress
 
     override fun connect(factory: SocketFactory?, host: String, port: Int, timeout: Int) {
         // Tunnels need more headroom than a direct TCP SYN — peer session

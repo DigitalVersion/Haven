@@ -71,6 +71,18 @@ class SshClient : SshConnection {
     override var connectedViaProxy: Boolean = false
         private set
 
+    /**
+     * The tunnel-resolved peer IP of the proxy dial that carried the last
+     * successful [connect], when the chain can report one (Tailscale /
+     * WireGuard tunnels — see [TunnelPeerAware]). Null for direct
+     * connections, plain proxies, and jump hosts. #539: this is the literal
+     * IP a tunneled mosh session must use as its UDP destination — the
+     * profile's host may be a MagicDNS name only the tunnel can resolve.
+     */
+    @Volatile
+    var tunnelPeerAddress: String? = null
+        private set
+
     /** Whether the active session should set agent forwarding on newly opened shell/exec channels. */
     private var agentForwardingEnabled = false
 
@@ -404,6 +416,7 @@ class SshClient : SshConnection {
         try {
             sess.connect(connectTimeoutMs)
             timing.mark("handshake")
+            tunnelPeerAddress = proxy?.tunnelPeerAddress
             Log.i(TAG, "connect timing: ${timing.summary()}")
         } catch (e: JSchException) {
             // Logged on the failure path too: a connect that times out is
@@ -637,6 +650,7 @@ class SshClient : SshConnection {
         try {
             sess.connect(connectTimeoutMs)
             timing.mark("handshake")
+            tunnelPeerAddress = proxy?.tunnelPeerAddress
             Log.i(TAG, "connect timing: ${timing.summary()}")
         } catch (e: JSchException) {
             timing.mark("handshake")

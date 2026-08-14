@@ -100,6 +100,15 @@ interface TunneledConnection {
     val inputStream: InputStream
     val outputStream: OutputStream
 
+    /**
+     * The literal IP this connection was actually established to — the
+     * tunnel-resolved form of whatever name was dialled (Tailscale MagicDNS
+     * included), or null when the backend can't say. Callers that must
+     * satisfy an IP-literal contract (#539: the mosh UDP destination) use
+     * this instead of re-resolving the profile host in the wrong namespace.
+     */
+    val remoteAddress: String? get() = null
+
     /** Close the connection. Idempotent. */
     fun close()
 }

@@ -30,4 +30,22 @@ class HavenProxy internal constructor(
 ) {
     /** The ordinary case: a JSch proxy, usable by either engine. */
     constructor(jschProxy: Proxy) : this(jschProxy, null)
+
+    /**
+     * The literal IP the underlying tunnel actually connected to during the
+     * proxy's dial, when the chain can say (Tailscale/WireGuard tunnels
+     * after a completed connect). Null for plain SOCKS/HTTP proxies, jump
+     * hosts, and before the dial. See [TunnelPeerAware] and #539.
+     */
+    val tunnelPeerAddress: String?
+        get() = (jschProxy as? TunnelPeerAware)?.tunnelPeerAddress
+}
+
+/**
+ * Implemented by proxy adapters that can report the tunnel-resolved peer
+ * address of their most recent dial. Lives in core/ssh (not core/tunnel)
+ * so [HavenProxy] can query it without depending on the tunnel module.
+ */
+interface TunnelPeerAware {
+    val tunnelPeerAddress: String?
 }

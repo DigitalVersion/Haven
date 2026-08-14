@@ -244,6 +244,19 @@ type Conn struct {
 	c net.Conn
 }
 
+// RemoteAddrHost returns the literal IP this connection was actually
+// established to — the resolved form of whatever name Dial was given
+// (MagicDNS included). Empty string when unknown. Gomobile-friendly:
+// a string, not a net.Addr, and never an unresolved name — callers use
+// it where the contract demands an IP literal (#539: the mosh UDP
+// destination fed to UDPConn.WriteTo).
+func (c *Conn) RemoteAddrHost() string {
+	if addr, ok := c.c.RemoteAddr().(*net.TCPAddr); ok && addr.IP != nil {
+		return addr.IP.String()
+	}
+	return ""
+}
+
 // UDPConn is an unconnected UDP socket on the tailnet. Mirrors
 // wgbridge.UDPConn so the Kotlin TunneledDatagramSocket implementation
 // can treat both backends identically.

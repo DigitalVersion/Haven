@@ -61,6 +61,16 @@ type Conn struct {
 	c net.Conn
 }
 
+// RemoteAddrHost returns the literal IP this connection was established
+// to, or "" when unknown. Mirrors tsbridge.Conn.RemoteAddrHost (#539) so
+// both tunnel backends expose the resolved peer identically.
+func (c *Conn) RemoteAddrHost() string {
+	if addr, ok := c.c.RemoteAddr().(*net.TCPAddr); ok && addr.IP != nil {
+		return addr.IP.String()
+	}
+	return ""
+}
+
 // UDPConn is an unconnected UDP socket inside the tunnel's gVisor netstack.
 // Send target is supplied per-WriteTo so the same conn can talk to many
 // peers (Mosh's "client roams, server identifies by nonce" model). Bound

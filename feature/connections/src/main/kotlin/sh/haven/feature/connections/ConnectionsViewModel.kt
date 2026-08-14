@@ -4534,10 +4534,30 @@ class ConnectionsViewModel @Inject constructor(
             }
         }
 
+        // #539: a tunneled UDP socket's WriteTo requires a literal IP — the
+        // tunnel's netstack cannot resolve MagicDNS/hostnames per packet.
+        // The SSH bootstrap already dialled through the same tunnel, so use
+        // the peer address it actually connected to. Fail fast with a real
+        // error when neither the profile host nor the bootstrap can produce
+        // a literal — the old behaviour retried forever while logging one
+        // line in twenty (symptom identical to #164).
+        val udpServerIp = if (socketProvider != null) {
+            moshTunnelDestination(serverIp, client.tunnelPeerAddress)
+                ?: throw Exception(
+                    "Mosh over this tunnel needs a literal IP destination, but " +
+                        "the host is a name ($serverIp) and the tunnel did not " +
+                        "report the address it connected to. Use the server's " +
+                        "in-tunnel IP as the profile host.",
+                )
+        } else serverIp
+        if (udpServerIp != serverIp) {
+            Log.d(TAG, "MOSH tunnel destination: ${LogRedact.of(serverIp)} -> ${LogRedact.of(udpServerIp)} (bootstrap-resolved)")
+        }
+
         withContext(Dispatchers.IO) {
             moshSessionManager.connectSession(
                 sessionId = sessionId,
-                serverIp = serverIp,
+                serverIp = udpServerIp,
                 moshPort = moshPort,
                 moshKey = moshKey,
                 cols = 80,
@@ -5811,3 +5831,25 @@ internal fun moshLocaleWorkaroundHint(hasCustomCommand: Boolean, stderr: String)
  */
 internal fun holdsLoadablePrivateKey(keyType: String): Boolean =
     !keyType.startsWith("sk-") && keyType != OpenKeychainKeyData.KEY_TYPE
+
+/**
+ * Whether [host] is an IP literal — the only form a tunneled UDP socket's
+ * per-packet send can accept (#539). Names cannot contain ':', so any ':'
+ * means an IPv6 literal; otherwise dotted-quad.
+ */
+internal fun isIpLiteral(host: String): Boolean =
+    host.contains(':') || host.matches(Regex("""\d{1,3}(\.\d{1,3}){3}"""))
+
+/**
+ * The UDP destination for a tunneled mosh session (#539). The profile host
+ * is used when it is already a literal; otherwise the address the SSH
+ * bootstrap's tunnel dial actually connected to ([SshClient.tunnelPeerAddress])
+ * — the tunnel-resolved form of a MagicDNS or DNS name. Null when neither
+ * yields a literal: the caller must fail the connect rather than let the
+ * transport retry a send that can never succeed.
+ */
+internal fun moshTunnelDestination(host: String, tunnelPeer: String?): String? = when {
+    isIpLiteral(host) -> host
+    tunnelPeer != null && isIpLiteral(tunnelPeer) -> tunnelPeer
+    else -> null
+}

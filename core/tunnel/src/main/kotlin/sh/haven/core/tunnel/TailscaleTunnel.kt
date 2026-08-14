@@ -94,6 +94,9 @@ private class TailscaleConnection(
     private val conn: NativeConn,
 ) : TunneledConnection {
 
+    override val remoteAddress: String?
+        get() = runCatching { conn.remoteAddrHost() }.getOrNull()?.takeIf { it.isNotBlank() }
+
     override val inputStream: InputStream = object : InputStream() {
         private var eof = false
 

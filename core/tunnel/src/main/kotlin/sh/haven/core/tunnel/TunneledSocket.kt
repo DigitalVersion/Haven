@@ -43,8 +43,13 @@ class TunneledSocket(
     }
 
     override fun getInetAddress(): InetAddress? {
+        // #539: answer from the tunnel's namespace when it can say what it
+        // actually connected to. InetAddress.getByName(host) resolves through
+        // the PHONE's resolver — a different namespace from the tunnel's
+        // (MagicDNS), so its answer can be wrong or absent. getByName on a
+        // literal never touches DNS.
         return try {
-            InetAddress.getByName(host)
+            InetAddress.getByName(connection.remoteAddress ?: host)
         } catch (_: Exception) {
             null
         }
@@ -121,7 +126,14 @@ class TunneledSocket(
     override fun getOOBInline(): Boolean = false
 
     override fun getRemoteSocketAddress(): java.net.SocketAddress? {
-        return java.net.InetSocketAddress.createUnresolved(host, port)
+        // Resolved from the tunnel's own report when available (#539);
+        // otherwise the unresolved holder it always was.
+        val peer = connection.remoteAddress ?: return java.net.InetSocketAddress.createUnresolved(host, port)
+        return try {
+            java.net.InetSocketAddress(InetAddress.getByName(peer), port)
+        } catch (_: Exception) {
+            java.net.InetSocketAddress.createUnresolved(host, port)
+        }
     }
 }
 
