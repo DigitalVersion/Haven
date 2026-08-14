@@ -24,6 +24,7 @@ fun typeRdpChar(
     ch: Char,
     sendKey: (Int, Boolean) -> Unit,
     sendUnicode: (Int) -> Unit,
+    layoutKlid: UInt = sh.haven.core.rdp.keyboardLayoutKlid(),
 ) {
     val mapped = asciiCharToRdpScancode(ch)
     if (mapped != null) {
@@ -32,10 +33,69 @@ fun typeRdpChar(
         sendKey(scancode, true)
         sendKey(scancode, false)
         if (shift) sendKey(SC_SHIFT_L_PUBLIC, false)
-    } else {
-        sendUnicode(ch.code)
+        return
     }
+    // #504: scancodes-only servers (VirtualBox VRDP) discard the unicode
+    // fallback, so layouts with an AltGr overlay get their characters
+    // synthesised as real key sequences the guest's own keymap resolves.
+    val altGr = altGrCharToRdpScancode(ch, layoutKlid)
+    if (altGr != null) {
+        val (scancode, shift) = altGr
+        sendKey(SC_ALTGR_PUBLIC, true)
+        if (shift) sendKey(SC_SHIFT_L_PUBLIC, true)
+        sendKey(scancode, true)
+        sendKey(scancode, false)
+        if (shift) sendKey(SC_SHIFT_L_PUBLIC, false)
+        sendKey(SC_ALTGR_PUBLIC, false)
+        return
+    }
+    sendUnicode(ch.code)
 }
+
+/**
+ * AltGr-overlay synthesis (#504): for layouts whose base is exactly US and
+ * whose national characters live on AltGr combinations, a non-ASCII char
+ * becomes AltGr(+Shift)+basekey — key events every server understands,
+ * resolved by the SERVER side's layout for the announced KLID. This is what
+ * makes Polish typing reach a VirtualBox guest whose RDP server accepts only
+ * scancodes (the unicode path is discarded there).
+ *
+ * Only pure-overlay layouts belong here. Layouts that REMAP the base (German
+ * QWERTZ, French AZERTY, Spanish...) can't be served by an overlay table —
+ * their fix is a full base-map swap, tracked separately. Returns
+ * (base scancode, needs-shift) or null when [layoutKlid] has no overlay
+ * entry for [ch].
+ */
+fun altGrCharToRdpScancode(ch: Char, layoutKlid: UInt): Pair<Int, Boolean>? {
+    val overlay = when (layoutKlid) {
+        POLISH_PROGRAMMERS_KLID -> POLISH_ALTGR_OVERLAY
+        else -> return null
+    }
+    overlay[ch.lowercaseChar()]?.let { baseScancode ->
+        return Pair(baseScancode, ch.isUpperCase())
+    }
+    return null
+}
+
+/** Right Alt (AltGr): the extended twin of left Alt 0x38. */
+const val SC_ALTGR_PUBLIC: Int = 0xE038
+
+/** Polish (programmers), the standard Polish layout: US base + AltGr. */
+const val POLISH_PROGRAMMERS_KLID: UInt = 0x0415u
+
+// AltGr + <US base key> for each Polish national letter (lowercase form;
+// uppercase adds Shift). kbdpl1.dll's overlay, verbatim.
+private val POLISH_ALTGR_OVERLAY: Map<Char, Int> = mapOf(
+    'ą' to 0x1E, // AltGr+A
+    'ć' to 0x2E, // AltGr+C
+    'ę' to 0x12, // AltGr+E
+    'ł' to 0x26, // AltGr+L
+    'ń' to 0x31, // AltGr+N
+    'ó' to 0x18, // AltGr+O
+    'ś' to 0x1F, // AltGr+S
+    'ź' to 0x2D, // AltGr+X
+    'ż' to 0x2C, // AltGr+Z
+)
 
 /**
  * Convert an ASCII character to a Windows AT-keyboard Set 1 scancode
