@@ -5,6 +5,12 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.25
+
+- RDP to a VirtualBox VM no longer starts as a permanent black screen after the guest has sat idle (#422, thanks pawlosck). The cause was hiding in plain sight for months: an idle Windows guest turns its virtual display *off*, VirtualBox's RDP server only ever transmits changed regions, and the one kind of input that wakes the display is a keyboard event — pointer motion is filtered as noise. Touch input is all pointer-class, so on Android there was no way to wake it. Haven now watches the first 1.5 seconds of a session; if nothing at all has been painted, it sends a single silent Ctrl tap and the full screen streams in. If the server painted anything, the nudge never fires.
+
+🖥️ **The screen wasn't broken — it was asleep.** Ten seconds of continuous mouse movement: nothing. One Ctrl tap: full repaint in 150 milliseconds. Every desktop RDP client accidentally sends that key-shaped "wake up" via its connect-time input burst, which is why only touch users ever saw the void.
+
 ## v5.87.24
 
 - The toolbar's Swipe mode now repeats: hold a swipe and the arrow key repeats until you let go — drag a bit further to speed through, reverse direction mid-hold without lifting (#524, thanks a8645322). Before, each swipe sent exactly one arrow, which made cursoring across a long shell line an exercise in wrist endurance. Tab-switch gestures are suppressed while Swipe mode is latched, so a horizontal swipe means ← / → and never "jump to the Files tab".
