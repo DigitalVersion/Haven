@@ -2037,6 +2037,32 @@ fn run_rdp_session(
                                  cannot continue."
                             );
                             warn!("{reason} (redir_flags={:#06x})", info.redir_flags);
+                            // #117: one structured dump per redirect so a
+                            // reporter's logcat pins down exactly what GRD
+                            // sends and the follow step can replay it. The
+                            // password is a one-time session credential — log
+                            // its length only, never the bytes. The
+                            // LoadBalanceInfo routing token is session-scoped
+                            // and is the piece whose framing the reconnect
+                            // needs verbatim.
+                            warn!(
+                                "#117 redirect dump: session_id={:#010x} flags={:#010x} no_redirect={} \
+                                 target_net={:?} target_fqdn={:?} username={:?} domain={:?} \
+                                 password_len={:?} lb_info_len={:?} lb_info_hex={}",
+                                info.session_id,
+                                info.redir_flags,
+                                info.no_redirect,
+                                info.target_net_address,
+                                info.target_fqdn,
+                                info.username,
+                                info.domain,
+                                info.password.as_ref().map(|p| p.len()),
+                                info.load_balance_info.as_ref().map(|l| l.len()),
+                                info.load_balance_info
+                                    .as_ref()
+                                    .map(|l| l.iter().map(|b| format!("{b:02x}")).collect::<String>())
+                                    .unwrap_or_default(),
+                            );
                             return Err(reason);
                         }
                         if msg.contains("unexpected channel received") {
