@@ -516,6 +516,10 @@ impl RdpClient {
         let state = Arc::clone(&self.state);
         let input_queue = Arc::clone(&self.input_queue);
         let server_name = host.clone();
+        // #117: a followed redirection reconnects from inside the session
+        // thread, through the same route (SOCKS or direct) as the original.
+        let redial_host = host.clone();
+        let redial_socks = socks_proxy.clone();
 
         let handle = std::thread::Builder::new()
             .name("rdp-session".into())
@@ -530,21 +534,52 @@ impl RdpClient {
                 //
                 // AssertUnwindSafe is honest rather than convenient: past a
                 // panic we touch `state` only to mark the session dead.
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_rdp_session(stream, &config, &state, &input_queue, &server_name, server_addr)
-                }))
-                .unwrap_or_else(|payload| {
-                    let what = payload
-                        .downcast_ref::<&'static str>()
-                        .map(|s| (*s).to_owned())
-                        .or_else(|| payload.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown panic".to_owned());
-                    error!("RDP session panicked: {what}");
-                    Err(format!(
-                        "internal error decoding the RDP stream: {what} \
-                         — the session was dropped to keep the app running"
-                    ))
-                });
+                // #117: a server redirection ends the attempt with a replay
+                // plan; reconnect to the same endpoint and run the session
+                // again with the plan applied. Exactly one hop — chained
+                // redirects fail out of the loop.
+                let mut redirect_plan: Option<redirection::RedirectFollow> = None;
+                let mut stream_slot = Some(stream);
+                let result = loop {
+                    let attempt_stream = match stream_slot.take() {
+                        Some(s) => s,
+                        None => match redial(&redial_host, port, redial_socks.as_ref()) {
+                            Ok(s) => s,
+                            Err(e) => break Err(format!("redirect reconnect failed: {e}")),
+                        },
+                    };
+                    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_rdp_session(
+                            attempt_stream,
+                            &config,
+                            &state,
+                            &input_queue,
+                            &server_name,
+                            server_addr,
+                            redirect_plan.as_ref(),
+                        )
+                    }))
+                    .unwrap_or_else(|payload| {
+                        let what = payload
+                            .downcast_ref::<&'static str>()
+                            .map(|s| (*s).to_owned())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "unknown panic".to_owned());
+                        error!("RDP session panicked: {what}");
+                        Err(format!(
+                            "internal error decoding the RDP stream: {what} \
+                             — the session was dropped to keep the app running"
+                        ))
+                    });
+                    match attempt {
+                        Ok(Some(plan)) => {
+                            redirect_plan = Some(plan);
+                            continue;
+                        }
+                        Ok(None) => break Ok(()),
+                        Err(e) => break Err(e),
+                    }
+                };
                 let session_cb = state.read().ok().and_then(|s| s.session_callback.clone());
                 match result {
                     Err(e) => {
@@ -723,6 +758,25 @@ impl RdpClient {
 }
 
 /// Build the ironrdp Config with all required fields.
+/// Re-dials the RDP endpoint for a followed redirection (#117), through the
+/// same route as the original connection, with the same socket setup the
+/// handshake needs (blocking, generous read timeout — the session loop
+/// shrinks it after finalize).
+fn redial(host: &str, port: u16, socks: Option<&SocksProxyConfig>) -> Result<TcpStream, String> {
+    let stream = match socks {
+        Some(proxy) => socks5_connect(&proxy.host, proxy.port, host, port)
+            .map_err(|e| format!("SOCKS5 reconnect failed: {e}"))?,
+        None => TcpStream::connect((host, port)).map_err(|e| format!("TCP reconnect failed: {e}"))?,
+    };
+    stream
+        .set_nonblocking(false)
+        .map_err(|e| format!("reconnect socket setup failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(|e| format!("reconnect socket setup failed: {e}"))?;
+    Ok(stream)
+}
+
 fn build_config(config: &RdpConfig) -> ironrdp_connector::Config {
     use ironrdp_connector::*;
     use ironrdp_pdu::gcc;
@@ -1392,6 +1446,11 @@ fn slow_path_input_event(
     })
 }
 
+/// Runs one RDP connection to completion. `Ok(None)` is a normal session end;
+/// `Ok(Some(plan))` means the server sent a redirection this connection did
+/// not follow yet — the caller reconnects and passes the plan back in as
+/// `redirect` (#117). A session that IS the followed hop never returns a
+/// second plan; a re-redirect fails instead.
 fn run_rdp_session(
     stream: TcpStream,
     config: &RdpConfig,
@@ -1399,14 +1458,40 @@ fn run_rdp_session(
     input_queue: &Arc<Mutex<Vec<InputEvent>>>,
     server_name: &str,
     server_addr: SocketAddr,
-) -> Result<(), String> {
+    redirect: Option<&redirection::RedirectFollow>,
+) -> Result<Option<redirection::RedirectFollow>, String> {
     use ironrdp_blocking::{connect_begin, connect_finalize, mark_as_upgraded, Framed};
     use ironrdp_connector::ServerName;
     use ironrdp_session::ActiveStageOutput;
     use ironrdp_session::image::DecodedImage;
     use ironrdp_graphics::image_processing::PixelFormat;
 
-    let rdp_config = build_config(config);
+    let mut rdp_config = build_config(config);
+    // #117: a followed redirection replays the server's routing token in the
+    // X.224 Connection Request and authenticates with the one-time
+    // credentials from the redirection PDU (GNOME Remote Desktop generates a
+    // random user/password pair per handover — the profile's own credentials
+    // would be refused).
+    if let Some(follow) = redirect {
+        rdp_config.request_data = Some(ironrdp_pdu::nego::NegoRequestData::routing_token(
+            follow.routing_token.clone(),
+        ));
+        remember_secret(&follow.routing_token);
+        if let (Some(u), Some(p)) = (&follow.username, &follow.password) {
+            remember_secret(u);
+            remember_secret(p);
+            rdp_config.credentials = ironrdp_connector::Credentials::UsernamePassword {
+                username: u.clone(),
+                password: p.clone(),
+            };
+            rdp_config.domain = follow.domain.clone();
+        }
+        info!(
+            "#117: following server redirection — routing token {} chars, one-time credentials: {}",
+            follow.routing_token.len(),
+            follow.username.is_some(),
+        );
+    }
     // DisplayControl must be registered even though we never resize: xrdp
     // opens the channel unconditionally and aborts ALL channel processing
     // (dynamic_monitor_open_response: error) if the client refuses it —
@@ -2022,19 +2107,29 @@ fn run_rdp_session(
                         // A server-redirection PDU (GNOME Remote Desktop, Windows
                         // RDS load-balancers) reaches us as an "unexpected share
                         // control PDU type" because IronRDP can't decode it.
-                        // Recognise it from the raw frame and surface a precise
-                        // reason instead of a silent black screen. Following the
-                        // redirect (reconnect with the routing token) is #117's
-                        // next phase — deferred until it can be verified against a
-                        // real GRD redirect capture.
+                        // Recognise it from the raw frame and follow it (#117):
+                        // hand the replay plan to the caller, which reconnects
+                        // with the routing token + one-time credentials. One hop
+                        // only — a redirect DURING a followed hop is an error.
                         if let Some(info) = redirection::detect_server_redirect(frame_to_process) {
+                            if redirect.is_none() {
+                                if let Some(plan) = info.follow_plan() {
+                                    info!(
+                                        "#117: server redirection received (flags={:#010x}) — reconnecting to follow the handover",
+                                        info.redir_flags,
+                                    );
+                                    return Ok(Some(plan));
+                                }
+                            }
                             let target = info
                                 .target_host()
                                 .unwrap_or_else(|| "another session on the same host".to_string());
+                            // Reaching here means the redirect was declined: a
+                            // second hop, LB_NOREDIRECT, or a token Haven can't
+                            // replay. The dump below says which.
                             let reason = format!(
-                                "Server requested a session redirection to {target}. Haven does \
-                                 not yet follow RDP server redirection (see #117), so the session \
-                                 cannot continue."
+                                "Server requested a session redirection to {target} that Haven \
+                                 could not follow (see #117), so the session cannot continue."
                             );
                             warn!("{reason} (redir_flags={:#06x})", info.redir_flags);
                             // #117: one structured dump per redirect so a
@@ -2158,7 +2253,7 @@ fn run_rdp_session(
         let _ = handle.join();
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Per-frame cost breakdown for the RDP display path (#466).

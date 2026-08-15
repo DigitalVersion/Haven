@@ -98,6 +98,63 @@ impl RedirectionInfo {
             .filter(|s| !s.is_empty())
             .or_else(|| self.target_fqdn.clone().filter(|s| !s.is_empty()))
     }
+
+    /// Everything the reconnect needs to follow this redirection, or `None`
+    /// when it must not / cannot be followed.
+    ///
+    /// Wire facts from a real GNOME Remote Desktop handover (#117, reporter
+    /// capture): `LoadBalanceInfo` is the complete X.224 routing-token line
+    /// `Cookie: msts=<value>\r\n`, the username is a server-generated one-time
+    /// credential, and the password is UTF-16LE with a trailing NUL.
+    /// IronRDP's `NegoRequestData::routing_token` re-adds the `Cookie: msts=`
+    /// prefix and CRLF itself, so only the bare value is extracted here — a
+    /// token in any other shape is not expressible through that API and
+    /// returns `None` rather than sending a mangled line.
+    pub fn follow_plan(&self) -> Option<RedirectFollow> {
+        if self.no_redirect {
+            // LB_NOREDIRECT: informational packet, the server forbids following.
+            return None;
+        }
+        let lb = self.load_balance_info.as_deref()?;
+        let value = lb
+            .strip_prefix(b"Cookie: msts=")
+            .and_then(|rest| rest.strip_suffix(b"\r\n"))
+            .and_then(|v| core::str::from_utf8(v).ok())
+            .filter(|v| !v.is_empty())?;
+        Some(RedirectFollow {
+            routing_token: value.to_owned(),
+            username: self.username.clone().filter(|s| !s.is_empty()),
+            domain: self.domain.clone().filter(|s| !s.is_empty()),
+            password: self.password.as_deref().and_then(decode_utf16le_password),
+        })
+    }
+}
+
+/// The replay recipe for one server redirection (MS-RDPBCGR §2.2.13.1):
+/// reconnect to the same endpoint (or [`RedirectionInfo::target_host`]),
+/// present [`routing_token`](Self::routing_token) in the X.224 Connection
+/// Request, and authenticate with the one-time credentials when supplied.
+#[derive(Debug, Clone)]
+pub struct RedirectFollow {
+    pub routing_token: String,
+    pub username: Option<String>,
+    pub domain: Option<String>,
+    pub password: Option<String>,
+}
+
+/// UTF-16LE → String for the redirection PDU's password field, dropping
+/// trailing NUL terminators. `None` on odd length or invalid UTF-16 —
+/// authenticating with a corrupted password can only fail slower.
+fn decode_utf16le_password(bytes: &[u8]) -> Option<String> {
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let end = units.iter().rposition(|&u| u != 0).map_or(0, |i| i + 1);
+    String::from_utf16(&units[..end]).ok()
 }
 
 /// Minimal little-endian cursor that returns `None` on a short read rather
@@ -504,5 +561,66 @@ mod tests {
         // Random bytes aren't a valid MCS SendDataIndication → None, no panic.
         assert!(detect_server_redirect(&[0xde, 0xad, 0xbe, 0xef]).is_none());
         assert!(detect_server_redirect(&[]).is_none());
+    }
+
+    fn grd_style_info() -> RedirectionInfo {
+        // The field shape from the real GRD capture in #117 (values changed).
+        RedirectionInfo {
+            session_id: 0,
+            redir_flags: 0x18016,
+            target_net_address: None,
+            target_fqdn: None,
+            load_balance_info: Some(b"Cookie: msts=2282941292\r\n".to_vec()),
+            username: Some("one-time-user".to_owned()),
+            domain: None,
+            // "pw" in UTF-16LE with a trailing NUL, as the wire carries it.
+            password: Some(vec![b'p', 0, b'w', 0, 0, 0]),
+            no_redirect: false,
+        }
+    }
+
+    #[test]
+    fn follow_plan_extracts_grd_token_and_credentials() {
+        let plan = grd_style_info().follow_plan().expect("followable");
+        assert_eq!(plan.routing_token, "2282941292");
+        assert_eq!(plan.username.as_deref(), Some("one-time-user"));
+        assert_eq!(plan.password.as_deref(), Some("pw"));
+        assert!(plan.domain.is_none());
+    }
+
+    #[test]
+    fn follow_plan_respects_noredirect() {
+        let mut info = grd_style_info();
+        info.no_redirect = true;
+        assert!(info.follow_plan().is_none());
+    }
+
+    #[test]
+    fn follow_plan_rejects_unexpressible_tokens() {
+        // A load-balancer token that is not the msts cookie line cannot be
+        // replayed through NegoRequestData::routing_token — must decline, not
+        // mangle.
+        let mut info = grd_style_info();
+        info.load_balance_info = Some(b"opaque-binary-token".to_vec());
+        assert!(info.follow_plan().is_none());
+
+        info.load_balance_info = Some(b"Cookie: msts=\r\n".to_vec());
+        assert!(info.follow_plan().is_none(), "empty token value");
+
+        info.load_balance_info = None;
+        assert!(info.follow_plan().is_none(), "no token at all");
+    }
+
+    #[test]
+    fn utf16le_password_decode_handles_terminators_and_garbage() {
+        assert_eq!(
+            decode_utf16le_password(&[b'a', 0, b'b', 0, 0, 0, 0, 0]).as_deref(),
+            Some("ab"),
+        );
+        assert_eq!(decode_utf16le_password(&[]).as_deref(), Some(""));
+        // Odd length: not UTF-16, refuse rather than guess.
+        assert!(decode_utf16le_password(&[b'a', 0, b'b']).is_none());
+        // Unpaired surrogate: invalid UTF-16, refuse.
+        assert!(decode_utf16le_password(&[0x00, 0xD8]).is_none());
     }
 }
