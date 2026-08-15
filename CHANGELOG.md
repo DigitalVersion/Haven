@@ -5,6 +5,13 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.27
+
+- Fixed runaway scrolling when swiping up in the terminal (#542, thanks a8645322 — whose exact repro recipe and "it feels time-based, not distance-based" observation made this findable). Two integer round-downs were feeding each other: the drag converts pixels to lines by flooring, and a sync effect then snapped the pixels back down to that floored line — so on an upward drag, every ~4 pixels of finger cost a full line, about ten times the intended speed, until the view slammed to the bottom. Downward the flooring is conservative, which is why only one direction ran away. The sync now only reconciles genuinely external moves.
+- Measured before/after on-device: a 100px swipe-up used to empty 16 lines of scrollback and snap to the live edge; it now moves 3 lines, symmetric with swiping down.
+
+🔁 **Two round-downs make a ratchet.** Each floor was individually harmless — one quantizes a position, one tidies a sync. Composed in a feedback loop they turned every pointer event into a full-line click downward, and pointer events arrive at 90 per second.
+
 ## v5.87.26
 
 - Two diagnostics that turn open bug reports into readable data. For GNOME Remote Desktop's session-redirection black screen (#117, thanks MrTomiCZ), the redirect error now logs the packet's parsed structure — which fields the server populated and the routing token the eventual reconnect must replay, with the one-time password reduced to a length. For the runaway-scroll report (#524 follow-up in #542), the gesture classifier's one-line-per-swipe outcome record now survives release builds, so `adb logcat -s HavenGesture` shows exactly which path claimed a swipe.
