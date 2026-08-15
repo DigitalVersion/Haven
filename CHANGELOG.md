@@ -5,6 +5,14 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.28
+
+- Fixed SPICE connections in release builds (#549, thanks empanadablues — first to report it). Every release build's code shrinking was mangling the generated SPICE bindings, killing the connection 7 milliseconds in, before a single byte reached the server — SPICE has likely been broken in every release build for months while debug builds worked perfectly. One missing keep rule (its RDP twin existed, which is why RDP worked). Reproduced against a local QEMU, fixed, and re-verified on-device: connected, all channels up.
+- SPICE connection failures now log the exception class and stack trace to the connection log, not just a message — this bug's only symptom was the word "null", which is what made it invisible for so long.
+- For Windows 9x-era VMs (#543): with SPICE now working, its native relative-pointer mode is the recommended path — VNC's protocol can only carry absolute positions, which old guests' mouse acceleration desyncs.
+
+🧪 **A debug build is not the product.** The product is what the shrinker ships. This failure lived exclusively in release builds, where reporters live and test rigs usually don't — the fix rides with a release-build smoke gap now visibly on the list.
+
 ## v5.87.27
 
 - Fixed runaway scrolling when swiping up in the terminal (#542, thanks a8645322 — whose exact repro recipe and "it feels time-based, not distance-based" observation made this findable). Two integer round-downs were feeding each other: the drag converts pixels to lines by flooring, and a sync effect then snapped the pixels back down to that floored line — so on an upward drag, every ~4 pixels of finger cost a full line, about ten times the intended speed, until the view slammed to the bottom. Downward the flooring is conservative, which is why only one direction ran away. The sync now only reconciles genuinely external moves.

@@ -160,7 +160,14 @@ class SpiceSession(
             onDisconnected?.invoke()
             throw wrapped
         } catch (e: Exception) {
-            log("E", "SPICE connect failed: ${e.message}")
+            // Class name + trace, not just the message: a bare NPE logs
+            // "null" and the log can't say WHERE it died (#549 was exactly
+            // that — undebuggable from a reporter's log until this line).
+            log(
+                "E",
+                "SPICE connect failed: ${e::class.java.name}: ${e.message}\n" +
+                    e.stackTraceToString().take(2000),
+            )
             onError?.invoke(e)
             onDisconnected?.invoke()
             throw e
