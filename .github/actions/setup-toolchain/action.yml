@@ -53,7 +53,7 @@ runs:
           meson ninja-build pkg-config bison \
           autoconf automake libtool libtool-bin libltdl-dev \
           libexpat1-dev libffi-dev xutils-dev python3-xcbgen \
-          nasm yasm
+          nasm yasm gperf
 
     # The second group above is what core/wayland's buildWaylandNatives needs
     # (#493). Those five binaries are cross-compiled from the wayland-android
