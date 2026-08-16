@@ -66,4 +66,16 @@ class XvncReapMatchTest {
     fun `an Xvnc named without a path still matches`() {
         assertTrue(xvncMatches("Xvnc :1 -rfbport 5901", display = 1))
     }
+
+    @Test
+    fun `proot host process embedding the launch script is matched`() {
+        // What a proot-launched Xvnc actually looks like on the host side:
+        // argv[0] is libproot.so and the guest script rides inside argv (#551).
+        val prootHost = "/data/app/x/lib/arm64/libproot.so -0 --link2symlink " +
+            "-r /data/rootfs /bin/sh -c rm -f /tmp/.X1-lock ; " +
+            "Xvnc :1 -geometry 1280x720 -localhost 0 & XVNC_PID=${'$'}! ; wait"
+        assertTrue(xvncMatches(prootHost, display = 1))
+        assertFalse("whole-token display", xvncMatches(prootHost, display = 10))
+        assertTrue(xvncMatches(prootHost, display = null))
+    }
 }

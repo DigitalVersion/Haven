@@ -35,6 +35,10 @@ class DesktopManager @Inject constructor(
 ) {
     enum class DesktopState { STOPPED, STARTING, RUNNING, ERROR }
 
+    /** An exit this soon after launch is reported as a startup failure even
+     * if the VNC port check already flipped the row to RUNNING (#550). */
+    private val EARLY_DEATH_WINDOW_MS = 15_000L
+
     data class DesktopInstance(
         val de: ProotManager.DesktopEnvironment,
         val displayNumber: Int,
@@ -222,6 +226,7 @@ class DesktopManager @Inject constructor(
                     error("NativeCompositor handled above; unreachable")
             }
             processes[de] = process
+            val launchedAt = System.currentTimeMillis()
             // Stays at STARTING — flips to RUNNING via `markRunning(de)`
             // once the caller (DesktopViewModel.startDesktop) confirms the
             // VNC port is listening. If the proot script exits before
@@ -246,14 +251,22 @@ class DesktopManager @Inject constructor(
                 Log.d(TAG, "${de.label}[:$display] exited: $exitCode")
                 _desktops.update { current ->
                     val instance = current[de] ?: return@update current
-                    when (instance.state) {
-                        DesktopState.RUNNING -> {
+                    // #550: an exit shortly after the port check flipped us to
+                    // RUNNING is still a startup failure — the VNC server was
+                    // up but the session command died (the `sleep 3` in the
+                    // launch script means the port poll always wins that
+                    // race). Removing the row silently here is exactly the
+                    // appear-then-vanish the reporter filmed.
+                    val earlyDeath = instance.state == DesktopState.RUNNING &&
+                        System.currentTimeMillis() - launchedAt < EARLY_DEATH_WINDOW_MS
+                    when {
+                        instance.state == DesktopState.RUNNING && !earlyDeath -> {
                             releaseDisplay(display)
                             processes.remove(de)
                             synchronized(logTails) { logTails.remove(de) }
                             current - de
                         }
-                        DesktopState.STARTING -> {
+                        instance.state == DesktopState.STARTING || earlyDeath -> {
                             releaseDisplay(display)
                             processes.remove(de)
                             val tail = synchronized(logTails) {
@@ -341,25 +354,34 @@ class DesktopManager @Inject constructor(
             WaylandBridge.nativeStopVirglServer()
             WaylandSocketHelper.tryRemoveSymlink()
         }
-        processes[de]?.destroyForcibly()
-        processes.remove(de)
-        if (launch !is LaunchSpec.NativeCompositor) {
-            // destroyForcibly() only kills the proot launch shell —
-            // children (Xvnc / sway / Hyprland / niri / wayvnc / foot)
-            // become orphans reparented to the app, kept running until
-            // they exit on their own. Sweep them explicitly so a
-            // subsequent start_desktop doesn't hit "Another wayvnc
-            // process is already running" on the control socket or a
-            // wedged port 590x.
-            if (launch is LaunchSpec.X11Vnc) {
-                killOrphanedXvnc(instance.displayNumber)
-            } else if (launch is LaunchSpec.NestedWayland) {
-                killOrphanedNestedWayland(launch.compositorCmd)
+        // #551: the row-removal is in `finally` — Stop must ALWAYS clear the
+        // session entry. If any sweep below throws, a thrown-past removal
+        // left a permanent zombie row whose Stop button repeated the same
+        // throw forever; only force-killing the app cleared it.
+        try {
+            processes[de]?.destroyForcibly()
+            processes.remove(de)
+            if (launch !is LaunchSpec.NativeCompositor) {
+                // destroyForcibly() only kills the proot launch shell —
+                // children (Xvnc / sway / Hyprland / niri / wayvnc / foot)
+                // become orphans reparented to the app, kept running until
+                // they exit on their own. Sweep them explicitly so a
+                // subsequent start_desktop doesn't hit "Another wayvnc
+                // process is already running" on the control socket or a
+                // wedged port 590x.
+                if (launch is LaunchSpec.X11Vnc) {
+                    killOrphanedXvnc(instance.displayNumber)
+                } else if (launch is LaunchSpec.NestedWayland) {
+                    killOrphanedNestedWayland(launch.compositorCmd)
+                }
+                releaseDisplay(instance.displayNumber)
+                cleanupDisplayRuntime(instance.displayNumber)
             }
-            releaseDisplay(instance.displayNumber)
-            cleanupDisplayRuntime(instance.displayNumber)
+        } catch (e: Exception) {
+            Log.e(TAG, "stopDesktop sweep failed for ${de.label} (row cleared anyway)", e)
+        } finally {
+            _desktops.update { it - de }
         }
-        _desktops.update { it - de }
     }
 
     /**
@@ -818,7 +840,15 @@ class DesktopManager @Inject constructor(
             if (cmd.isBlank()) {
                 throw IllegalStateException("No custom desktop command set — configure it in the Desktops view")
             }
-            "$cmd ; "
+            // #550/#551: the user's command IS the session. Without the kill,
+            // a command that dies instantly (bad flags, broken guest libs)
+            // leaves Xvnc holding `wait` — the launch shell never exits, the
+            // VNC port checks out, and the row turns RUNNING over a corpse
+            // that Stop-then-restart is the only way out of. Killing Xvnc on
+            // command exit makes the shell exit, and the exit thread does the
+            // right thing: ERROR with the command's own output during
+            // startup, a clean row removal later.
+            "$cmd ; kill \$XVNC_PID 2>/dev/null ; "
         } else {
             launch.startCommands
         }
@@ -838,11 +868,19 @@ class DesktopManager @Inject constructor(
         Log.d(TAG, "Starting Xvnc :$display: useAuth=$useAuth")
 
         val shellCmd =
-            "rm -f /tmp/.X${display}-lock /tmp/.X11-unix/X${display} && " +
+            // `;` not `&&` before the backgrounded Xvnc: with `&&` the `&`
+            // backgrounds the whole `rm && Xvnc` list as a subshell, so `\$!`
+            // is the SUBSHELL's pid — the custom-command kill then reaped the
+            // subshell, orphaned Xvnc, and proot (alive while any tracee
+            // lives) never exited: the RUNNING-forever zombie of #550/#551.
+            "rm -f /tmp/.X${display}-lock /tmp/.X11-unix/X${display} ; " +
                 "Xvnc :${display} -geometry 1280x720 " +
                 "$securityArg " +
                 "-BlacklistThreshold 10000 " +
                 "-localhost 0 & " +
+                // The Custom-X11 tail kills this PID when the session command
+                // exits (#550/#551); catalog DEs never reference it.
+                "XVNC_PID=\$! ; " +
                 "sleep 3; " +
                 "export DISPLAY=:${display}; " +
                 "export HOME=/root; " +
@@ -854,7 +892,10 @@ class DesktopManager @Inject constructor(
                 // which doesn't need one), so this never breaks their launch.
                 // Mirrors the native-Wayland path's dbus-run-session; here the
                 // exports are inherited by the backgrounded WM/panel children.
-                "{ command -v dbus-launch >/dev/null 2>&1 && eval \"\$(dbus-launch --sh-syntax)\"; } || true; " +
+                // --exit-with-x11: the dbus-daemon dies when the X server does, so a
+                // force-stopped session (SIGKILL on proot bypasses
+                // --kill-on-exit) can't leak one dbus-daemon per stop (#551).
+                "{ command -v dbus-launch >/dev/null 2>&1 && eval \"\$(dbus-launch --sh-syntax --exit-with-x11)\"; } || true; " +
                 "[ -f /etc/profile.d/pulse.sh ] && . /etc/profile.d/pulse.sh; " +
                 // NO virgl — software rendering for VNC desktops. Force the
                 // Mesa software rasteriser so GPU-less GL apps (KiCad/eeschema)
@@ -868,6 +909,13 @@ class DesktopManager @Inject constructor(
 
         val prootArgs = mutableListOf(
             prootBin, "-0", "--link2symlink", "--sysvipc",
+            // #550/#551: when the launch script exits, kill every remaining
+            // tracee. Without this, the dbus-daemon that `dbus-launch` forks
+            // outlives the session, proot stays alive tracing it, the host
+            // Process never exits — and the exit thread that would surface
+            // the failure (or clear the row) never runs. Also stops each
+            // desktop start from leaking one dbus-daemon forever.
+            "--kill-on-exit",
             // #325: foreign-arch rootfs runs through the bundled qemu-user loader.
             *prootManager.qemuUserArgs(prootManager.activeDistroId).toTypedArray(),
             "-r", rootfsDir.absolutePath,
@@ -2024,8 +2072,22 @@ internal data class ProcessCmdline(val pid: String, val cmdline: String)
  * `:1` would take `:10` and `:11` down with it.
  */
 internal fun xvncMatches(cmdline: String, display: Int?): Boolean {
+    // Two shapes are kill candidates: a plain Xvnc argv, and a proot HOST
+    // process — whose argv[0] is libproot.so with the whole guest launch
+    // script embedded, which is how every proot-launched Xvnc appears on the
+    // host side (the old argv[0]-only match made the orphan sweep a silent
+    // no-op for them, #551). Anything else that merely mentions Xvnc (a grep,
+    // an echo) fails the argv[0] gate and is left alone.
     val argv = cmdline.trim().split(' ').filter { it.isNotEmpty() }
     val program = argv.firstOrNull()?.substringAfterLast('/') ?: return false
-    if (!program.startsWith("Xvnc")) return false
-    return display == null || argv.drop(1).any { it == ":$display" }
+    val isPlainXvnc = program.startsWith("Xvnc")
+    val isProotHost = program.contains("libproot")
+    if (!isPlainXvnc && !isProotHost) return false
+    if (display == null) return isPlainXvnc || cmdline.contains("Xvnc")
+    // Whole-token display compare: ":1" must not claim ":10".
+    val token = "Xvnc :$display"
+    val idx = cmdline.indexOf(token)
+    if (idx < 0) return false
+    val after = idx + token.length
+    return after >= cmdline.length || !cmdline[after].isDigit()
 }
