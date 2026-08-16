@@ -5,6 +5,14 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.29
+
+- Fixed the unstoppable "zombie" desktop session (#550, #551, thanks sugerpersion — the screen recording made this findable). A Custom-command desktop whose command died at startup kept a green "running" row that Stop couldn't clear, while the actual failure vanished without a word. Four layered causes, all fixed: the dead command no longer leaves the VNC server holding the session open; the container now tears down every process when the session script ends (previously a leaked dbus-daemon kept it alive invisibly — one leaked per desktop start, forever); the orphan cleanup on Stop had never actually matched container-hosted processes; and a command that dies moments after the port check now reports as a startup failure carrying its own error output instead of silently disappearing.
+- Stop is now unconditional: whatever happens during cleanup, the session entry always clears — force-killing Haven is never the way out again.
+- Agents can now set the Custom (X11) desktop command via MCP (`custom_desktop_command`), which is how these fixes were verified end-to-end on a real device.
+
+🧟 **A session that can't die is worse than one that can't start.** Every one of the four bugs was invisible alone; stacked, they made a corpse with a green light. The fix that matters most is the boring one: when the thing you started ends — however it ends — say so, and let go of everything it held.
+
 ## v5.87.28
 
 - Fixed SPICE connections in release builds (#549, thanks empanadablues — first to report it). Every release build's code shrinking was mangling the generated SPICE bindings, killing the connection 7 milliseconds in, before a single byte reached the server — SPICE has likely been broken in every release build for months while debug builds worked perfectly. One missing keep rule (its RDP twin existed, which is why RDP worked). Reproduced against a local QEMU, fixed, and re-verified on-device: connected, all channels up.
