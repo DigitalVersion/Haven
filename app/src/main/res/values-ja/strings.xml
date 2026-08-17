@@ -183,7 +183,7 @@
     <string name="app_desktop_app_window_defaults">デフォルト表示（すべてのアプリウィンドウ）</string>
 
     <string name="app_system_vm_title">システム VM</string>
-    <string name="app_system_vm_description">完全な x86_64 Linux VM（アクティブなディストリビューション内の QEMU）を起動し、VNC で表示します。同時に 1 つのみ、エミュレーションのため低速です。VNC 対応の QEMU が必要です（Debian にはありますが、Alpine にはありません）。</string>
+    <string name="app_system_vm_description">完全な x86_64/arm64 Linux VM（アクティブなディストリビューション内の QEMU）を起動し、VNC で表示します。同時に 1 つのみ、エミュレーションのため低速です。VNC 対応の QEMU が必要です（Debian にはありますが、Alpine にはありません）。</string>
     <string name="app_system_vm_empty">まだイメージがありません。起動可能なディスクイメージ（.qcow2、.img、.iso）をインポートして開始してください。</string>
     <string name="app_system_vm_import">イメージをインポート…</string>
     <string name="app_system_vm_running">実行中 · VNC 127.0.0.1:%1$d</string>
@@ -194,6 +194,8 @@
     <string name="app_system_vm_import_title">システム VM イメージをインポート</string>
     <string name="app_system_vm_import_label">名前</string>
     <string name="app_system_vm_import_source">イメージ URL またはデバイス上のパス</string>
+    <string name="app_system_vm_import_arch">ゲストのアーキテクチャ</string>
+    <string name="app_system_vm_import_arch_hint">イメージと一致させてください。ターゲットが違うとエラーは出ず、起動しないだけです。</string>
     <string name="app_window_scale_saved">このアプリのデフォルトサイズとして保存しました</string>
 
     <!-- Agent Activity log — result summaries (#239) -->

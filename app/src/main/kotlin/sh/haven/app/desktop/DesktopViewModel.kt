@@ -967,8 +967,13 @@ class DesktopViewModel @Inject constructor(
         _systemVmImages.value = runCatching { systemVmManager.listImages() }.getOrDefault(emptyList())
     }
 
-    /** Import a bootable disk image ([source] = http(s) URL or on-device path), normalised to qcow2. */
-    fun importSystemVmImage(label: String, source: String) {
+    /**
+     * Import a bootable disk image ([source] = http(s) URL or on-device path),
+     * normalised to qcow2. [arch] is the guest CPU the image holds — recorded
+     * with it, since a qcow2 doesn't say and the boot silently hangs on the
+     * wrong target.
+     */
+    fun importSystemVmImage(label: String, source: String, arch: sh.haven.core.local.VmArch) {
         val id = label.lowercase().replace(Regex("[^a-z0-9._-]+"), "-").trim('-')
         if (id.isEmpty()) {
             viewModelScope.launch { _userMessages.emit("Give the image a name (letters/digits).") }
@@ -977,7 +982,7 @@ class DesktopViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _systemVmBusy.value = true
             try {
-                systemVmManager.importImage(id, label.ifBlank { id }, source.trim())
+                systemVmManager.importImage(id, label.ifBlank { id }, source.trim(), arch = arch)
                 refreshSystemVmImages()
                 _userMessages.emit("Imported \"$label\".")
             } catch (e: Exception) {

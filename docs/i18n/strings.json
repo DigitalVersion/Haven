@@ -3033,21 +3033,21 @@
     },
     {
      "name": "app_system_vm_description",
-     "en": "Boot a full x86_64 Linux VM (QEMU in the active distro) and view it over VNC. One at a time, and emulated — so slow. Needs a VNC-capable QEMU (Debian\\'s has it; Alpine\\'s does not).",
+     "en": "Boot a full x86_64/arm64 Linux VM (QEMU in the active distro) and view it over VNC. One at a time, and emulated — so slow. Needs a VNC-capable QEMU (Debian\\'s has it; Alpine\\'s does not).",
      "comment": "Desktop manager: system VM (#326)",
      "args": [],
      "t": {
-      "ar": "يشغّل جهازًا افتراضيًا كامل النظام بنظام Linux من نوع x86_64 (عبر QEMU في التوزيعة النشطة) ويعرضه عبر VNC. واحد فقط في كل مرة، ومحاكى — لذا فهو بطيء. يتطلب QEMU يدعم VNC (متوفر في Debian دون Alpine).",
-      "bn": "সক্রিয় ডিস্ট্রোতে QEMU দিয়ে একটি সম্পূর্ণ x86_64 Linux VM বুট করে এবং VNC-এর মাধ্যমে দেখায়। একবারে একটি, এবং এমুলেটেড — তাই ধীর। VNC-সক্ষম QEMU প্রয়োজন (Debian-এ আছে, Alpine-এ নেই)।",
-      "de": "Startet eine vollständige x86_64-Linux-VM (QEMU in der aktiven Distribution) und zeigt sie über VNC an. Nur eine gleichzeitig und emuliert – also langsam. Erfordert ein VNC-fähiges QEMU (Debian hat es, Alpine nicht).",
-      "es": "Arranca una VM Linux x86_64 completa (QEMU en la distribución activa) y la muestra por VNC. Una a la vez y emulada, así que lenta. Necesita un QEMU compatible con VNC (el de Debian lo tiene; el de Alpine no).",
-      "fr": "Démarre une VM Linux x86_64 complète (QEMU dans la distribution active) et l\\'affiche via VNC. Une seule à la fois, et émulée — donc lente. Nécessite un QEMU compatible VNC (celui de Debian l\\'a, pas celui d\\'Alpine).",
-      "hi": "सक्रिय डिस्ट्रो में QEMU के ज़रिए पूरा x86_64 Linux VM बूट करता है और उसे VNC पर दिखाता है. एक बार में एक ही, और एमुलेटेड — इसलिए धीमा. VNC-सक्षम QEMU चाहिए (Debian में है, Alpine में नहीं).",
-      "ja": "完全な x86_64 Linux VM（アクティブなディストリビューション内の QEMU）を起動し、VNC で表示します。同時に 1 つのみ、エミュレーションのため低速です。VNC 対応の QEMU が必要です（Debian にはありますが、Alpine にはありません）。",
-      "ko": "전체 x86_64 Linux VM(활성 배포판의 QEMU)을 부팅하고 VNC로 표시합니다. 한 번에 하나만, 에뮬레이션이므로 느립니다. VNC를 지원하는 QEMU가 필요합니다(Debian에는 있지만 Alpine에는 없음).",
-      "pt": "Inicia uma VM Linux x86_64 completa (QEMU na distribuição ativa) e a exibe por VNC. Uma de cada vez e emulada — portanto lenta. Requer um QEMU compatível com VNC (o do Debian tem; o do Alpine não).",
-      "ru": "Запускает полноценную x86_64 Linux-ВМ (QEMU в активном дистрибутиве) и показывает её через VNC. По одной за раз и с эмуляцией — поэтому медленно. Нужен QEMU с поддержкой VNC (в Debian есть, в Alpine нет).",
-      "zh": "在活动发行版中通过 QEMU 启动完整的 x86_64 Linux 虚拟机，并通过 VNC 查看。一次只能运行一个，且为模拟运行，因此速度较慢。需要支持 VNC 的 QEMU（Debian 自带，Alpine 则没有）。"
+      "ar": "يشغّل جهازًا افتراضيًا كامل النظام بنظام Linux من نوع x86_64/arm64 (عبر QEMU في التوزيعة النشطة) ويعرضه عبر VNC. واحد فقط في كل مرة، ومحاكى — لذا فهو بطيء. يتطلب QEMU يدعم VNC (متوفر في Debian دون Alpine).",
+      "bn": "সক্রিয় ডিস্ট্রোতে QEMU দিয়ে একটি সম্পূর্ণ x86_64/arm64 Linux VM বুট করে এবং VNC-এর মাধ্যমে দেখায়। একবারে একটি, এবং এমুলেটেড — তাই ধীর। VNC-সক্ষম QEMU প্রয়োজন (Debian-এ আছে, Alpine-এ নেই)।",
+      "de": "Startet eine vollständige x86_64/arm64-Linux-VM (QEMU in der aktiven Distribution) und zeigt sie über VNC an. Nur eine gleichzeitig und emuliert – also langsam. Erfordert ein VNC-fähiges QEMU (Debian hat es, Alpine nicht).",
+      "es": "Arranca una VM Linux x86_64/arm64 completa (QEMU en la distribución activa) y la muestra por VNC. Una a la vez y emulada, así que lenta. Necesita un QEMU compatible con VNC (el de Debian lo tiene; el de Alpine no).",
+      "fr": "Démarre une VM Linux x86_64/arm64 complète (QEMU dans la distribution active) et l\\'affiche via VNC. Une seule à la fois, et émulée — donc lente. Nécessite un QEMU compatible VNC (celui de Debian l\\'a, pas celui d\\'Alpine).",
+      "hi": "सक्रिय डिस्ट्रो में QEMU के ज़रिए पूरा x86_64/arm64 Linux VM बूट करता है और उसे VNC पर दिखाता है. एक बार में एक ही, और एमुलेटेड — इसलिए धीमा. VNC-सक्षम QEMU चाहिए (Debian में है, Alpine में नहीं).",
+      "ja": "完全な x86_64/arm64 Linux VM（アクティブなディストリビューション内の QEMU）を起動し、VNC で表示します。同時に 1 つのみ、エミュレーションのため低速です。VNC 対応の QEMU が必要です（Debian にはありますが、Alpine にはありません）。",
+      "ko": "전체 x86_64/arm64 Linux VM(활성 배포판의 QEMU)을 부팅하고 VNC로 표시합니다. 한 번에 하나만, 에뮬레이션이므로 느립니다. VNC를 지원하는 QEMU가 필요합니다(Debian에는 있지만 Alpine에는 없음).",
+      "pt": "Inicia uma VM Linux x86_64/arm64 completa (QEMU na distribuição ativa) e a exibe por VNC. Uma de cada vez e emulada — portanto lenta. Requer um QEMU compatível com VNC (o do Debian tem; o do Alpine não).",
+      "ru": "Запускает полноценную x86_64/arm64 Linux-ВМ (QEMU в активном дистрибутиве) и показывает её через VNC. По одной за раз и с эмуляцией — поэтому медленно. Нужен QEMU с поддержкой VNC (в Debian есть, в Alpine нет).",
+      "zh": "在活动发行版中通过 QEMU 启动完整的 x86_64/arm64 Linux 虚拟机，并通过 VNC 查看。一次只能运行一个，且为模拟运行，因此速度较慢。需要支持 VNC 的 QEMU（Debian 自带，Alpine 则没有）。"
      }
     },
     {
@@ -3244,6 +3244,44 @@
       "pt": "URL da imagem ou caminho no dispositivo",
       "ru": "URL образа или путь на устройстве",
       "zh": "镜像 URL 或设备上的路径"
+     }
+    },
+    {
+     "name": "app_system_vm_import_arch",
+     "en": "Guest architecture",
+     "comment": "Desktop manager: system VM (#326)",
+     "args": [],
+     "t": {
+      "ar": "معمارية النظام الضيف",
+      "bn": "গেস্ট আর্কিটেকচার",
+      "de": "Gast-Architektur",
+      "es": "Arquitectura del invitado",
+      "fr": "Architecture de l\\'invité",
+      "hi": "गेस्ट आर्किटेक्चर",
+      "ja": "ゲストのアーキテクチャ",
+      "ko": "게스트 아키텍처",
+      "pt": "Arquitetura do convidado",
+      "ru": "Архитектура гостя",
+      "zh": "客户机架构"
+     }
+    },
+    {
+     "name": "app_system_vm_import_arch_hint",
+     "en": "Must match the image — the wrong target doesn\\'t error, it just never boots.",
+     "comment": "Desktop manager: system VM (#326)",
+     "args": [],
+     "t": {
+      "ar": "يجب أن تطابق الصورة — الهدف الخاطئ لا يُظهر خطأً، بل لا يُقلِع أبدًا.",
+      "bn": "ইমেজের সঙ্গে মিলতে হবে — ভুল টার্গেট কোনো ত্রুটি দেখায় না, শুধু কখনও বুট হয় না।",
+      "de": "Muss zum Image passen – ein falsches Ziel meldet keinen Fehler, es bootet einfach nie.",
+      "es": "Debe coincidir con la imagen: un destino incorrecto no da error, simplemente nunca arranca.",
+      "fr": "Doit correspondre à l\\'image : une cible incorrecte ne signale pas d\\'erreur, elle ne démarre jamais.",
+      "hi": "इमेज से मेल खाना चाहिए — गलत टारगेट कोई त्रुटि नहीं दिखाता, वह बस कभी बूट नहीं होता।",
+      "ja": "イメージと一致させてください。ターゲットが違うとエラーは出ず、起動しないだけです。",
+      "ko": "이미지와 일치해야 합니다. 대상이 틀리면 오류 없이 그냥 부팅되지 않습니다.",
+      "pt": "Deve corresponder à imagem — um destino errado não dá erro, apenas nunca inicializa.",
+      "ru": "Должна совпадать с образом — при неверной цели ошибки не будет, просто не загрузится.",
+      "zh": "必须与镜像一致 — 目标不对不会报错，只是永远无法启动。"
      }
     },
     {

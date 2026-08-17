@@ -185,7 +185,7 @@
 
     <!-- Desktop manager: system VM (#326) -->
     <string name="app_system_vm_title">System VM</string>
-    <string name="app_system_vm_description">Boot a full x86_64 Linux VM (QEMU in the active distro) and view it over VNC. One at a time, and emulated — so slow. Needs a VNC-capable QEMU (Debian\'s has it; Alpine\'s does not).</string>
+    <string name="app_system_vm_description">Boot a full x86_64/arm64 Linux VM (QEMU in the active distro) and view it over VNC. One at a time, and emulated — so slow. Needs a VNC-capable QEMU (Debian\'s has it; Alpine\'s does not).</string>
     <string name="app_system_vm_empty">No images yet. Import a bootable disk image (.qcow2, .img, .iso) to start.</string>
     <string name="app_system_vm_import">Import image…</string>
     <string name="app_system_vm_running">Running · VNC 127.0.0.1:%1$d</string>
@@ -196,6 +196,8 @@
     <string name="app_system_vm_import_title">Import system-VM image</string>
     <string name="app_system_vm_import_label">Name</string>
     <string name="app_system_vm_import_source">Image URL or on-device path</string>
+    <string name="app_system_vm_import_arch">Guest architecture</string>
+    <string name="app_system_vm_import_arch_hint">Must match the image — the wrong target doesn\'t error, it just never boots.</string>
 
     <!-- Desktop manager: distro / rootfs -->
     <string name="app_desktop_open_shell_cd">Open shell in %1$s</string>

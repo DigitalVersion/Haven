@@ -193,7 +193,7 @@
     <string name="app_desktop_app_window_defaults">기본 디스플레이 (모든 앱 창)</string>
 
     <string name="app_system_vm_title">시스템 VM</string>
-    <string name="app_system_vm_description">전체 x86_64 Linux VM(활성 배포판의 QEMU)을 부팅하고 VNC로 표시합니다. 한 번에 하나만, 에뮬레이션이므로 느립니다. VNC를 지원하는 QEMU가 필요합니다(Debian에는 있지만 Alpine에는 없음).</string>
+    <string name="app_system_vm_description">전체 x86_64/arm64 Linux VM(활성 배포판의 QEMU)을 부팅하고 VNC로 표시합니다. 한 번에 하나만, 에뮬레이션이므로 느립니다. VNC를 지원하는 QEMU가 필요합니다(Debian에는 있지만 Alpine에는 없음).</string>
     <string name="app_system_vm_empty">아직 이미지가 없습니다. 부팅 가능한 디스크 이미지(.qcow2, .img, .iso)를 가져와 시작하세요.</string>
     <string name="app_system_vm_import">이미지 가져오기…</string>
     <string name="app_system_vm_running">실행 중 · VNC 127.0.0.1:%1$d</string>
@@ -204,6 +204,8 @@
     <string name="app_system_vm_import_title">시스템 VM 이미지 가져오기</string>
     <string name="app_system_vm_import_label">이름</string>
     <string name="app_system_vm_import_source">이미지 URL 또는 기기 내 경로</string>
+    <string name="app_system_vm_import_arch">게스트 아키텍처</string>
+    <string name="app_system_vm_import_arch_hint">이미지와 일치해야 합니다. 대상이 틀리면 오류 없이 그냥 부팅되지 않습니다.</string>
     <string name="app_window_scale_saved">이 앱의 기본 크기로 저장됨</string>
 
     <!-- Agent Activity log — result summaries (#239) -->

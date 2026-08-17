@@ -78,6 +78,7 @@ import sh.haven.core.local.DesktopManager
 import sh.haven.core.local.ProotDnsMode
 import sh.haven.core.local.ProotManager
 import sh.haven.core.local.SystemVmManager
+import sh.haven.core.local.VmArch
 import sh.haven.core.local.proot.Compatibility
 import sh.haven.core.local.proot.Distro
 import sh.haven.core.local.proot.DistroCatalog
@@ -225,8 +226,8 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
 
     if (showImportVmDialog) {
         SystemVmImportDialog(
-            onImport = { label, source ->
-                viewModel.importSystemVmImage(label, source)
+            onImport = { label, source, arch ->
+                viewModel.importSystemVmImage(label, source, arch)
                 showImportVmDialog = false
             },
             onDismiss = { showImportVmDialog = false },
@@ -506,8 +507,11 @@ private fun SystemVmSection(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(img.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                            // Arch alongside the size: it's chosen at import and
+                            // then invisible, which makes two similarly-named
+                            // images impossible to tell apart.
                             Text(
-                                "%,d MB".format(img.sizeBytes / (1024 * 1024)),
+                                "%,d MB · %s".format(img.sizeBytes / (1024 * 1024), img.arch.id),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -545,19 +549,34 @@ private fun SystemVmSection(
     }
 }
 
-/** Import dialog for a system-VM disk image: a name + a URL or on-device path. */
+/**
+ * Import dialog for a system-VM disk image: a name, a URL or on-device path,
+ * and which CPU the image is for.
+ *
+ * The architecture has to be asked here because a qcow2 doesn't record it and
+ * nothing downstream can infer it — an arm64 image booted on the x86_64 target
+ * doesn't fail, it sits on a machine with no bootable device until the user
+ * gives up. Chips rather than a switch: this is an enum row, not an on/off.
+ */
 @Composable
 private fun SystemVmImportDialog(
-    onImport: (label: String, source: String) -> Unit,
+    onImport: (label: String, source: String, arch: VmArch) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var label by rememberSaveable { mutableStateOf("") }
     var source by rememberSaveable { mutableStateOf("") }
+    // Saved as the arch id, not the enum: a plain String needs no Saver, and
+    // VmArch.fromId is the same parse the stored-image sidecar goes through.
+    var archId by rememberSaveable { mutableStateOf(VmArch.X86_64.id) }
+    val arch = VmArch.fromId(archId)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(AppR.string.app_system_vm_import_title)) },
         text = {
-            Column {
+            // Scrollable: M3 doesn't scroll the text slot for you, and the arch
+            // row pushed this past what a small portrait phone shows at a large
+            // font scale.
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
@@ -573,11 +592,32 @@ private fun SystemVmImportDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    stringResource(AppR.string.app_system_vm_import_arch),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Spacer(Modifier.height(4.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    VmArch.entries.forEach { candidate ->
+                        FilterChip(
+                            selected = arch == candidate,
+                            onClick = { archId = candidate.id },
+                            label = { Text(candidate.id) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    stringResource(AppR.string.app_system_vm_import_arch_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onImport(label.trim(), source.trim()) },
+                onClick = { onImport(label.trim(), source.trim(), arch) },
                 enabled = label.isNotBlank() && source.isNotBlank(),
             ) {
                 Text(stringResource(AppR.string.app_system_vm_import))
