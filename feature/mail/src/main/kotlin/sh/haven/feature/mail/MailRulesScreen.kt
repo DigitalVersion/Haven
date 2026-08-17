@@ -45,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -175,8 +176,11 @@ fun MailRulesScreen(
                     1 -> FiringHistory(firings)
                     2 -> PendingApprovals(
                         pending = pending,
+                        bulkProgress = viewModel.bulkProgress.collectAsState().value,
                         onApprove = viewModel::approvePending,
                         onReject = { viewModel.rejectPending(it.id) },
+                        onApproveAll = viewModel::approveAllPending,
+                        onRejectAll = viewModel::rejectAllPending,
                     )
                 }
             }
@@ -714,21 +718,65 @@ private fun FiringHistory(firings: List<MailRuleFiring>) {
 @Composable
 private fun PendingApprovals(
     pending: List<MailRulePendingAction>,
+    bulkProgress: MailRulesViewModel.BulkProgress?,
     onApprove: (MailRulePendingAction) -> Unit,
     onReject: (MailRulePendingAction) -> Unit,
+    onApproveAll: () -> Unit,
+    onRejectAll: () -> Unit,
 ) {
     if (pending.isEmpty()) {
         CenterMessage(stringResource(R.string.mail_rules_pending_empty))
         return
     }
     val noSubject = stringResource(R.string.mail_rules_no_subject)
+    val bulkBusy = bulkProgress != null
+    var confirmRejectAll by remember { mutableStateOf(false) }
+    if (confirmRejectAll) {
+        AlertDialog(
+            onDismissRequest = { confirmRejectAll = false },
+            title = { Text(stringResource(R.string.mail_rules_reject_all_title)) },
+            text = { Text(stringResource(R.string.mail_rules_reject_all_text, pending.size)) },
+            confirmButton = {
+                TextButton(onClick = { confirmRejectAll = false; onRejectAll() }) {
+                    Text(stringResource(R.string.mail_rules_reject_all))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmRejectAll = false }) {
+                    Text(stringResource(R.string.mail_rules_cancel))
+                }
+            },
+        )
+    }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Text(
                 stringResource(R.string.mail_rules_pending_desc),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
+        }
+        item {
+            // One tap for the whole queue — approving item-by-item is an IMAP
+            // round trip per tap, unusable past a handful of entries.
+            if (bulkProgress != null) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text(
+                        stringResource(R.string.mail_rules_bulk_progress, bulkProgress.done, bulkProgress.total),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    LinearProgressIndicator(
+                        progress = { bulkProgress.done.toFloat() / bulkProgress.total },
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                    )
+                }
+            } else {
+                Row(Modifier.padding(horizontal = 8.dp)) {
+                    TextButton(onClick = onApproveAll) { Text(stringResource(R.string.mail_rules_approve_all)) }
+                    TextButton(onClick = { confirmRejectAll = true }) { Text(stringResource(R.string.mail_rules_reject_all)) }
+                }
+            }
+            HorizontalDivider()
         }
         items(pending, key = { it.id }) { p ->
             val action = remember(p.id) { MailRuleJson.actionsFromJson(p.actionJson).firstOrNull() }
@@ -742,8 +790,8 @@ private fun PendingApprovals(
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(Modifier.padding(top = 4.dp)) {
-                    TextButton(onClick = { onApprove(p) }) { Text(stringResource(R.string.mail_rules_approve)) }
-                    TextButton(onClick = { onReject(p) }) { Text(stringResource(R.string.mail_rules_reject)) }
+                    TextButton(enabled = !bulkBusy, onClick = { onApprove(p) }) { Text(stringResource(R.string.mail_rules_approve)) }
+                    TextButton(enabled = !bulkBusy, onClick = { onReject(p) }) { Text(stringResource(R.string.mail_rules_reject)) }
                 }
             }
             HorizontalDivider()

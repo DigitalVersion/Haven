@@ -23623,6 +23623,46 @@
      }
     },
     {
+     "name": "mail_rules_approve_all",
+     "en": "Approve all",
+     "comment": "Mail Rules (Phase 5)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "mail_rules_reject_all",
+     "en": "Reject all",
+     "comment": "Mail Rules (Phase 5)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "mail_rules_bulk_progress",
+     "en": "Approving %1$d of %2$d…",
+     "comment": "Mail Rules (Phase 5)",
+     "args": [
+      "%1$d",
+      "%2$d"
+     ],
+     "t": {}
+    },
+    {
+     "name": "mail_rules_reject_all_title",
+     "en": "Reject all pending actions?",
+     "comment": "Mail Rules (Phase 5)",
+     "args": [],
+     "t": {}
+    },
+    {
+     "name": "mail_rules_reject_all_text",
+     "en": "Discards %1$d queued action(s) without running them. The messages stay where they are.",
+     "comment": "Mail Rules (Phase 5)",
+     "args": [
+      "%1$d"
+     ],
+     "t": {}
+    },
+    {
      "name": "mail_cd_back",
      "en": "Back",
      "comment": "Mail Rules (Phase 5)",

@@ -139,6 +139,11 @@
     <string name="mail_rules_pending_desc">Queued while Haven was in the background. Approve to run, or reject to discard.</string>
     <string name="mail_rules_approve">Approve</string>
     <string name="mail_rules_reject">Reject</string>
+    <string name="mail_rules_approve_all">Approve all</string>
+    <string name="mail_rules_reject_all">Reject all</string>
+    <string name="mail_rules_bulk_progress">Approving %1$d of %2$d…</string>
+    <string name="mail_rules_reject_all_title">Reject all pending actions?</string>
+    <string name="mail_rules_reject_all_text">Discards %1$d queued action(s) without running them. The messages stay where they are.</string>
     <string name="mail_cd_back">Back</string>
     <string name="mail_cd_has_attachments">Has attachments</string>
 </resources>

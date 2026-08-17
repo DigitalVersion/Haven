@@ -108,11 +108,51 @@ class MailRulesViewModel @Inject constructor(
         }
     }
 
+    /** Progress of a running bulk approve; null = idle. The UI disables the queue while non-null. */
+    data class BulkProgress(val done: Int, val total: Int)
+
+    private val _bulkProgress = MutableStateFlow<BulkProgress?>(null)
+    val bulkProgress: StateFlow<BulkProgress?> = _bulkProgress.asStateFlow()
+
     /** Run a queued destructive action (approve). Reports the result via the snackbar. */
     fun approvePending(pending: MailRulePendingAction) {
         viewModelScope.launch {
             val ok = runCatching { pendingRunner.runApproved(pending) }.getOrDefault(false)
             _message.update { if (ok) "Action approved" else "Action failed — left in the queue" }
+        }
+    }
+
+    /**
+     * Approve the whole queue in one tap (#one-tap-per-item didn't scale — each
+     * approve is an IMAP round trip). Sequential on purpose: the ops share one
+     * IMAP session. Failures stay queued; the snackbar reports the split.
+     */
+    fun approveAllPending() {
+        if (_bulkProgress.value != null) return
+        viewModelScope.launch {
+            val batch = pendingActions.value
+            if (batch.isEmpty()) return@launch
+            _bulkProgress.value = BulkProgress(0, batch.size)
+            var ok = 0
+            batch.forEachIndexed { i, p ->
+                if (runCatching { pendingRunner.runApproved(p) }.getOrDefault(false)) ok++
+                _bulkProgress.value = BulkProgress(i + 1, batch.size)
+            }
+            _bulkProgress.value = null
+            _message.update {
+                if (ok == batch.size) "Approved $ok action(s)"
+                else "Approved $ok of ${batch.size} — failures left in the queue"
+            }
+        }
+    }
+
+    /** Discard the whole queue without running anything (the UI confirms first). */
+    fun rejectAllPending() {
+        if (_bulkProgress.value != null) return
+        viewModelScope.launch {
+            val batch = pendingActions.value
+            batch.forEach { ruleRepository.deletePendingAction(it.id) }
+            _message.update { "Rejected ${batch.size} action(s)" }
         }
     }
 
