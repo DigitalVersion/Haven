@@ -5,6 +5,15 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.31
+
+- **Fixed the F-Droid build**, which has failed at clone time since 2026-08-16 and left that channel stuck on v5.87.22 (#525, thanks connesc — the build-monitor link found it twice now). A submodule of `wayland-android` was pinned to a commit that exists only on a personal mirror, and F-Droid's build server reuses its build directory, where `git submodule init` never overwrites an already-registered submodule URL — so it kept fetching from the original remote, which legitimately does not have that commit. The pin now points at upstream, which is reachable whichever of the two URLs a cached clone happens to use.
+- System VMs can now boot **arm64 guests**, not just x86_64 (#326). `-M virt` is a different machine rather than a flag: it needs UEFI firmware (installed automatically), virtio-gpu instead of VGA, and USB HID — without which a VNC viewer connects to a guest it cannot type into. The guest architecture is chosen when you import an image and shown beside it in the list, because a disk image does not record what CPU it is for, and the wrong target does not error, it simply never boots.
+- Acceleration is now **reported rather than assumed**: Haven probes `/dev/kvm` and says in plain words why a VM is emulated. On ordinary arm64 phones there is no `/dev/kvm` at all — the vendor hypervisor owns EL2, and rooting does not change that — so guests run under emulation. KVM also cannot accelerate a foreign-architecture guest, so an x86_64 image on an arm64 phone is emulated no matter what.
+- The system-VM import dialog no longer loses what you typed when the screen rotates.
+
+🧱 **A pin that only one machine can resolve is not a pin.** The broken submodule passed every local check and every CI run, because a fresh clone reads the current URL and a fresh clone was all anyone ever did. The one machine that reuses its checkout — the one that actually ships the app to F-Droid users — kept the old address and quietly failed for a day. Reproducibility is not "it builds here"; it is "it builds somewhere that does not already have your assumptions cached".
+
 ## v5.87.30
 
 - Mail-rule actions queued for approval no longer bury the notification shade. Instead of one card per queued action — ten emails meant ten stacked notifications, and tapping any of them did nothing, because they carried no tap action at all — there is now a single "N mail actions awaiting approval" notification on a dedicated Mail rules channel. It updates its count in place, opens the approval queue when tapped, and clears itself when the queue drains.
