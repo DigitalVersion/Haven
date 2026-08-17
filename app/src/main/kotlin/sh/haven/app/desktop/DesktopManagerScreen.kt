@@ -57,7 +57,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -132,7 +131,7 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
     var showAddAppDialog by remember { mutableStateOf(false) }
     // Non-null while the edit dialog is open, holding the def being edited.
     var editingApp by remember { mutableStateOf<AppWindowDef?>(null) }
-    var showInstalledApps by remember { mutableStateOf(false) }
+    val showInstalledApps by viewModel.showInstalledApps.collectAsState()
     val appWindowDefs by viewModel.appWindowDefs.collectAsState()
     val launchingIds by viewModel.launchingIds.collectAsState()
     val installedApps by viewModel.installedApps.collectAsState()
@@ -158,6 +157,7 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
             .verticalScroll(rememberScrollState()),
     ) {
         DesktopManagerSection(
+            viewModel = viewModel,
             installedDesktops = installedDesktops,
             desktopStates = desktopStates,
             desktopSetupState = desktopSetupState,
@@ -216,7 +216,7 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
             onDelete = { viewModel.deleteAppWindow(it.id) },
             onPinToHome = { viewModel.pinAppWindow(it) },
             onAdd = { showAddAppDialog = true },
-            onBrowse = { showInstalledApps = true },
+            onBrowse = { viewModel.setShowInstalledApps(true) },
             onSetDefaultResolution = { viewModel.setAppWindowDefaultResolution(it) },
             onSetDefaultScale = { viewModel.setAppWindowDefaultScale(it) },
         )
@@ -282,14 +282,14 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
     if (showInstalledApps) {
         androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.refreshInstalledApps() }
         Dialog(
-            onDismissRequest = { showInstalledApps = false },
+            onDismissRequest = { viewModel.setShowInstalledApps(false) },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
             InstalledAppsScreen(
                 result = installedApps,
                 scanning = scanningApps,
                 onLaunch = { app, fullscreen -> viewModel.launchInstalledApp(app, fullscreen) },
-                onClose = { showInstalledApps = false },
+                onClose = { viewModel.setShowInstalledApps(false) },
             )
         }
     }
@@ -1094,18 +1094,23 @@ private fun DesktopManagerSection(
     onRetryRootfs: () -> Unit,
     customDesktopCommand: String,
     onSetCustomDesktopCommand: (command: String, thenStart: Boolean) -> Unit,
+    // Dialog drafts live in the ViewModel so a rotation cannot take a
+    // half-filled dialog with it; this section owns four of them, and threading
+    // a dozen state+callback parameters for that would be worse than the
+    // coupling.
+    viewModel: DesktopViewModel,
 ) {
     var distroMenuOpen by remember { mutableStateOf(false) }
-    var showImportDialog by remember { mutableStateOf(false) }
-    var showCustomBindsDialog by remember { mutableStateOf(false) }
+    val showImportDialog by viewModel.showImportRootfs.collectAsState()
+    val showCustomBindsDialog by viewModel.showCustomBinds.collectAsState()
     // #361: non-null while the Custom (X11) command dialog is open; true =
     // opened via Start on a blank command, so Save also starts the desktop.
-    var customCmdDialogStartAfter by remember { mutableStateOf<Boolean?>(null) }
-    var showWritableConfirm by remember { mutableStateOf(false) }
+    val customCmdDialogStartAfter by viewModel.customCmdStartAfter.collectAsState()
+    val showWritableConfirm by viewModel.showUsbWritableConfirm.collectAsState()
     // #379: which distro's delete is awaiting confirmation (null = none).
     // The delete IconButton sits one tap away from Open-shell, so guard the
     // destructive rootfs wipe behind a confirm dialog.
-    var distroPendingDelete by remember { mutableStateOf<Distro?>(null) }
+    val distroPendingDelete by viewModel.distroPendingDelete.collectAsState()
     // Which locked partition's unlock dialog is open (null = none) — the
     // owning session's busid + the mount-dir name (e.g. "sdb2").
     var unlockingPartition by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -1211,7 +1216,7 @@ private fun DesktopManagerSection(
                                 }
                                 IconButton(onClick = {
                                     distroMenuOpen = false
-                                    distroPendingDelete = distro
+                                    viewModel.setDistroPendingDelete(distro)
                                 }) {
                                     Icon(
                                         Icons.Filled.Delete,
@@ -1257,7 +1262,7 @@ private fun DesktopManagerSection(
                             leadingIcon = { Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp)) },
                             onClick = {
                                 distroMenuOpen = false
-                                showImportDialog = true
+                                viewModel.openImportRootfs()
                             },
                         )
                         // #287: open a USB mass-storage drive in a VM so its
@@ -1279,7 +1284,7 @@ private fun DesktopManagerSection(
                                 leadingIcon = { Icon(Icons.Filled.Usb, contentDescription = null, modifier = Modifier.size(20.dp)) },
                                 onClick = {
                                     distroMenuOpen = false
-                                    showWritableConfirm = true
+                                    viewModel.setShowUsbWritableConfirm(true)
                                 },
                             )
                         }
@@ -1481,7 +1486,7 @@ private fun DesktopManagerSection(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { showCustomBindsDialog = true }
+                            .clickable { viewModel.openCustomBinds(customBindsFor(activeDistroId)) }
                             .padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -1580,14 +1585,14 @@ private fun DesktopManagerSection(
                     storedVncPort = storedVncPortFor(de),
                     customCommand = if (isCustom) customDesktopCommand else null,
                     onEditCommand = if (isCustom) {
-                        { customCmdDialogStartAfter = false }
+                        { viewModel.openCustomCmdDialog(customDesktopCommand, startAfterSave = false) }
                     } else null,
                     onInstall = { onInstall(de) },
                     onStart = {
                         // #361: a blank custom command can't launch anything —
                         // route Start into the command dialog instead.
                         if (isCustom && customDesktopCommand.isBlank()) {
-                            customCmdDialogStartAfter = true
+                            viewModel.openCustomCmdDialog(customDesktopCommand, startAfterSave = true)
                         } else onStart(de)
                     },
                     onStop = { onStop(de) },
@@ -1599,67 +1604,73 @@ private fun DesktopManagerSection(
     }
 
     customCmdDialogStartAfter?.let { startAfter ->
+        val draft by viewModel.customCmdDraft.collectAsState()
         CustomDesktopCommandDialog(
-            initial = customDesktopCommand,
+            command = draft,
+            onCommandChange = { viewModel.setCustomCmdDraft(it) },
             startAfterSave = startAfter,
-            onDismiss = { customCmdDialogStartAfter = null },
+            onDismiss = { viewModel.dismissCustomCmdDialog() },
             onSave = { cmd ->
                 onSetCustomDesktopCommand(cmd, startAfter)
-                customCmdDialogStartAfter = null
+                viewModel.dismissCustomCmdDialog()
             },
         )
     }
     if (showImportDialog) {
+        val draft by viewModel.importRootfsDraft.collectAsState()
         ImportRootfsDialog(
-            onDismiss = { showImportDialog = false },
+            draft = draft,
+            onDraftChange = { viewModel.setImportRootfsDraft(it) },
+            onDismiss = { viewModel.dismissImportRootfs() },
             onImport = { id, label, family, source ->
                 onImportRootfs(id, label, family, source)
-                showImportDialog = false
+                viewModel.dismissImportRootfs()
             },
         )
     }
     if (showCustomBindsDialog) {
+        val rows by viewModel.customBindsDraft.collectAsState()
         CustomBindsDialog(
-            distroId = activeDistroId,
             distroLabel = activeDistroLabel,
-            initial = customBindsFor(activeDistroId),
-            onDismiss = { showCustomBindsDialog = false },
+            rows = rows,
+            onRowsChange = { viewModel.setCustomBindsDraft(it) },
+            onDismiss = { viewModel.dismissCustomBinds() },
             onSave = { binds ->
                 onSetCustomBinds(activeDistroId, binds)
-                showCustomBindsDialog = false
+                viewModel.dismissCustomBinds()
             },
         )
     }
     if (showWritableConfirm) {
         AlertDialog(
-            onDismissRequest = { showWritableConfirm = false },
+            onDismissRequest = { viewModel.setShowUsbWritableConfirm(false) },
             title = { Text(stringResource(AppR.string.app_desktop_open_usb_drive_writable_confirm_title)) },
             text = { Text(stringResource(AppR.string.app_desktop_open_usb_drive_writable_confirm_body)) },
             confirmButton = {
                 TextButton(onClick = {
-                    showWritableConfirm = false
+                    viewModel.setShowUsbWritableConfirm(false)
                     onOpenUsbDriveWritable()
                 }) { Text(stringResource(AppR.string.app_desktop_open_usb_drive_writable)) }
             },
             dismissButton = {
-                TextButton(onClick = { showWritableConfirm = false }) { Text(stringResource(R.string.common_cancel)) }
+                TextButton(onClick = { viewModel.setShowUsbWritableConfirm(false) }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
     }
     distroPendingDelete?.let { distro ->
         AlertDialog(
-            onDismissRequest = { distroPendingDelete = null },
+            onDismissRequest = { viewModel.setDistroPendingDelete(null) },
             icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
             title = { Text(stringResource(AppR.string.app_desktop_delete_distro_confirm_title, distro.label)) },
             text = { Text(stringResource(AppR.string.app_desktop_delete_distro_confirm_body)) },
             confirmButton = {
                 TextButton(onClick = {
                     onDeleteDistro(distro)
-                    distroPendingDelete = null
+                    viewModel.setDistroPendingDelete(null)
                 }) { Text(stringResource(R.string.common_delete)) }
             },
             dismissButton = {
-                TextButton(onClick = { distroPendingDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+                TextButton(onClick = { viewModel.setDistroPendingDelete(null) }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
     }
@@ -1683,12 +1694,15 @@ private fun DesktopManagerSection(
  */
 @Composable
 private fun CustomDesktopCommandDialog(
-    initial: String,
+    command: String,
+    onCommandChange: (String) -> Unit,
     startAfterSave: Boolean,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
 ) {
-    var command by rememberSaveable { mutableStateOf(initial) }
+    // Stateless: the draft lives in DesktopViewModel, because rememberSaveable
+    // here did not survive a rotation (measured — this composable is gone by the
+    // time state is saved).
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(AppR.string.app_desktop_custom_cmd_title)) },
@@ -1702,7 +1716,7 @@ private fun CustomDesktopCommandDialog(
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = command,
-                    onValueChange = { command = it },
+                    onValueChange = onCommandChange,
                     label = { Text(stringResource(AppR.string.app_desktop_custom_cmd_label)) },
                     textStyle = LocalTextStyle.current.copy(
                         fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
@@ -1761,13 +1775,18 @@ private fun UsbLuksUnlockDialog(
 
 @Composable
 private fun ImportRootfsDialog(
+    draft: DesktopViewModel.ImportRootfsDraft,
+    onDraftChange: (DesktopViewModel.ImportRootfsDraft) -> Unit,
     onDismiss: () -> Unit,
     onImport: (String, String, sh.haven.core.local.proot.PackageFamily, String) -> Unit,
 ) {
-    var id by remember { mutableStateOf("") }
-    var label by remember { mutableStateOf("") }
-    var source by remember { mutableStateOf("") }
-    var family by remember { mutableStateOf(sh.haven.core.local.proot.PackageFamily.APT) }
+    // Stateless: the draft lives in DesktopViewModel so a rotation cannot wipe
+    // a half-typed import. familyMenuOpen stays local — it is transient UI, and
+    // a menu that closes on rotation is the expected behaviour anyway.
+    val id = draft.id
+    val label = draft.label
+    val source = draft.source
+    val family = draft.family
     var familyMenuOpen by remember { mutableStateOf(false) }
     val valid = id.isNotBlank() && source.isNotBlank()
 
@@ -1784,7 +1803,7 @@ private fun ImportRootfsDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = id,
-                    onValueChange = { id = it.trim() },
+                    onValueChange = { onDraftChange(draft.copy(id = it.trim())) },
                     singleLine = true,
                     label = { Text(stringResource(AppR.string.app_desktop_import_id_hint)) },
                     modifier = Modifier.fillMaxWidth(),
@@ -1792,7 +1811,7 @@ private fun ImportRootfsDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = label,
-                    onValueChange = { label = it },
+                    onValueChange = { onDraftChange(draft.copy(label = it)) },
                     singleLine = true,
                     label = { Text(stringResource(AppR.string.app_desktop_import_label_hint)) },
                     modifier = Modifier.fillMaxWidth(),
@@ -1800,7 +1819,7 @@ private fun ImportRootfsDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = source,
-                    onValueChange = { source = it.trim() },
+                    onValueChange = { onDraftChange(draft.copy(source = it.trim())) },
                     singleLine = true,
                     label = { Text(stringResource(AppR.string.app_desktop_import_source_hint)) },
                     modifier = Modifier.fillMaxWidth(),
@@ -1816,7 +1835,7 @@ private fun ImportRootfsDialog(
                         sh.haven.core.local.proot.PackageFamily.entries.forEach { f ->
                             DropdownMenuItem(
                                 text = { Text(f.name) },
-                                onClick = { family = f; familyMenuOpen = false },
+                                onClick = { onDraftChange(draft.copy(family = f)); familyMenuOpen = false },
                             )
                         }
                     }
@@ -1836,18 +1855,15 @@ private fun ImportRootfsDialog(
 
 @Composable
 private fun CustomBindsDialog(
-    distroId: String,
     distroLabel: String,
-    initial: List<sh.haven.core.local.proot.CustomBind>,
+    rows: List<Pair<String, String>>,
+    onRowsChange: (List<Pair<String, String>>) -> Unit,
     onDismiss: () -> Unit,
     onSave: (List<sh.haven.core.local.proot.CustomBind>) -> Unit,
 ) {
-    // Local editable copy of (host, guest) pairs. Mutated in place; saved on Save.
-    val rows = remember(distroId) {
-        mutableStateListOf<Pair<String, String>>().apply {
-            initial.forEach { add(it.host to it.guest) }
-        }
-    }
+    // (host, guest) pairs held by DesktopViewModel, replaced wholesale on each
+    // edit rather than mutated in place — a rotation used to discard the whole
+    // in-place list along with the dialog.
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(AppR.string.app_desktop_custom_binds_dialog_title, distroLabel)) },
@@ -1865,7 +1881,9 @@ private fun CustomBindsDialog(
                         Column(modifier = Modifier.weight(1f)) {
                             OutlinedTextField(
                                 value = host,
-                                onValueChange = { rows[i] = it.trim() to rows[i].second },
+                                onValueChange = { v ->
+                                    onRowsChange(rows.toMutableList().also { it[i] = v.trim() to it[i].second })
+                                },
                                 singleLine = true,
                                 label = { Text(stringResource(AppR.string.app_desktop_custom_binds_host_hint)) },
                                 modifier = Modifier.fillMaxWidth(),
@@ -1873,13 +1891,15 @@ private fun CustomBindsDialog(
                             Spacer(Modifier.height(4.dp))
                             OutlinedTextField(
                                 value = guest,
-                                onValueChange = { rows[i] = rows[i].first to it.trim() },
+                                onValueChange = { v ->
+                                    onRowsChange(rows.toMutableList().also { it[i] = it[i].first to v.trim() })
+                                },
                                 singleLine = true,
                                 label = { Text(stringResource(AppR.string.app_desktop_custom_binds_guest_hint)) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        IconButton(onClick = { rows.removeAt(i) }) {
+                        IconButton(onClick = { onRowsChange(rows.filterIndexed { idx, _ -> idx != i }) }) {
                             Icon(
                                 Icons.Filled.Delete,
                                 contentDescription = stringResource(AppR.string.app_desktop_custom_binds_remove_cd),
@@ -1888,7 +1908,7 @@ private fun CustomBindsDialog(
                     }
                     Spacer(Modifier.height(8.dp))
                 }
-                TextButton(onClick = { rows.add("" to "") }) {
+                TextButton(onClick = { onRowsChange(rows + ("" to "")) }) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text(stringResource(AppR.string.app_desktop_custom_binds_add))

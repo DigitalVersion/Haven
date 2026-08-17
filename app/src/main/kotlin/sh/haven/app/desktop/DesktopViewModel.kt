@@ -986,6 +986,98 @@ class DesktopViewModel @Inject constructor(
     private val _systemVmImportArch = MutableStateFlow(sh.haven.core.local.VmArch.X86_64)
     val systemVmImportArch: StateFlow<sh.haven.core.local.VmArch> = _systemVmImportArch.asStateFlow()
 
+    // --- Desktop-manager dialog drafts -------------------------------------
+    //
+    // Same reason as the system-VM import draft below, and the same rule: flag
+    // AND fields together, never the flag alone. These screens sit in a
+    // HorizontalPager under a nav host that can leave the composition, so a
+    // rotation takes any open dialog with it.
+    //
+    // AppWindowDialog and DesktopSetupDialog are deliberately NOT here yet:
+    // their state is derived (from `initial`) or key-reset (the setup dialog's
+    // port field re-initialises when the selected DE changes), and moving that
+    // faithfully needs watching on a device rather than reasoning about it.
+
+    private val _showInstalledApps = MutableStateFlow(false)
+    val showInstalledApps: StateFlow<Boolean> = _showInstalledApps.asStateFlow()
+
+    fun setShowInstalledApps(open: Boolean) { _showInstalledApps.value = open }
+
+    /** Non-null while the Custom (X11) command dialog is open; the value is "also start the desktop after saving" (#361). */
+    private val _customCmdStartAfter = MutableStateFlow<Boolean?>(null)
+    val customCmdStartAfter: StateFlow<Boolean?> = _customCmdStartAfter.asStateFlow()
+
+    private val _customCmdDraft = MutableStateFlow("")
+    val customCmdDraft: StateFlow<String> = _customCmdDraft.asStateFlow()
+
+    fun openCustomCmdDialog(initial: String, startAfterSave: Boolean) {
+        _customCmdDraft.value = initial
+        _customCmdStartAfter.value = startAfterSave
+    }
+
+    fun setCustomCmdDraft(value: String) { _customCmdDraft.value = value }
+
+    fun dismissCustomCmdDialog() {
+        _customCmdStartAfter.value = null
+        _customCmdDraft.value = ""
+    }
+
+    /** The bring-your-own-rootfs import dialog's draft (#284). */
+    data class ImportRootfsDraft(
+        val id: String = "",
+        val label: String = "",
+        val source: String = "",
+        val family: sh.haven.core.local.proot.PackageFamily = sh.haven.core.local.proot.PackageFamily.APT,
+    )
+
+    private val _showImportRootfs = MutableStateFlow(false)
+    val showImportRootfs: StateFlow<Boolean> = _showImportRootfs.asStateFlow()
+
+    private val _importRootfsDraft = MutableStateFlow(ImportRootfsDraft())
+    val importRootfsDraft: StateFlow<ImportRootfsDraft> = _importRootfsDraft.asStateFlow()
+
+    fun openImportRootfs() {
+        _importRootfsDraft.value = ImportRootfsDraft()
+        _showImportRootfs.value = true
+    }
+
+    fun setImportRootfsDraft(draft: ImportRootfsDraft) { _importRootfsDraft.value = draft }
+
+    fun dismissImportRootfs() {
+        _showImportRootfs.value = false
+        _importRootfsDraft.value = ImportRootfsDraft()
+    }
+
+    /** The custom-binds editor's rows as (host, guest) pairs — a plain list, replaced wholesale on each edit. */
+    private val _showCustomBinds = MutableStateFlow(false)
+    val showCustomBinds: StateFlow<Boolean> = _showCustomBinds.asStateFlow()
+
+    private val _customBindsDraft = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val customBindsDraft: StateFlow<List<Pair<String, String>>> = _customBindsDraft.asStateFlow()
+
+    fun openCustomBinds(initial: List<sh.haven.core.local.proot.CustomBind>) {
+        _customBindsDraft.value = initial.map { it.host to it.guest }
+        _showCustomBinds.value = true
+    }
+
+    fun setCustomBindsDraft(rows: List<Pair<String, String>>) { _customBindsDraft.value = rows }
+
+    fun dismissCustomBinds() {
+        _showCustomBinds.value = false
+        _customBindsDraft.value = emptyList()
+    }
+
+    private val _showUsbWritableConfirm = MutableStateFlow(false)
+    val showUsbWritableConfirm: StateFlow<Boolean> = _showUsbWritableConfirm.asStateFlow()
+
+    fun setShowUsbWritableConfirm(open: Boolean) { _showUsbWritableConfirm.value = open }
+
+    /** The distro a delete confirmation is currently asking about — the target has to survive with the flag, or the dialog returns pointing at nothing. */
+    private val _distroPendingDelete = MutableStateFlow<sh.haven.core.local.proot.Distro?>(null)
+    val distroPendingDelete: StateFlow<sh.haven.core.local.proot.Distro?> = _distroPendingDelete.asStateFlow()
+
+    fun setDistroPendingDelete(distro: sh.haven.core.local.proot.Distro?) { _distroPendingDelete.value = distro }
+
     fun openSystemVmImport() { _showSystemVmImport.value = true }
 
     fun setSystemVmImportLabel(value: String) { _systemVmImportLabel.value = value }
