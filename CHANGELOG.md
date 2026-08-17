@@ -5,6 +5,16 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.30
+
+- Mail-rule actions queued for approval no longer bury the notification shade. Instead of one card per queued action — ten emails meant ten stacked notifications, and tapping any of them did nothing, because they carried no tap action at all — there is now a single "N mail actions awaiting approval" notification on a dedicated Mail rules channel. It updates its count in place, opens the approval queue when tapped, and clears itself when the queue drains.
+- The approval queue gained **Approve all** and **Reject all** with a progress bar. Approving previously cost one tap and one IMAP round trip per action, which didn't scale past a handful; the bulk run executes the same per-action path sequentially, leaves failures queued, and reports the split.
+- Notifications raised by MCP agents now open Haven when tapped instead of ignoring the touch.
+- Zellij sessions no longer receive an injected Ctrl+L when the keyboard hides or the app goes to background (#554, thanks paour). This was a redraw workaround from before zellij repainted resizes properly; testing on-device against zellij 0.44 showed the bare resize repaints every row cleanly, so the injection — which echoed `^L` into running commands and force-cleared the screen on every background/foreground cycle — is gone entirely. The toolbar's `^L` macro preset remains for a manual redraw.
+- RDP logs every slow-path keyboard event as it is sent, to pin down keystrokes that only register after Tab/Caps Lock/Shift on VirtualBox guests (#504, thanks pawlosck) — this is the diagnostic build for that investigation.
+
+📵 **An unprompted byte is never helpful twice.** The Ctrl+L was sent with good intent — repaint the rows the keyboard uncovered — but software that types into your terminal uninvited becomes indistinguishable from a bug the moment conditions drift. The workaround's reason retired versions of zellij ago; nobody told the workaround.
+
 ## v5.87.29
 
 - Fixed the unstoppable "zombie" desktop session (#550, #551, thanks sugerpersion — the screen recording made this findable). A Custom-command desktop whose command died at startup kept a green "running" row that Stop couldn't clear, while the actual failure vanished without a word. Four layered causes, all fixed: the dead command no longer leaves the VNC server holding the session open; the container now tears down every process when the session script ends (previously a leaked dbus-daemon kept it alive invisibly — one leaked per desktop start, forever); the orphan cleanup on Stop had never actually matched container-hosted processes; and a command that dies moments after the port check now reports as a startup failure carrying its own error output instead of silently disappearing.
