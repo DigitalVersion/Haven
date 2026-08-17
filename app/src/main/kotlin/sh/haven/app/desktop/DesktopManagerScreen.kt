@@ -125,12 +125,11 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
     val applianceProvisioned by viewModel.applianceProvisioned.collectAsState()
     val customDesktopCommand by viewModel.customDesktopCommand.collectAsState()
 
-    var setupDesktopDe by remember {
-        mutableStateOf<ProotManager.DesktopEnvironment?>(null)
-    }
-    var showAddAppDialog by remember { mutableStateOf(false) }
-    // Non-null while the edit dialog is open, holding the def being edited.
-    var editingApp by remember { mutableStateOf<AppWindowDef?>(null) }
+    // Both of these are ViewModel-held for the rotation reason above: the
+    // app-window draft is 8 fields deep, and the setup dialog carries a
+    // password/port the user has already typed.
+    val setupDesktopDe by viewModel.setupDesktopDe.collectAsState()
+    val appWindowDraft by viewModel.appWindowDraft.collectAsState()
     val showInstalledApps by viewModel.showInstalledApps.collectAsState()
     val appWindowDefs by viewModel.appWindowDefs.collectAsState()
     val launchingIds by viewModel.launchingIds.collectAsState()
@@ -196,7 +195,7 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
             onAddDistro = { viewModel.addDistro(it) },
             onAddForeignDistro = { distro, arch -> viewModel.addForeignDistro(distro, arch) },
             onDeleteDistro = { viewModel.deleteDistro(it.id) },
-            onInstall = { setupDesktopDe = it },
+            onInstall = { de -> viewModel.openDesktopSetup(de, viewModel.suggestVncPortFor(de)) },
             onStart = { viewModel.startDesktop(it) },
             onStop = { viewModel.stopDesktop(it) },
             onOpenTerminalInDesktop = { viewModel.openTerminalInDesktop(it) },
@@ -212,10 +211,10 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
             defaultResolution = defaultResolution,
             defaultScale = defaultScale,
             onLaunch = { viewModel.launchAppWindow(it) },
-            onEdit = { editingApp = it },
+            onEdit = { def -> viewModel.openAppWindowDialog(def.toDraft()) },
             onDelete = { viewModel.deleteAppWindow(it.id) },
             onPinToHome = { viewModel.pinAppWindow(it) },
-            onAdd = { showAddAppDialog = true },
+            onAdd = { viewModel.openAppWindowDialog(DesktopViewModel.AppWindowDraft()) },
             onBrowse = { viewModel.setShowInstalledApps(true) },
             onSetDefaultResolution = { viewModel.setAppWindowDefaultResolution(it) },
             onSetDefaultScale = { viewModel.setAppWindowDefaultScale(it) },
@@ -294,47 +293,45 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
         }
     }
 
-    if (showAddAppDialog) {
+    // One call site for add and edit now: the draft carries editingId, so Save
+    // knows which it is without two near-identical blocks.
+    appWindowDraft?.let { draft ->
         AppWindowDialog(
-            initial = null,
+            draft = draft,
+            onDraftChange = { viewModel.setAppWindowDraft(it) },
             onSave = { label, command, fullscreen, resolution, scale, runAsRoot ->
-                viewModel.addAppWindow(label, command, fullscreen, resolution, scale, runAsRoot)
-                showAddAppDialog = false
+                val id = draft.editingId
+                if (id == null) {
+                    viewModel.addAppWindow(label, command, fullscreen, resolution, scale, runAsRoot)
+                } else {
+                    viewModel.updateAppWindow(id, label, command, fullscreen, resolution, scale, runAsRoot)
+                }
+                viewModel.dismissAppWindowDialog()
             },
-            onDismiss = { showAddAppDialog = false },
-        )
-    }
-
-    editingApp?.let { def ->
-        AppWindowDialog(
-            initial = def,
-            onSave = { label, command, fullscreen, resolution, scale, runAsRoot ->
-                viewModel.updateAppWindow(def.id, label, command, fullscreen, resolution, scale, runAsRoot)
-                editingApp = null
-            },
-            onDismiss = { editingApp = null },
+            onDismiss = { viewModel.dismissAppWindowDialog() },
         )
     }
 
     setupDesktopDe?.let { de ->
         androidx.compose.runtime.LaunchedEffect(desktopSetupState) {
             if (desktopSetupState is ProotManager.DesktopSetupState.Complete) {
-                setupDesktopDe = null
+                viewModel.dismissDesktopSetup()
                 viewModel.resetDesktopSetupState()
             }
         }
         val activeFamily = DistroCatalog.lookup(activeDistroId)?.family
-        val suggestedPort = remember(de, activeDistroId) { viewModel.suggestVncPortFor(de) }
+        val setupDraft by viewModel.desktopSetupDraft.collectAsState()
         DesktopSetupDialog(
             desktopState = desktopSetupState,
             selectedDe = de,
             activeFamily = activeFamily,
-            suggestedVncPort = suggestedPort,
+            draft = setupDraft,
+            onDraftChange = { viewModel.setDesktopSetupDraft(it) },
             onStart = { password, _, addons, vncPort ->
                 viewModel.setupDesktop(password, de, addons, vncPort)
             },
             onDismiss = {
-                setupDesktopDe = null
+                viewModel.dismissDesktopSetup()
                 viewModel.resetDesktopSetupState()
             },
         )
@@ -692,6 +689,26 @@ private fun AppWindowDefaultsRow(
 
 /** Preset resolution tokens the chips offer (everything else is "Custom"). */
 private val APP_WINDOW_RES_PRESETS = setOf("auto", "720x1280", "1080x1920", "1280x720")
+
+/**
+ * Seed an edit draft from a stored def. Lives here, next to
+ * [APP_WINDOW_RES_PRESETS], because deciding custom-vs-preset resolution is UI
+ * knowledge the ViewModel has no business holding.
+ */
+private fun AppWindowDef.toDraft(): DesktopViewModel.AppWindowDraft {
+    val isCustom = resolution != null && resolution !in APP_WINDOW_RES_PRESETS
+    return DesktopViewModel.AppWindowDraft(
+        editingId = id,
+        label = label,
+        command = command,
+        fullscreen = fullscreen,
+        runAsRoot = runAsRoot,
+        resToken = if (isCustom) null else resolution,
+        customMode = isCustom,
+        customRes = if (isCustom) resolution!! else "",
+        scale = scale,
+    )
+}
 private val WXH_REGEX = Regex("""\d{2,5}x\d{2,5}""", RegexOption.IGNORE_CASE)
 
 /**
@@ -701,21 +718,23 @@ private val WXH_REGEX = Regex("""\d{2,5}x\d{2,5}""", RegexOption.IGNORE_CASE)
  */
 @Composable
 private fun AppWindowDialog(
-    initial: AppWindowDef?,
+    draft: DesktopViewModel.AppWindowDraft,
+    onDraftChange: (DesktopViewModel.AppWindowDraft) -> Unit,
     onSave: (label: String, command: String, fullscreen: Boolean, resolution: String?, scale: Float?, runAsRoot: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var label by remember { mutableStateOf(initial?.label ?: "") }
-    var command by remember { mutableStateOf(initial?.command ?: "") }
-    var fullscreen by remember { mutableStateOf(initial?.fullscreen ?: false) }
-    var runAsRoot by remember { mutableStateOf(initial?.runAsRoot ?: false) }
-    val initRes = initial?.resolution
-    val initCustom = initRes != null && initRes !in APP_WINDOW_RES_PRESETS
-    var resToken by remember { mutableStateOf(if (initCustom) null else initRes) }
-    var customMode by remember { mutableStateOf(initCustom) }
-    var customRes by remember { mutableStateOf(if (initCustom) initRes!! else "") }
-    var scale by remember { mutableStateOf(initial?.scale) }
-    val editing = initial != null
+    // Stateless: the draft lives in DesktopViewModel so a rotation cannot wipe
+    // eight fields of half-entered app-window config. See AppWindowDef.toDraft()
+    // for the seeding, which is where the resolution presets stay.
+    val label = draft.label
+    val command = draft.command
+    val fullscreen = draft.fullscreen
+    val runAsRoot = draft.runAsRoot
+    val resToken = draft.resToken
+    val customMode = draft.customMode
+    val customRes = draft.customRes
+    val scale = draft.scale
+    val editing = draft.editingId != null
     val customValid = !customMode || WXH_REGEX.matches(customRes.trim())
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -724,7 +743,7 @@ private fun AppWindowDialog(
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = label,
-                    onValueChange = { label = it },
+                    onValueChange = { onDraftChange(draft.copy(label = it)) },
                     label = { Text(stringResource(R.string.common_label)) },
                     placeholder = { Text(stringResource(AppR.string.app_desktop_app_window_label_placeholder)) },
                     singleLine = true,
@@ -733,7 +752,7 @@ private fun AppWindowDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = command,
-                    onValueChange = { command = it },
+                    onValueChange = { onDraftChange(draft.copy(command = it)) },
                     label = { Text(stringResource(AppR.string.app_desktop_app_window_command_label)) },
                     placeholder = { Text(stringResource(AppR.string.app_desktop_app_window_command_placeholder)) },
                     singleLine = true,
@@ -742,7 +761,7 @@ private fun AppWindowDialog(
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(AppR.string.app_desktop_app_window_fullscreen), modifier = Modifier.weight(1f))
-                    Switch(checked = fullscreen, onCheckedChange = { fullscreen = it })
+                    Switch(checked = fullscreen, onCheckedChange = { onDraftChange(draft.copy(fullscreen = it)) })
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -753,7 +772,7 @@ private fun AppWindowDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = runAsRoot, onCheckedChange = { runAsRoot = it })
+                    Switch(checked = runAsRoot, onCheckedChange = { onDraftChange(draft.copy(runAsRoot = it)) })
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(stringResource(AppR.string.app_desktop_app_window_resolution), style = MaterialTheme.typography.labelMedium)
@@ -762,13 +781,13 @@ private fun AppWindowDialog(
                     token = resToken,
                     customMode = customMode,
                     customRes = customRes,
-                    onPickPreset = { resToken = it; customMode = false },
-                    onPickCustom = { customMode = true },
-                    onCustomResChange = { customRes = it },
+                    onPickPreset = { onDraftChange(draft.copy(resToken = it, customMode = false)) },
+                    onPickCustom = { onDraftChange(draft.copy(customMode = true)) },
+                    onCustomResChange = { onDraftChange(draft.copy(customRes = it)) },
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(stringResource(AppR.string.app_desktop_app_window_scale), style = MaterialTheme.typography.labelMedium)
-                ScaleChips(includeDefault = true, scale = scale, onPick = { scale = it })
+                ScaleChips(includeDefault = true, scale = scale, onPick = { onDraftChange(draft.copy(scale = it)) })
             }
         },
         confirmButton = {
@@ -2137,7 +2156,8 @@ private fun DesktopSetupDialog(
     desktopState: ProotManager.DesktopSetupState,
     selectedDe: ProotManager.DesktopEnvironment,
     activeFamily: PackageFamily? = null,
-    suggestedVncPort: Int = 5901,
+    draft: DesktopViewModel.DesktopSetupDraft,
+    onDraftChange: (DesktopViewModel.DesktopSetupDraft) -> Unit,
     onStart: (
         password: String,
         de: ProotManager.DesktopEnvironment,
@@ -2149,16 +2169,16 @@ private fun DesktopSetupDialog(
     val compatibility = activeFamily?.let { selectedDe.spec.compatibilityOn(it) }
         ?: Compatibility.Stable
     val compatibilityNote = activeFamily?.let { selectedDe.spec.compatibilityNoteOn(it) }
-    var password by rememberSaveable { mutableStateOf("haven") }
-    var shellCmd by rememberSaveable { mutableStateOf("/bin/sh") }
-    var portText by rememberSaveable(selectedDe, suggestedVncPort) {
-        mutableStateOf(suggestedVncPort.toString())
-    }
+    // Stateless: the draft lives in DesktopViewModel. The port used to seed from
+    // rememberSaveable(selectedDe, suggestedVncPort), which only ever
+    // re-initialised on open — selectedDe is a parameter and cannot change while
+    // the dialog is up — so openDesktopSetup() seeding it is the same behaviour.
+    val password = draft.password
+    val shellCmd = draft.shellCmd
+    val portText = draft.portText
+    val selectedAddons = draft.addons
     val portInt = portText.toIntOrNull()
     val portValid = portInt != null && portInt in 5901..5999
-    var selectedAddons by remember {
-        mutableStateOf(emptySet<ProotManager.DesktopAddon>())
-    }
     val isInstalling = desktopState is ProotManager.DesktopSetupState.Installing
 
     AlertDialog(
@@ -2204,7 +2224,7 @@ private fun DesktopSetupDialog(
                         if (!selectedDe.isWayland) {
                             OutlinedTextField(
                                 value = password,
-                                onValueChange = { password = it },
+                                onValueChange = { onDraftChange(draft.copy(password = it)) },
                                 label = { Text(stringResource(R.string.connections_desktop_vnc_password)) },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
@@ -2219,7 +2239,7 @@ private fun DesktopSetupDialog(
                             // Install via portValid.
                             OutlinedTextField(
                                 value = portText,
-                                onValueChange = { portText = it.filter { c -> c.isDigit() }.take(4) },
+                                onValueChange = { v -> onDraftChange(draft.copy(portText = v.filter { it.isDigit() }.take(4))) },
                                 label = { Text(stringResource(AppR.string.app_desktop_vnc_port_label)) },
                                 supportingText = {
                                     Text(
@@ -2241,7 +2261,7 @@ private fun DesktopSetupDialog(
                             ) {
                                 OutlinedTextField(
                                     value = shellCmd,
-                                    onValueChange = { shellCmd = it },
+                                    onValueChange = { onDraftChange(draft.copy(shellCmd = it)) },
                                     label = { Text(stringResource(R.string.connections_desktop_shell)) },
                                     singleLine = true,
                                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = shellExpanded) },
@@ -2255,7 +2275,7 @@ private fun DesktopSetupDialog(
                                         DropdownMenuItem(
                                             text = { Text(shell) },
                                             onClick = {
-                                                shellCmd = shell
+                                                onDraftChange(draft.copy(shellCmd = shell))
                                                 shellExpanded = false
                                             },
                                         )
@@ -2274,8 +2294,12 @@ private fun DesktopSetupDialog(
                                     Checkbox(
                                         checked = addon in selectedAddons,
                                         onCheckedChange = { checked ->
-                                            selectedAddons = if (checked) selectedAddons + addon
-                                                else selectedAddons - addon
+                                            onDraftChange(
+                                                draft.copy(
+                                                    addons = if (checked) selectedAddons + addon
+                                                    else selectedAddons - addon,
+                                                ),
+                                            )
                                         },
                                     )
                                     Column(modifier = Modifier.weight(1f)) {

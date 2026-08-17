@@ -998,6 +998,67 @@ class DesktopViewModel @Inject constructor(
     // port field re-initialises when the selected DE changes), and moving that
     // faithfully needs watching on a device rather than reasoning about it.
 
+    /**
+     * The app-window add/edit dialog's draft; null when closed. [editingId] is
+     * the AppWindowDef being edited, or null for a new one — the add/edit
+     * distinction has to travel with the draft, since it decides both the title
+     * and whether Save updates or inserts.
+     *
+     * The caller builds the draft (the resolution presets that decide
+     * [customMode] live with the UI), so this only stores and clears it.
+     */
+    data class AppWindowDraft(
+        val editingId: String? = null,
+        val label: String = "",
+        val command: String = "",
+        val fullscreen: Boolean = false,
+        val runAsRoot: Boolean = false,
+        val resToken: String? = null,
+        val customMode: Boolean = false,
+        val customRes: String = "",
+        val scale: Float? = null,
+    )
+
+    private val _appWindowDraft = MutableStateFlow<AppWindowDraft?>(null)
+    val appWindowDraft: StateFlow<AppWindowDraft?> = _appWindowDraft.asStateFlow()
+
+    fun openAppWindowDialog(draft: AppWindowDraft) { _appWindowDraft.value = draft }
+
+    fun setAppWindowDraft(draft: AppWindowDraft) { _appWindowDraft.value = draft }
+
+    fun dismissAppWindowDialog() { _appWindowDraft.value = null }
+
+    /**
+     * The desktop-setup dialog: which DE it was opened for (null = closed) plus
+     * its draft. The port seeds from the suggestion at open time, which is what
+     * the old `rememberSaveable(selectedDe, suggestedVncPort)` amounted to — the
+     * dialog is opened *for* a DE and neither key can change while it is up.
+     */
+    data class DesktopSetupDraft(
+        val password: String = "haven",
+        val shellCmd: String = "/bin/sh",
+        val portText: String = "",
+        val addons: Set<ProotManager.DesktopAddon> = emptySet(),
+    )
+
+    private val _setupDesktopDe = MutableStateFlow<ProotManager.DesktopEnvironment?>(null)
+    val setupDesktopDe: StateFlow<ProotManager.DesktopEnvironment?> = _setupDesktopDe.asStateFlow()
+
+    private val _desktopSetupDraft = MutableStateFlow(DesktopSetupDraft())
+    val desktopSetupDraft: StateFlow<DesktopSetupDraft> = _desktopSetupDraft.asStateFlow()
+
+    fun openDesktopSetup(de: ProotManager.DesktopEnvironment, suggestedVncPort: Int) {
+        _desktopSetupDraft.value = DesktopSetupDraft(portText = suggestedVncPort.toString())
+        _setupDesktopDe.value = de
+    }
+
+    fun setDesktopSetupDraft(draft: DesktopSetupDraft) { _desktopSetupDraft.value = draft }
+
+    fun dismissDesktopSetup() {
+        _setupDesktopDe.value = null
+        _desktopSetupDraft.value = DesktopSetupDraft()
+    }
+
     private val _showInstalledApps = MutableStateFlow(false)
     val showInstalledApps: StateFlow<Boolean> = _showInstalledApps.asStateFlow()
 
