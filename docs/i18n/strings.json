@@ -23627,14 +23627,38 @@
      "en": "Approve all",
      "comment": "Mail Rules (Phase 5)",
      "args": [],
-     "t": {}
+     "t": {
+      "ar": "الموافقة على الكل",
+      "bn": "সব অনুমোদন করুন",
+      "de": "Alle genehmigen",
+      "es": "Aprobar todo",
+      "fr": "Tout approuver",
+      "hi": "सभी अनुमोदित करें",
+      "ja": "すべて承認",
+      "ko": "모두 승인",
+      "pt": "Aprovar tudo",
+      "ru": "Подтвердить все",
+      "zh": "全部批准"
+     }
     },
     {
      "name": "mail_rules_reject_all",
      "en": "Reject all",
      "comment": "Mail Rules (Phase 5)",
      "args": [],
-     "t": {}
+     "t": {
+      "ar": "رفض الكل",
+      "bn": "সব প্রত্যাখ্যান করুন",
+      "de": "Alle ablehnen",
+      "es": "Rechazar todo",
+      "fr": "Tout rejeter",
+      "hi": "सभी अस्वीकार करें",
+      "ja": "すべて拒否",
+      "ko": "모두 거부",
+      "pt": "Rejeitar tudo",
+      "ru": "Отклонить все",
+      "zh": "全部拒绝"
+     }
     },
     {
      "name": "mail_rules_bulk_progress",
@@ -23644,14 +23668,38 @@
       "%1$d",
       "%2$d"
      ],
-     "t": {}
+     "t": {
+      "ar": "جارٍ الموافقة على %1$d من %2$d…",
+      "bn": "%2$d টির মধ্যে %1$d টি অনুমোদন করা হচ্ছে…",
+      "de": "Genehmige %1$d von %2$d…",
+      "es": "Aprobando %1$d de %2$d…",
+      "fr": "Approbation de %1$d sur %2$d…",
+      "hi": "%2$d में से %1$d अनुमोदित हो रहे हैं…",
+      "ja": "%2$d 件中 %1$d 件を承認中…",
+      "ko": "%2$d개 중 %1$d개 승인 중…",
+      "pt": "Aprovando %1$d de %2$d…",
+      "ru": "Подтверждение %1$d из %2$d…",
+      "zh": "正在批准第 %1$d 个，共 %2$d 个…"
+     }
     },
     {
      "name": "mail_rules_reject_all_title",
      "en": "Reject all pending actions?",
      "comment": "Mail Rules (Phase 5)",
      "args": [],
-     "t": {}
+     "t": {
+      "ar": "هل تريد رفض جميع الإجراءات المعلقة؟",
+      "bn": "সব মুলতুবি কাজ প্রত্যাখ্যান করবেন?",
+      "de": "Alle ausstehenden Aktionen ablehnen?",
+      "es": "¿Rechazar todas las acciones pendientes?",
+      "fr": "Rejeter toutes les actions en attente ?",
+      "hi": "सभी लंबित कार्रवाइयाँ अस्वीकार करें?",
+      "ja": "保留中の操作をすべて拒否しますか？",
+      "ko": "대기 중인 작업을 모두 거부할까요?",
+      "pt": "Rejeitar todas as ações pendentes?",
+      "ru": "Отклонить все ожидающие действия?",
+      "zh": "拒绝所有待处理操作？"
+     }
     },
     {
      "name": "mail_rules_reject_all_text",
@@ -23660,7 +23708,19 @@
      "args": [
       "%1$d"
      ],
-     "t": {}
+     "t": {
+      "ar": "يتجاهل %1$d من الإجراءات في قائمة الانتظار دون تنفيذها. تبقى الرسائل في مكانها.",
+      "bn": "সারিতে থাকা %1$d টি কাজ না চালিয়ে বাতিল করে। মেইলগুলি যেখানে আছে সেখানেই থাকবে।",
+      "de": "Verwirft %1$d wartende Aktion(en), ohne sie auszuführen. Die Nachrichten bleiben, wo sie sind.",
+      "es": "Descarta %1$d acción(es) en cola sin ejecutarlas. Los mensajes se quedan donde están.",
+      "fr": "Ignore %1$d action(s) en file d\\'attente sans les exécuter. Les messages restent où ils sont.",
+      "hi": "कतार में %1$d कार्रवाइयों को चलाए बिना हटा देता है। संदेश अपनी जगह पर रहते हैं।",
+      "ja": "キュー内の %1$d 件の操作を実行せずに破棄します。メールは元の場所に残ります。",
+      "ko": "대기열의 작업 %1$d개를 실행하지 않고 버립니다. 메일은 그대로 유지됩니다.",
+      "pt": "Descarta %1$d ação(ões) na fila sem executá-las. As mensagens permanecem onde estão.",
+      "ru": "Отменяет %1$d действий в очереди, не выполняя их. Письма остаются на месте.",
+      "zh": "丢弃 %1$d 个已排队的操作而不执行。邮件保持原位。"
+     }
     },
     {
      "name": "mail_cd_back",

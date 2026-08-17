@@ -131,6 +131,11 @@
     <string name="mail_rules_pending_desc">En cola mientras Haven estaba en segundo plano. Aprueba para ejecutar, o rechaza para descartar.</string>
     <string name="mail_rules_approve">Aprobar</string>
     <string name="mail_rules_reject">Rechazar</string>
+    <string name="mail_rules_approve_all">Aprobar todo</string>
+    <string name="mail_rules_reject_all">Rechazar todo</string>
+    <string name="mail_rules_bulk_progress">Aprobando %1$d de %2$d…</string>
+    <string name="mail_rules_reject_all_title">¿Rechazar todas las acciones pendientes?</string>
+    <string name="mail_rules_reject_all_text">Descarta %1$d acción(es) en cola sin ejecutarlas. Los mensajes se quedan donde están.</string>
     <string name="mail_cd_back">Atrás</string>
     <string name="mail_cd_has_attachments">Tiene archivos adjuntos</string>
 </resources>

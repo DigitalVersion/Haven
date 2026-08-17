@@ -131,6 +131,11 @@
     <string name="mail_rules_pending_desc">Haven がバックグラウンドの間にキューに入れられました。実行するには承認、破棄するには拒否してください。</string>
     <string name="mail_rules_approve">承認</string>
     <string name="mail_rules_reject">拒否</string>
+    <string name="mail_rules_approve_all">すべて承認</string>
+    <string name="mail_rules_reject_all">すべて拒否</string>
+    <string name="mail_rules_bulk_progress">%2$d 件中 %1$d 件を承認中…</string>
+    <string name="mail_rules_reject_all_title">保留中の操作をすべて拒否しますか？</string>
+    <string name="mail_rules_reject_all_text">キュー内の %1$d 件の操作を実行せずに破棄します。メールは元の場所に残ります。</string>
     <string name="mail_cd_back">戻る</string>
     <string name="mail_cd_has_attachments">添付ファイルあり</string>
 </resources>
