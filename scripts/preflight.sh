@@ -32,6 +32,11 @@ skip_changelog=0
 
 # 1. Hardcoded UI strings (#210) — literal Text("…")/title=/subtitle=.
 run "no hardcoded UI strings" ./scripts/check-i18n-hardcoded.sh
+# 1b. Locale coverage — every English key must exist in all 11 locales. CI's
+#     checks job enforces this and it was the one gate preflight didn't
+#     mirror: v5.87.30's bulk-approval strings shipped English-only and cost
+#     a full CI round trip to find out (2026-08-17).
+run "locale coverage (11 locales)" python3 scripts/check-i18n-coverage.py
 run "no new committed binaries" ./scripts/check-no-committed-binaries.sh
 
 # 2. Translation export current — regenerate and fail if docs/i18n/strings.json
