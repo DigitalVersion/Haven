@@ -116,29 +116,31 @@ internal class DesktopToolProvider(
         ) { args -> stopDesktopTool(args) },
 
         "list_system_vm_images" to ToolHandler(
-            description = "List the stored system-VM disk images (#326) and the current VM's state. A system VM is a full QEMU x86_64 Linux VM booted inside the active proot and viewed over VNC on loopback — distinct from a desktop environment (list_desktop_environments) and the USB-drive appliance (#287). Returns { vm: { status, vncPort }, count, images:[{ id, label, sizeBytes }] }. `status` is one of stopped/starting/running/error; when running, `vncPort` is the loopback port a VNC connection points at (create_connection type=VNC host=127.0.0.1 vncPort=<port>). Images are qcow2, normalised on import.",
+            description = "List the stored system-VM disk images (#326) and the current VM's state. A system VM is a full QEMU Linux VM (x86_64 or aarch64) booted inside the active proot and viewed over VNC on loopback — distinct from a desktop environment (list_desktop_environments) and the USB-drive appliance (#287). Returns { vm: { status, vncPort, arch, accel, accelReason }, host: { arch, kvm: { usable, detail } }, count, images:[{ id, label, sizeBytes, arch }] }. `status` is one of stopped/starting/running/error; when running, `vncPort` is the loopback port a VNC connection points at (create_connection type=VNC host=127.0.0.1 vncPort=<port>). `host.kvm` is a live probe of /dev/kvm — on retail arm64 phones it is absent because the vendor hypervisor owns EL2, so guests run under TCG emulation. Images are qcow2, normalised on import.",
             inputSchema = emptyObjectSchema(),
             consentLevel = ConsentLevel.NEVER,
         ) { _ -> listSystemVmImages() },
 
         "import_system_vm_image" to ToolHandler(
-            description = "Import a bootable disk image as a system VM (#326). `source` is an http(s) URL or an on-device file path; it is downloaded/copied then normalised to qcow2 via `qemu-img convert` (raw/qcow2/vdi/vmdk in, qcow2 out) under the app cache. Provide a `label`; `id` defaults to a slug of the label. Optional `sha256` is verified against the SOURCE bytes. Installs qemu in the active distro on first use (needs a VNC-capable qemu — Debian's has it, Alpine's does not). Synchronous: returns { id, label, sizeBytes } when the converted image is ready. Then boot it with start_system_vm.",
+            description = "Import a bootable disk image as a system VM (#326). `source` is an http(s) URL or an on-device file path; it is downloaded/copied then normalised to qcow2 via `qemu-img convert` (raw/qcow2/vdi/vmdk in, qcow2 out) under the app cache. Provide a `label`; `id` defaults to a slug of the label. Optional `sha256` is verified against the SOURCE bytes. `arch` records which CPU the image is for — a qcow2 does not say, and booting an arm64 rootfs on the x86_64 target just hangs — and decides which qemu target is installed (Debian: qemu-system-arm for aarch64). Installs qemu in the active distro on first use (needs a VNC-capable qemu — Debian's has it, Alpine's does not). Synchronous: returns { id, label, sizeBytes, arch } when the converted image is ready. Then boot it with start_system_vm.",
             inputSchema = objectSchema {
                 string("label", "Human-readable name for the image (e.g. \"Debian 12\").", required = true)
                 string("source", "http(s) URL or on-device file path to a bootable disk image (.qcow2/.img/.iso/.vdi/.vmdk).", required = true)
                 string("id", "Image id slug (lowercase letters, digits, . _ -). Defaults to a slug of the label.")
                 string("sha256", "Optional SHA-256 of the source bytes to verify after download.")
+                string("arch", "Guest CPU architecture of the image. Default x86_64.", enum = listOf("x86_64", "aarch64"))
             },
             consentLevel = ConsentLevel.EVERY_CALL,
             summarise = { args -> "Import system-VM image \"${args.optString("label")}\" from ${args.optString("source")}?" },
         ) { args -> importSystemVmImage(args) },
 
         "start_system_vm" to ToolHandler(
-            description = "Boot a stored system-VM image (#326) as a QEMU x86_64 VM with a VNC display on a free loopback port, and wait for the VNC server to bind (up to ~20s; a timeout means this distro's qemu has no VNC — try a Debian image/distro). One VM at a time — call stop_system_vm first to replace a running one. Does NOT open a viewer (MCP has no UI) — returns { imageId, status, vncHost, vncPort, hint } so you connect it yourself: create_connection type=VNC host=127.0.0.1 vncPort=<vncPort>, then connect_profile. Under TCG (no KVM) the guest boots slowly (~2 min) but is usable.",
+            description = "Boot a stored system-VM image (#326) with a VNC display on a free loopback port, and wait for the VNC server to bind (up to ~20s; a timeout means this distro's qemu has no VNC — try a Debian image/distro). The image's recorded arch picks the machine: x86_64 gets `-M pc -vga std`, aarch64 gets `-M virt` with UEFI firmware, virtio-gpu and USB HID (installing the distro's edk2 package if needed). One VM at a time — call stop_system_vm first to replace a running one. Does NOT open a viewer (MCP has no UI) — returns { imageId, status, arch, accel, accelReason, vncHost, vncPort, hint } so you connect it yourself: create_connection type=VNC host=127.0.0.1 vncPort=<vncPort>, then connect_profile. `accel` is the resolved reality, not a request: KVM needs a usable /dev/kvm AND a guest arch matching the host, which retail arm64 phones cannot offer, so expect TCG and a slow (~2 min) but usable boot. `accel=kvm` fails fast when it is impossible rather than booting slowly; `accel=auto` (default) falls back to TCG if a KVM boot does not come up.",
             inputSchema = objectSchema {
                 string("imageId", "Image id from list_system_vm_images.", required = true)
                 integer("memMb", "Guest RAM in MiB. Default 2048.")
                 integer("cpus", "Guest vCPUs. Default 2.")
+                string("accel", "auto = KVM when genuinely possible else TCG (default); kvm = insist, erroring out if impossible; tcg = force emulation.", enum = listOf("auto", "kvm", "tcg"))
             },
             consentLevel = ConsentLevel.EVERY_CALL,
             summarise = { args -> "Boot system VM '${args.optString("imageId")}'?" },
@@ -152,7 +154,7 @@ internal class DesktopToolProvider(
         ) { _ -> stopSystemVm() },
 
         "delete_system_vm_image" to ToolHandler(
-            description = "Delete a stored system-VM image (#326) — removes its qcow2 and label. Stops the VM first if it is the one currently running.",
+            description = "Delete a stored system-VM image (#326) — removes its qcow2 plus its label/arch sidecars. Stops the VM first if it is the one currently running.",
             inputSchema = objectSchema {
                 string("imageId", "Image id to delete (from list_system_vm_images).", required = true)
             },
@@ -491,6 +493,27 @@ internal class DesktopToolProvider(
         return JSONObject().apply {
             put("status", (st?.status?.name ?: "STOPPED").lowercase())
             put("vncPort", st?.vncPort ?: JSONObject.NULL)
+            put("arch", st?.arch?.id ?: JSONObject.NULL)
+            put("accel", st?.accel?.name?.lowercase() ?: JSONObject.NULL)
+            // Why it's TCG is the question every "this is slow" report starts
+            // with; carry the probe's own answer instead of making the agent
+            // guess from the timing.
+            put("accelReason", st?.accelReason?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+        }
+    }
+
+    /** The live /dev/kvm verdict for this device, so an agent can report acceleration without booting a VM to find out. */
+    private fun systemVmHostJson(): JSONObject {
+        val kvm = systemVmManager.kvmStatus()
+        return JSONObject().apply {
+            put("arch", systemVmManager.hostArch()?.id ?: JSONObject.NULL)
+            put(
+                "kvm",
+                JSONObject().apply {
+                    put("usable", kvm.usable)
+                    put("detail", kvm.detail)
+                },
+            )
         }
     }
 
@@ -501,10 +524,12 @@ internal class DesktopToolProvider(
                 put("id", img.id)
                 put("label", img.label)
                 put("sizeBytes", img.sizeBytes)
+                put("arch", img.arch.id)
             })
         }
         return JSONObject().apply {
             put("vm", systemVmStateJson())
+            put("host", systemVmHostJson())
             put("count", arr.length())
             put("images", arr)
         }
@@ -519,8 +544,11 @@ internal class DesktopToolProvider(
             ?: label.lowercase().replace(Regex("[^a-z0-9._-]+"), "-").trim('-')
         if (id.isEmpty()) throw McpError(-32602, "could not derive an image id from the label; pass an explicit id")
         val sha = args.optString("sha256").takeIf { it.isNotBlank() }
+        // An unrecognised arch resolves to x86_64 rather than erroring — but the
+        // schema enumerates the two, so a typo is caught before it gets here.
+        val arch = sh.haven.core.local.VmArch.fromId(args.optString("arch").takeIf { it.isNotBlank() })
         val img = try {
-            systemVmManager.importImage(id, label, source, sha)
+            systemVmManager.importImage(id, label, source, sha, arch)
         } catch (e: Exception) {
             throw McpError(-32603, e.message ?: "import failed")
         }
@@ -528,6 +556,7 @@ internal class DesktopToolProvider(
             put("id", img.id)
             put("label", img.label)
             put("sizeBytes", img.sizeBytes)
+            put("arch", img.arch.id)
         }
     }
 
@@ -536,14 +565,23 @@ internal class DesktopToolProvider(
             ?: throw McpError(-32602, "imageId is required")
         val memMb = args.optInt("memMb", sh.haven.core.local.SystemVmManager.DEFAULT_MEM_MB)
         val cpus = args.optInt("cpus", sh.haven.core.local.SystemVmManager.DEFAULT_CPUS)
+        val accelMode = when (args.optString("accel").trim().lowercase()) {
+            "", "auto" -> sh.haven.core.local.AccelMode.AUTO
+            "kvm" -> sh.haven.core.local.AccelMode.KVM
+            "tcg" -> sh.haven.core.local.AccelMode.TCG
+            else -> throw McpError(-32602, "accel must be one of auto, kvm, tcg")
+        }
         val st = try {
-            systemVmManager.startImage(imageId, memMb, cpus)
+            systemVmManager.startImage(imageId, memMb, cpus, accelMode)
         } catch (e: Exception) {
             throw McpError(-32603, e.message ?: "start failed")
         }
         return JSONObject().apply {
             put("imageId", imageId)
             put("status", st.status.name.lowercase())
+            put("arch", st.arch.id)
+            put("accel", st.accel.name.lowercase())
+            put("accelReason", st.accelReason)
             put("vncHost", "127.0.0.1")
             put("vncPort", st.vncPort ?: JSONObject.NULL)
             put("hint", "create_connection type=VNC host=127.0.0.1 vncPort=${st.vncPort} then connect_profile")

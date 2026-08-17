@@ -1067,7 +1067,7 @@ Wipe a distro's rootfs and remove all installed DEs on it. Stops any running DEs
 <details markdown="1">
 <summary><code>delete_system_vm_image</code> · asks every call</summary>
 
-Delete a stored system-VM image (#326) — removes its qcow2 and label. Stops the VM first if it is the one currently running.
+Delete a stored system-VM image (#326) — removes its qcow2 plus its label/arch sidecars. Stops the VM first if it is the one currently running.
 
 - `imageId` (string, required) — Image id to delete (from list_system_vm_images).
 
@@ -1140,10 +1140,11 @@ Import a custom rootfs tarball as a new distro (#284) — "bring your own rootfs
 <details markdown="1">
 <summary><code>import_system_vm_image</code> · asks every call</summary>
 
-Import a bootable disk image as a system VM (#326). `source` is an http(s) URL or an on-device file path; it is downloaded/copied then normalised to qcow2 via `qemu-img convert` (raw/qcow2/vdi/vmdk in, qcow2 out) under the app cache. Provide a `label`; `id` defaults to a slug of the label. Optional `sha256` is verified against the SOURCE bytes. Installs qemu in the active distro on first use (needs a VNC-capable qemu — Debian's has it, Alpine's does not). Synchronous: returns { id, label, sizeBytes } when the converted image is ready. Then boot it with start_system_vm.
+Import a bootable disk image as a system VM (#326). `source` is an http(s) URL or an on-device file path; it is downloaded/copied then normalised to qcow2 via `qemu-img convert` (raw/qcow2/vdi/vmdk in, qcow2 out) under the app cache. Provide a `label`; `id` defaults to a slug of the label. Optional `sha256` is verified against the SOURCE bytes. `arch` records which CPU the image is for — a qcow2 does not say, and booting an arm64 rootfs on the x86_64 target just hangs — and decides which qemu target is installed (Debian: qemu-system-arm for aarch64). Installs qemu in the active distro on first use (needs a VNC-capable qemu — Debian's has it, Alpine's does not). Synchronous: returns { id, label, sizeBytes, arch } when the converted image is ready. Then boot it with start_system_vm.
 
 - `label` (string, required) — Human-readable name for the image (e.g. "Debian 12").
 - `source` (string, required) — http(s) URL or on-device file path to a bootable disk image (.qcow2/.img/.iso/.vdi/.vmdk).
+- `arch` (string, one of: x86_64 | aarch64) — Guest CPU architecture of the image. Default x86_64.
 - `id` (string) — Image id slug (lowercase letters, digits, . _ -). Defaults to a slug of the label.
 - `sha256` (string) — Optional SHA-256 of the source bytes to verify after download.
 
@@ -1254,7 +1255,7 @@ List guest services registered on the active distro with their live state (STOPP
 <details markdown="1">
 <summary><code>list_system_vm_images</code> · no per-call prompt</summary>
 
-List the stored system-VM disk images (#326) and the current VM's state. A system VM is a full QEMU x86_64 Linux VM booted inside the active proot and viewed over VNC on loopback — distinct from a desktop environment (list_desktop_environments) and the USB-drive appliance (#287). Returns { vm: { status, vncPort }, count, images:[{ id, label, sizeBytes }] }. `status` is one of stopped/starting/running/error; when running, `vncPort` is the loopback port a VNC connection points at (create_connection type=VNC host=127.0.0.1 vncPort=<port>). Images are qcow2, normalised on import.
+List the stored system-VM disk images (#326) and the current VM's state. A system VM is a full QEMU Linux VM (x86_64 or aarch64) booted inside the active proot and viewed over VNC on loopback — distinct from a desktop environment (list_desktop_environments) and the USB-drive appliance (#287). Returns { vm: { status, vncPort, arch, accel, accelReason }, host: { arch, kvm: { usable, detail } }, count, images:[{ id, label, sizeBytes, arch }] }. `status` is one of stopped/starting/running/error; when running, `vncPort` is the loopback port a VNC connection points at (create_connection type=VNC host=127.0.0.1 vncPort=<port>). `host.kvm` is a live probe of /dev/kvm — on retail arm64 phones it is absent because the vendor hypervisor owns EL2, so guests run under TCG emulation. Images are qcow2, normalised on import.
 
 </details>
 
@@ -1392,9 +1393,10 @@ Start a registered guest service by id (no-op if already running). Returns its s
 <details markdown="1">
 <summary><code>start_system_vm</code> · asks every call</summary>
 
-Boot a stored system-VM image (#326) as a QEMU x86_64 VM with a VNC display on a free loopback port, and wait for the VNC server to bind (up to ~20s; a timeout means this distro's qemu has no VNC — try a Debian image/distro). One VM at a time — call stop_system_vm first to replace a running one. Does NOT open a viewer (MCP has no UI) — returns { imageId, status, vncHost, vncPort, hint } so you connect it yourself: create_connection type=VNC host=127.0.0.1 vncPort=<vncPort>, then connect_profile. Under TCG (no KVM) the guest boots slowly (~2 min) but is usable.
+Boot a stored system-VM image (#326) with a VNC display on a free loopback port, and wait for the VNC server to bind (up to ~20s; a timeout means this distro's qemu has no VNC — try a Debian image/distro). The image's recorded arch picks the machine: x86_64 gets `-M pc -vga std`, aarch64 gets `-M virt` with UEFI firmware, virtio-gpu and USB HID (installing the distro's edk2 package if needed). One VM at a time — call stop_system_vm first to replace a running one. Does NOT open a viewer (MCP has no UI) — returns { imageId, status, arch, accel, accelReason, vncHost, vncPort, hint } so you connect it yourself: create_connection type=VNC host=127.0.0.1 vncPort=<vncPort>, then connect_profile. `accel` is the resolved reality, not a request: KVM needs a usable /dev/kvm AND a guest arch matching the host, which retail arm64 phones cannot offer, so expect TCG and a slow (~2 min) but usable boot. `accel=kvm` fails fast when it is impossible rather than booting slowly; `accel=auto` (default) falls back to TCG if a KVM boot does not come up.
 
 - `imageId` (string, required) — Image id from list_system_vm_images.
+- `accel` (string, one of: auto | kvm | tcg) — auto = KVM when genuinely possible else TCG (default); kvm = insist, erroring out if impossible; tcg = force emulation.
 - `cpus` (integer) — Guest vCPUs. Default 2.
 - `memMb` (integer) — Guest RAM in MiB. Default 2048.
 
