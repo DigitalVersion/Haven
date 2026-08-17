@@ -176,6 +176,7 @@ class MainActivity : AppCompatActivity() {
         handleRenewCertDeepLink(intent)
         handleConnectDeepLink(intent)
         handleOpenUsbDriveIntent(intent)
+        handleOpenMailRulesIntent(intent)
         handleOpenAgentLogExtra(intent)
         handleTaskerRunIntent(intent)
         handleBackupShortcutIntent(intent)
@@ -247,6 +248,18 @@ class MainActivity : AppCompatActivity() {
         intent.action = null
         Log.d("MainActivity", "open-usb-drive intent for ${device ?: "(sole drive)"}")
         agentUiCommandBus.emit(sh.haven.core.data.agent.AgentUiCommand.OpenUsbDrive(device))
+    }
+
+    /**
+     * Handle the "mail actions awaiting approval" notification tap: the
+     * content intent carries [sh.haven.app.agent.mailrules.MailRuleNotifier]'s
+     * action; re-publish onto the UI command bus so HavenNavHost switches to
+     * Mail and opens the rules pane's approval queue.
+     */
+    private fun handleOpenMailRulesIntent(intent: Intent?) {
+        if (intent?.action != sh.haven.app.agent.mailrules.MailRuleNotifier.ACTION_OPEN_MAIL_RULES) return
+        intent.action = null
+        agentUiCommandBus.emit(sh.haven.core.data.agent.AgentUiCommand.OpenMailRules)
     }
 
     // --- Picture-in-Picture (app windows) ---
@@ -452,6 +465,7 @@ class MainActivity : AppCompatActivity() {
         handleRenewCertDeepLink(intent)
         handleConnectDeepLink(intent)
         handleOpenUsbDriveIntent(intent)
+        handleOpenMailRulesIntent(intent)
         handleOpenAgentLogExtra(intent)
         handleTaskerRunIntent(intent)
         handleBackupShortcutIntent(intent)

@@ -110,6 +110,9 @@ import java.util.Locale
 @Composable
 fun MailScreen(
     pendingProfileId: String? = null,
+    /** True = open the Mail Rules pane once composed (approval-notification tap); consume via [onPendingRulesConsumed]. */
+    pendingOpenRules: Boolean = false,
+    onPendingRulesConsumed: () -> Unit = {},
     mailModifier: Modifier = Modifier,
     viewModel: MailViewModel = hiltViewModel(),
 ) {
@@ -146,6 +149,12 @@ fun MailScreen(
     // overflow menu). Like compose, it lives inside the already session-gated Mail tab,
     // so non-email users never see it.
     var showRules by remember { mutableStateOf(false) }
+    LaunchedEffect(pendingOpenRules) {
+        if (pendingOpenRules) {
+            showRules = true
+            onPendingRulesConsumed()
+        }
+    }
     if (showRules) {
         MailRulesScreen(onClose = { showRules = false }, modifier = mailModifier)
         return

@@ -351,6 +351,12 @@ fun HavenNavHost(
         }
     }
 
+    // Set when the "mail actions awaiting approval" notification tap routes
+    // through (MainActivity → AgentUiCommand.OpenMailRules): MailScreen opens
+    // its rules pane once composed, then consumes the flag. Declared here
+    // (before the command collector below) so the collector can set it.
+    var pendingOpenMailRules by rememberSaveable { mutableStateOf(false) }
+
     // Agent UI commands — when an MCP tool posts a navigation verb, switch
     // the pager to the right tab so the user lands where the agent asked.
     // The matching feature ViewModel collects the same bus and adjusts its
@@ -400,6 +406,15 @@ fun HavenNavHost(
                     Screen.Connections
                 is sh.haven.core.data.agent.AgentUiCommand.OpenBackupPasswordDialog ->
                     Screen.Settings
+                is sh.haven.core.data.agent.AgentUiCommand.OpenMailRules -> {
+                    // Approval-queue notification tap: land on Mail with the
+                    // rules pane open. With no live email session the Mail tab
+                    // is hidden; the selection is remembered and both fire
+                    // once the user reconnects the account (approval needs the
+                    // session anyway).
+                    pendingOpenMailRules = true
+                    Screen.Mail
+                }
             }
             // Reactive: e.g. OpenRemoteDesktop waits for Desktop to appear
             // rather than silently no-op'ing when it's still hidden.
@@ -847,6 +862,8 @@ fun HavenNavHost(
                 Screen.Mail -> {
                     MailScreen(
                         pendingProfileId = pendingEmailProfileId,
+                        pendingOpenRules = pendingOpenMailRules,
+                        onPendingRulesConsumed = { pendingOpenMailRules = false },
                         mailModifier = Modifier.fillMaxSize(),
                     )
                     LaunchedEffect(pendingEmailProfileId) {

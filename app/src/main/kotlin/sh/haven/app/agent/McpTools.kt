@@ -3024,6 +3024,15 @@ internal class McpTools(
         ensureAgentNotificationChannel()
 
         val id = nextAgentNotificationId.getAndIncrement()
+        // Default tap action: open Haven. Without a content intent Android
+        // delivers nothing on tap (and AUTO_CANCEL never fires), leaving a
+        // notification that visibly ignores the user.
+        val tapIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.let {
+            android.app.PendingIntent.getActivity(
+                context, id, it,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
         val notification = NotificationCompat.Builder(context, AGENT_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
@@ -3032,6 +3041,7 @@ internal class McpTools(
             .setPriority(priority)
             .setOngoing(ongoing)
             .setAutoCancel(!ongoing)
+            .apply { tapIntent?.let { setContentIntent(it) } }
             .build()
 
         try {

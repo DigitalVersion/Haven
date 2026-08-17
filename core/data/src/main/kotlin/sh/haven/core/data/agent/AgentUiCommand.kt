@@ -267,4 +267,19 @@ sealed class AgentUiCommand {
     ) : AgentUiCommand()
 
     data object OpenBackupPasswordDialog : AgentUiCommand()
+
+    /**
+     * Open the Mail Rules pane (its pending-approval queue). Posted by
+     * `MainActivity` when the user taps the "N mail actions awaiting
+     * approval" notification (`MailRuleNotifier`). HavenNavHost switches to
+     * the Mail tab and asks MailScreen to open its rules overlay. The Mail
+     * tab only exists while an email session is connected — with none open,
+     * the selection is remembered and lands there once the user reconnects
+     * (the same reactive semantics as OpenRemoteDesktop on a hidden tab),
+     * which matches reality: approving a queued IMAP action needs the
+     * session anyway.
+     *
+     * Tap-equivalent: same effect as opening Mail → overflow → Rules.
+     */
+    data object OpenMailRules : AgentUiCommand()
 }

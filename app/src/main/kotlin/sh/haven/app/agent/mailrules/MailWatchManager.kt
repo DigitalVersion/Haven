@@ -35,6 +35,7 @@ class MailWatchManager @Inject constructor(
     private val mailSessionManager: MailSessionManager,
     private val preferencesRepository: UserPreferencesRepository,
     biometricGate: sh.haven.core.data.keystore.BiometricGate,
+    private val notifier: MailRuleNotifier,
 ) : MailWatchPoker {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val engine = MailRuleEngine(
@@ -48,6 +49,9 @@ class MailWatchManager @Inject constructor(
 
     /** Idempotent. Observes the master switch; starts/stops the loop as it flips. */
     fun start() {
+        // Outside the master-switch collect: a queue left over from an earlier
+        // session must surface (and clear) even while automation is off.
+        notifier.start(scope)
         scope.launch {
             preferencesRepository.mailAutomationEnabled.collectLatest { enabled ->
                 if (enabled) runLoop() else loopJob?.cancel()

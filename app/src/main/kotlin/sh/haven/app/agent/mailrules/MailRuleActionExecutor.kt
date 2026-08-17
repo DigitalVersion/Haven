@@ -35,12 +35,15 @@ class MailRuleActionExecutor @Inject constructor(
     private val mcpServerLazy: dagger.Lazy<McpServer>,
     private val mailSessionManager: MailSessionManager,
     private val repo: MailRuleRepository,
+    private val notifier: MailRuleNotifier,
 ) : MailRuleActionRunner, MailRulePendingRunner {
 
     private val mcpServer: McpServer get() = mcpServerLazy.get()
 
     override suspend fun run(action: MailRuleAction, ctx: ActionContext, foreground: Boolean): ActionOutcome {
         if (isDestructive(action) && !foreground) {
+            // No notification here: MailRuleNotifier observes the pending table
+            // and keeps ONE aggregate approval notification in sync with it.
             repo.queuePendingAction(
                 MailRulePendingAction(
                     ruleId = ctx.ruleId, profileId = ctx.profileId, folderId = ctx.folderId,
@@ -48,7 +51,6 @@ class MailRuleActionExecutor @Inject constructor(
                     actionJson = MailRuleJson.actionsToJson(listOf(action)),
                 ),
             )
-            notify("Mail rule: action queued", "${ctx.ruleName} — approve a destructive action for \"${ctx.message.subject}\"")
             return ActionOutcome(ok = true, summary = "queued for foreground approval", queued = true)
         }
         return try {
@@ -59,7 +61,7 @@ class MailRuleActionExecutor @Inject constructor(
     }
 
     override suspend fun notifyRuleFired(ruleName: String, subject: String) {
-        notify("Mail rule fired: $ruleName", subject)
+        notifier.notifyRuleFired(ruleName, subject)
     }
 
     /**
@@ -184,10 +186,6 @@ class MailRuleActionExecutor @Inject constructor(
         if (res.optBoolean("isError", false)) ActionOutcome(false, "$name returned an error") else ActionOutcome(true, name)
     } catch (e: Exception) {
         ActionOutcome(false, "$name failed: ${e.message}")
-    }
-
-    private suspend fun notify(title: String, body: String) {
-        runCatching { mcpServer.callToolUnconsented("raise_notification", JSONObject().put("title", title).put("body", body)) }
     }
 
     /** Substitute the email-derived placeholders into a template. Shell- or JSON-escapes values. */
