@@ -959,6 +959,49 @@ class DesktopViewModel @Inject constructor(
     private val _systemVmBusy = MutableStateFlow(false)
     val systemVmBusy: StateFlow<Boolean> = _systemVmBusy.asStateFlow()
 
+    /**
+     * The import dialog's whole draft — open/closed AND the three fields —
+     * lives here rather than in the composable, because a rotation recreates
+     * the activity and took the dialog with it. `remember` loses it outright,
+     * and `rememberSaveable` doesn't save it either: the composable holding it
+     * is no longer in the composition when state is saved. A ViewModel survives
+     * config changes by construction, which is the property this needs.
+     *
+     * The fields have to move together with the flag. Hoisting only the flag
+     * was verified on-device to be WORSE than not hoisting at all: the dialog
+     * came back looking intact with the arch silently reset to x86_64, which
+     * for this field means an arm64 image gets recorded as x86_64 and then
+     * never boots — the exact trap the dialog's own hint warns about. A dialog
+     * that vanishes is at least an obvious loss.
+     */
+    private val _showSystemVmImport = MutableStateFlow(false)
+    val showSystemVmImport: StateFlow<Boolean> = _showSystemVmImport.asStateFlow()
+
+    private val _systemVmImportLabel = MutableStateFlow("")
+    val systemVmImportLabel: StateFlow<String> = _systemVmImportLabel.asStateFlow()
+
+    private val _systemVmImportSource = MutableStateFlow("")
+    val systemVmImportSource: StateFlow<String> = _systemVmImportSource.asStateFlow()
+
+    private val _systemVmImportArch = MutableStateFlow(sh.haven.core.local.VmArch.X86_64)
+    val systemVmImportArch: StateFlow<sh.haven.core.local.VmArch> = _systemVmImportArch.asStateFlow()
+
+    fun openSystemVmImport() { _showSystemVmImport.value = true }
+
+    fun setSystemVmImportLabel(value: String) { _systemVmImportLabel.value = value }
+
+    fun setSystemVmImportSource(value: String) { _systemVmImportSource.value = value }
+
+    fun setSystemVmImportArch(value: sh.haven.core.local.VmArch) { _systemVmImportArch.value = value }
+
+    /** Closes the dialog and clears the draft, so the next open starts clean rather than resurrecting a cancelled one. */
+    fun dismissSystemVmImport() {
+        _showSystemVmImport.value = false
+        _systemVmImportLabel.value = ""
+        _systemVmImportSource.value = ""
+        _systemVmImportArch.value = sh.haven.core.local.VmArch.X86_64
+    }
+
     init {
         viewModelScope.launch(Dispatchers.IO) { refreshSystemVmImages() }
     }

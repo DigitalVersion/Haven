@@ -142,7 +142,15 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
     val systemVmState by viewModel.systemVmState.collectAsState()
     val systemVmImages by viewModel.systemVmImages.collectAsState()
     val systemVmBusy by viewModel.systemVmBusy.collectAsState()
-    var showImportVmDialog by remember { mutableStateOf(false) }
+    // The import draft is held by the ViewModel, not this composable: a rotation
+    // recreates the activity, and neither `remember` nor `rememberSaveable`
+    // survives it here (the composable isn't in the composition when state is
+    // saved). Flag AND fields together — see the ViewModel for why hoisting
+    // only the flag was measurably worse than hoisting nothing.
+    val showImportVmDialog by viewModel.showSystemVmImport.collectAsState()
+    val importVmLabel by viewModel.systemVmImportLabel.collectAsState()
+    val importVmSource by viewModel.systemVmImportSource.collectAsState()
+    val importVmArch by viewModel.systemVmImportArch.collectAsState()
 
     Column(
         modifier = Modifier
@@ -217,7 +225,7 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
             state = systemVmState,
             images = systemVmImages,
             busy = systemVmBusy,
-            onImport = { showImportVmDialog = true },
+            onImport = { viewModel.openSystemVmImport() },
             onStart = { viewModel.startSystemVm(it.id) },
             onStop = { viewModel.stopSystemVm() },
             onDelete = { viewModel.deleteSystemVmImage(it.id) },
@@ -226,11 +234,17 @@ fun DesktopManagerScreen(viewModel: DesktopViewModel = hiltViewModel()) {
 
     if (showImportVmDialog) {
         SystemVmImportDialog(
-            onImport = { label, source, arch ->
-                viewModel.importSystemVmImage(label, source, arch)
-                showImportVmDialog = false
+            label = importVmLabel,
+            source = importVmSource,
+            arch = importVmArch,
+            onLabelChange = { viewModel.setSystemVmImportLabel(it) },
+            onSourceChange = { viewModel.setSystemVmImportSource(it) },
+            onArchChange = { viewModel.setSystemVmImportArch(it) },
+            onImport = {
+                viewModel.importSystemVmImage(importVmLabel.trim(), importVmSource.trim(), importVmArch)
+                viewModel.dismissSystemVmImport()
             },
-            onDismiss = { showImportVmDialog = false },
+            onDismiss = { viewModel.dismissSystemVmImport() },
         )
     }
 
@@ -557,18 +571,21 @@ private fun SystemVmSection(
  * nothing downstream can infer it — an arm64 image booted on the x86_64 target
  * doesn't fail, it sits on a machine with no bootable device until the user
  * gives up. Chips rather than a switch: this is an enum row, not an on/off.
+ *
+ * Stateless by design: the draft lives in the ViewModel so a rotation can't
+ * quietly reset it (see DesktopViewModel.showSystemVmImport).
  */
 @Composable
 private fun SystemVmImportDialog(
-    onImport: (label: String, source: String, arch: VmArch) -> Unit,
+    label: String,
+    source: String,
+    arch: VmArch,
+    onLabelChange: (String) -> Unit,
+    onSourceChange: (String) -> Unit,
+    onArchChange: (VmArch) -> Unit,
+    onImport: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var label by rememberSaveable { mutableStateOf("") }
-    var source by rememberSaveable { mutableStateOf("") }
-    // Saved as the arch id, not the enum: a plain String needs no Saver, and
-    // VmArch.fromId is the same parse the stored-image sidecar goes through.
-    var archId by rememberSaveable { mutableStateOf(VmArch.X86_64.id) }
-    val arch = VmArch.fromId(archId)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(AppR.string.app_system_vm_import_title)) },
@@ -579,7 +596,7 @@ private fun SystemVmImportDialog(
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = label,
-                    onValueChange = { label = it },
+                    onValueChange = onLabelChange,
                     label = { Text(stringResource(AppR.string.app_system_vm_import_label)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -587,7 +604,7 @@ private fun SystemVmImportDialog(
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = source,
-                    onValueChange = { source = it },
+                    onValueChange = onSourceChange,
                     label = { Text(stringResource(AppR.string.app_system_vm_import_source)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -602,7 +619,7 @@ private fun SystemVmImportDialog(
                     VmArch.entries.forEach { candidate ->
                         FilterChip(
                             selected = arch == candidate,
-                            onClick = { archId = candidate.id },
+                            onClick = { onArchChange(candidate) },
                             label = { Text(candidate.id) },
                         )
                     }
@@ -617,7 +634,7 @@ private fun SystemVmImportDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onImport(label.trim(), source.trim(), arch) },
+                onClick = onImport,
                 enabled = label.isNotBlank() && source.isNotBlank(),
             ) {
                 Text(stringResource(AppR.string.app_system_vm_import))
