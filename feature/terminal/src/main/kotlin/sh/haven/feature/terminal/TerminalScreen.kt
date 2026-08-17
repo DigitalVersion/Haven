@@ -577,7 +577,9 @@ fun TerminalScreen(
         }
     }
 
-    // Detect keyboard hide → send Ctrl+L for Zellij profiles to trigger redraw
+    // Track keyboard-hide transitions. (This used to also fire an automatic
+    // Ctrl+L "redraw" at Zellij profiles — removed for #554, see the note at
+    // TerminalViewModel; zellij reflows fine on SIGWINCH by itself.)
     val imeVisible = WindowInsets.isImeVisible
     var wasImeVisible by remember { mutableStateOf(imeVisible) }
     // When the IME last went away, so the pause handler below can tell "the user
@@ -586,7 +588,6 @@ fun TerminalScreen(
     LaunchedEffect(imeVisible) {
         if (wasImeVisible && !imeVisible) {
             imeHiddenAtMs = android.os.SystemClock.elapsedRealtime()
-            viewModel.sendRedrawIfZellij()
         }
         wasImeVisible = imeVisible
     }

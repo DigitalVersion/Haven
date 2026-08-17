@@ -894,29 +894,15 @@ class TerminalViewModel @Inject constructor(
         )
     }
 
-    /**
-     * Send Ctrl+L to the active tab if its profile uses Zellij as session manager.
-     * Called by TerminalScreen when the keyboard hides to trigger a full redraw,
-     * working around Zellij not reflowing content on alternate screen resize.
-     */
-    fun sendRedrawIfZellij() {
-        val tab = _tabs.value.getOrNull(_activeTabIndex.value) ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val profile = connectionRepository.getById(tab.profileId)
-            val smOverride = profile?.sessionManager
-            val isZellij = if (smOverride != null) {
-                smOverride.equals("ZELLIJ", ignoreCase = true)
-            } else {
-                preferencesRepository.sessionManager.first().name
-                    .equals("ZELLIJ", ignoreCase = true)
-            }
-            if (isZellij) {
-                // Ctrl+L = 0x0C (form feed) — triggers shell clear/redraw inside Zellij pane
-                kotlinx.coroutines.delay(300) // wait for resize debounce + SIGWINCH
-                tab.sendInput(byteArrayOf(0x0C))
-            }
-        }
-    }
+    // sendRedrawIfZellij (auto Ctrl+L on keyboard hide, from abc8b1b2b) was
+    // REMOVED for #554: it injected 0x0C into whatever the pane was running on
+    // every IME visible->hidden transition — including app backgrounding and
+    // the #515 restore's resume flicker — echoing ^L into foreground commands
+    // and force-clearing the screen. Device-verified 2026-08-17 that zellij
+    // 0.44 repaints the full viewport on a bare SIGWINCH after an IME-dismiss
+    // resize, so the nudge is obsolete; every timing/size heuristic tried to
+    // scope it raced one way or the other. Users who want a manual nudge have
+    // the toolbar's ^L macro preset.
 
     /**
      * Send the session manager's native search key sequence to the active tab.
