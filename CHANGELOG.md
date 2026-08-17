@@ -5,6 +5,13 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.32
+
+- **Tapping a wrapped URL now opens the whole URL.** A login link long enough to wrap across nine rows of a narrow terminal opened truncated when tapped on most of its rows, and opened nothing at all on the last few — a URL that looks plausible and then fails at the server. Two internal limits on how far a wrapped link may be followed were both smaller than nine. They exist for a good reason (they stop unrelated lines being glued into an invented link), so rather than raising them, following now continues past them while each row is filled edge to edge with URL characters — something ordinary prose cannot be, since a single space disqualifies a row.
+- Dialogs in the desktop manager no longer lose what you typed when the screen rotates. Previously a rotation closed them outright and discarded the contents: a half-filled rootfs import, an app-window definition, custom mount paths, a desktop's setup password and port. The one deliberate exception is the drive-unlock dialog — losing a half-typed encryption passphrase is the safer outcome.
+
+🔗 **A link that is nearly right is worse than one that is obviously broken.** The truncated URL carried a valid scheme, host and path, and failed only at the server on a missing parameter — so the terminal looked fine and the website looked broken. The rows that opened nothing were the honest failure; the rows that opened something were the bug.
+
 ## v5.87.31
 
 - **Fixed the F-Droid build**, which has failed at clone time since 2026-08-16 and left that channel stuck on v5.87.22 (#525, thanks connesc — the build-monitor link found it twice now). A submodule of `wayland-android` was pinned to a commit that exists only on a personal mirror, and F-Droid's build server reuses its build directory, where `git submodule init` never overwrites an already-registered submodule URL — so it kept fetching from the original remote, which legitimately does not have that commit. The pin now points at upstream, which is reachable whichever of the two URLs a cached clone happens to use.
