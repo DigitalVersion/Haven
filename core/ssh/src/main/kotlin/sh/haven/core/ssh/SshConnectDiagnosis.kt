@@ -69,8 +69,8 @@ object SshConnectDiagnosis {
 
         if (e.message.orEmpty().contains(CONNECT_TIMEOUT_MARKER)) {
             return JSchException(
-                "No TCP connection to $where after $secs — the connection attempt got no reply " +
-                    "(packet dropped, port filtered, or nothing at that address).",
+                "No TCP connection to $where after $secs. The connection attempt got no reply, " +
+                    "so the port is filtered, the packet was dropped, or nothing is at that address.",
                 e,
             )
         }
@@ -88,7 +88,7 @@ object SshConnectDiagnosis {
             JSchException(
                 "$where accepted the TCP connection then sent nothing for $secs. The port is " +
                     "open and something answered, but it never sent an SSH identification " +
-                    "string — so what answered is not an SSH server.",
+                    "string, so it is not an SSH server.",
                 e,
             )
         }

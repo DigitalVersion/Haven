@@ -70,7 +70,7 @@ class SshConnectDiagnosisTest {
             )
             val message = out.message.orEmpty()
             assertTrue(message, message.contains("accepted the TCP connection then sent nothing"))
-            assertTrue(message, message.contains("not an SSH server"))
+            assertTrue(message, message.contains("it is not an SSH server"))
             // The address actually dialled is the fact the reporter never had.
             assertTrue(message, message.contains("ssh.example.com [$LOOPBACK]:${peer.port}"))
             assertTrue(message, message.contains("1.5s"))
