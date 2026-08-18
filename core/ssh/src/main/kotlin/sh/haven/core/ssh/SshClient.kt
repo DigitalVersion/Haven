@@ -423,6 +423,10 @@ class SshClient : SshConnection {
             // exactly the case a breakdown is wanted for.
             timing.mark("handshake")
             Log.i(TAG, "connect timing (failed): ${timing.summary()}")
+            // Read before disconnect: JSch's getServerVersion() is the only
+            // signal for whether the peer ever sent its identification string,
+            // and it throws rather than returning null when it didn't (#557).
+            val serverBanner = runCatching { sess.serverVersion }.getOrNull()
             // A proxied connect that timed out waiting for the target's first
             // byte fails here as a generic "session is down" — the channel was
             // torn down under JSch to unblock it. Say what actually happened
@@ -441,7 +445,17 @@ class SshClient : SshConnection {
             val capturedHostKey = tryExtractHostKey(sess, config.host, config.port)
             try { sess.disconnect() } catch (_: Throwable) { /* best effort */ }
             if (capturedHostKey != null) throw HostKeyAuthFailure(capturedHostKey, e)
-            throw e
+            // "Read timed out" and "socket is not established" are opposite
+            // diagnoses wearing similar words; say which one this was, and
+            // against which address (#557).
+            throw SshConnectDiagnosis.rewrite(
+                e,
+                host = config.host,
+                address = resolvedIp,
+                port = config.port,
+                timeoutMs = connectTimeoutMs,
+                serverVersion = serverBanner,
+            )
         } finally {
             // Release any NFC field held open for the one-tap either/or sign so
             // it can't outlive this connect attempt (#237).
@@ -655,6 +669,10 @@ class SshClient : SshConnection {
         } catch (e: JSchException) {
             timing.mark("handshake")
             Log.i(TAG, "connect timing (failed): ${timing.summary()}")
+            // Read before disconnect: JSch's getServerVersion() is the only
+            // signal for whether the peer ever sent its identification string,
+            // and it throws rather than returning null when it didn't (#557).
+            val serverBanner = runCatching { sess.serverVersion }.getOrNull()
             // Mirror of the async connect() path — see the comments there.
             val jump = (proxy?.jschProxy as? ProxyJump)
             if (jump?.timedOut == true) {
@@ -664,7 +682,17 @@ class SshClient : SshConnection {
             val capturedHostKey = tryExtractHostKey(sess, config.host, config.port)
             try { sess.disconnect() } catch (_: Throwable) { /* best effort */ }
             if (capturedHostKey != null) throw HostKeyAuthFailure(capturedHostKey, e)
-            throw e
+            // "Read timed out" and "socket is not established" are opposite
+            // diagnoses wearing similar words; say which one this was, and
+            // against which address (#557).
+            throw SshConnectDiagnosis.rewrite(
+                e,
+                host = config.host,
+                address = resolvedIp,
+                port = config.port,
+                timeoutMs = connectTimeoutMs,
+                serverVersion = serverBanner,
+            )
         } finally {
             fidoAuthenticator?.releaseHeldNfc()
         }

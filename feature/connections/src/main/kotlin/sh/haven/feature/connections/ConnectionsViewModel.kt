@@ -1677,11 +1677,16 @@ class ConnectionsViewModel @Inject constructor(
      *
      * These gates are deliberately non-fatal: the connect proceeds even when
      * the packet never left. That means a failure produces no error of its own
-     * and the connection dies later as an ordinary
-     * `SocketTimeoutException: Read timed out` against a port that was never
-     * opened — indistinguishable from the network being down (#557). The step
-     * that guards the connection should not need a debug setting switched on
-     * before anyone can discover it didn't happen.
+     * and the connection dies later as an ordinary connect timeout against a
+     * port that was never opened — indistinguishable from the network being
+     * down (#557). The step that guards the connection should not need a debug
+     * setting switched on before anyone can discover it didn't happen.
+     *
+     * Correcting the claim this comment shipped with: a closed port does *not*
+     * produce `SocketTimeoutException: Read timed out`. That message is a read
+     * timeout on an already-established socket, so it means the opposite — the
+     * port was open and something answered. See [SshConnectDiagnosis], which
+     * now tells the two apart in the error the user actually sees.
      *
      * A FAILED row here can legitimately be followed by CONNECTED: the gate
      * failed, the connect was attempted regardless, and it may still succeed
