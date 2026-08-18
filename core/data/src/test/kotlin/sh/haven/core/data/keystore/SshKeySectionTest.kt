@@ -5,6 +5,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -37,7 +38,7 @@ class SshKeySectionTest {
         }
         // No biometric tests in this overload — pass a gate with
         // foregroundActive=false so any accidental BIOMETRIC_PROTECTED
-        // fetch short-circuits to UNAVAILABLE, surfaced as a Failed
+        // fetch short-circuits to UNAVAILABLE, surfaced as a Denied
         // result. Tests that exercise the gate use [newSectionWithGate].
         // KeyEncryption.decrypt is only reached on the encrypted-bytes
         // branch of fetch(); the tests below stick to legacy plaintext
@@ -389,7 +390,7 @@ class SshKeySectionTest {
     }
 
     @Test
-    fun `fetch on biometric-protected key with no foreground returns Failed`() = runTest {
+    fun `fetch on biometric-protected key with no foreground returns Denied`() = runTest {
         val row = SshKey(
             id = "k-bio-fail", label = "off",
             keyType = "Ed25519",
@@ -399,17 +400,54 @@ class SshKeySectionTest {
             biometricProtected = true,
         )
         // Gate is foreground-inactive — request() short-circuits to
-        // UNAVAILABLE, which the section maps to Failed with a
-        // biometric-required reason. Pins the fail-closed contract.
+        // UNAVAILABLE. The human was never asked, so there is no ack and
+        // this is a denial, not a decrypt failure (#559). Pins the
+        // fail-closed contract.
         val gate = BiometricGate() // foregroundActive=false by default
         val (section, _) = newSectionWithGate(listOf(row), gate)
         val result = section.fetch("k-bio-fail")
-        assertTrue("expected Failed, got: $result", result is KeystoreFetch.Failed)
-        assertTrue(
-            "reason must mention biometric, got: ${(result as KeystoreFetch.Failed).reason}",
-            result.reason.contains("biometric", ignoreCase = true) ||
-                result.reason.contains("authentication", ignoreCase = true),
+        assertTrue("expected Denied, got: $result", result is KeystoreFetch.Denied)
+        val reason = (result as KeystoreFetch.Denied).reason
+        // Tells the user what to do about it, which is not the same
+        // instruction as a decline.
+        assertTrue("reason should name the key, got: $reason", reason.contains("off"))
+        assertTrue("reason should say to retry, got: $reason", reason.contains("try again"))
+    }
+
+    @Test
+    fun `a denied prompt is Denied, not Failed, and never unwraps the bytes`() = runTest {
+        val row = SshKey(
+            id = "k-bio-deny", label = "work laptop",
+            keyType = "Ed25519",
+            privateKeyBytes = "-----BEGIN OPENSSH PRIVATE KEY-----".toByteArray(),
+            publicKeyOpenSsh = "ssh-ed25519 …",
+            fingerprintSha256 = "SHA256:bio-deny",
+            biometricProtected = true,
         )
+        val gate = BiometricGate().apply { setForegroundActive(true) }
+        val (section, _) = newSectionWithGate(listOf(row), gate)
+
+        // Drive a real prompt and answer it the way pressing back does.
+        val result = coroutineScope {
+            val fetch = async { section.fetch("k-bio-deny") }
+            val request = waitForPending(gate)
+            gate.respond(request.id, BiometricGate.Decision.DENY)
+            fetch.await()
+        }
+
+        assertTrue("expected Denied, got: $result", result is KeystoreFetch.Denied)
+        val reason = (result as KeystoreFetch.Denied).reason
+        assertTrue("reason should name the key, got: $reason", reason.contains("work laptop"))
+        assertTrue("reason should say declined, got: $reason", reason.contains("declined"))
+    }
+
+    /** Spin until the gate has queued its prompt, so the test can answer it. */
+    private suspend fun waitForPending(gate: BiometricGate): BiometricGate.Request {
+        repeat(1000) {
+            gate.pending.value.firstOrNull()?.let { return it }
+            kotlinx.coroutines.yield()
+        }
+        error("gate never queued a request")
     }
 
     @Test

@@ -139,6 +139,25 @@ sealed class KeystoreFetch {
      * the secret itself.
      */
     class Failed(val reason: String) : KeystoreFetch()
+
+    /**
+     * The entry is gated behind a human ack that was not given: the
+     * biometric prompt was denied, or it could not be shown at all
+     * because no Activity was foreground.
+     *
+     * Separate from [Failed] on purpose. #559: every failure used to
+     * flatten to the same value, and by the time a connect path saw it
+     * there was no way to tell "the user said no" from "there is no
+     * such key". It treated a denial as a missing credential and
+     * carried on with the next one, so declining the prompt silently
+     * became "use something else" instead of "stop". Whether that is
+     * the right response genuinely differs by caller — a backup should
+     * skip a locked key, an SSH connect should not start — so the
+     * distinction has to survive up to the caller that can decide.
+     *
+     * [reason] is user-facing and secret-free.
+     */
+    class Denied(val reason: String) : KeystoreFetch()
 }
 
 /**
@@ -211,10 +230,9 @@ interface Keystore {
      * Retrieve secret material for a single entry. Routes to the
      * matching [KeystoreSection]. Returns [KeystoreFetch.NotFound] for
      * unknown stores or missing entry ids; [KeystoreFetch.Failed] for
-     * decrypt errors (with a human-readable, secret-free reason);
-     * [KeystoreFetch.Failed] with a "biometric required" reason when an
-     * entry is gated behind biometric auth and the prompt was denied
-     * or unavailable.
+     * decrypt errors (with a human-readable, secret-free reason); and
+     * [KeystoreFetch.Denied] when an entry is gated behind biometric
+     * auth and the prompt was denied or could not be shown.
      */
     suspend fun fetch(store: KeystoreStore, entryId: String): KeystoreFetch
 

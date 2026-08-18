@@ -72,10 +72,16 @@ class SshKeySection @Inject constructor(
     override suspend fun fetch(entryId: String): KeystoreFetch {
         val row = sshKeyDao.getById(entryId) ?: return KeystoreFetch.NotFound
         Log.d(TAG, "fetch(id=$entryId, label=${LogRedact.of(row.label)}, biometricProtected=${row.biometricProtected})")
-        // Biometric gate runs *before* the decrypt — a denied prompt
-        // returns Failed without ever asking Tink to unwrap the bytes.
-        // Foreground-inactive surfaces as the same Failed string so a
-        // backgrounded app retry path is uniform with a denied prompt.
+        // Biometric gate runs *before* the decrypt, so a denied prompt
+        // never asks Tink to unwrap the bytes.
+        //
+        // Both outcomes return Denied rather than Failed (#559): a denial
+        // and a decrypt error need opposite responses from a connect path,
+        // and merging them is what let a declined prompt fall through to
+        // the next credential. Foreground-inactive is a denial too — the
+        // human was never asked, so there is no ack — but it says so
+        // separately, because "come back into the app" is a different
+        // instruction from "you declined".
         if (row.biometricProtected) {
             Log.d(TAG, "fetch(id=$entryId): requesting biometric gate")
             val decision = biometricGate.request(
@@ -86,9 +92,14 @@ class SshKeySection @Inject constructor(
             when (decision) {
                 BiometricGate.Decision.ALLOW -> { /* proceed */ }
                 BiometricGate.Decision.DENY ->
-                    return KeystoreFetch.Failed("Biometric authentication required")
+                    return KeystoreFetch.Denied(
+                        "Authentication was declined for key \"${row.label}\".",
+                    )
                 BiometricGate.Decision.UNAVAILABLE ->
-                    return KeystoreFetch.Failed("Biometric authentication required")
+                    return KeystoreFetch.Denied(
+                        "Key \"${row.label}\" needs authentication, and the prompt " +
+                            "could not be shown. Open Haven and try again.",
+                    )
             }
         }
         return try {

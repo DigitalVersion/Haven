@@ -29,6 +29,9 @@ import sh.haven.core.data.db.entities.PortForwardRule
 import sh.haven.core.data.db.entities.SshKey
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.data.db.entities.ConnectionLog
+import sh.haven.core.data.repository.DecryptedKeys
+import sh.haven.core.data.repository.KeyMaterial
+import sh.haven.core.data.repository.KeyUnlockDeclinedException
 import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.data.repository.ConnectionRepository
 import sh.haven.core.data.repository.PortForwardRepository
@@ -3250,7 +3253,9 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
-    private fun connectSsh(
+    // internal for unit test (#559: a declined key unlock must not surface
+    // as an auth failure and pop the password fallback).
+    internal fun connectSsh(
         profile: ConnectionProfile,
         password: String,
         keyOnly: Boolean,
@@ -3479,7 +3484,18 @@ class ConnectionsViewModel @Inject constructor(
                 val isPassphraseError = !isNetworkError &&
                     msg.contains("passphrase", ignoreCase = true)
                 val isAuthError = keyOnly && isAuthMessage
-                if (isFidoAuth && (isAuthError || (keyOnly && !isNetworkError))) {
+                if (e is KeyUnlockDeclinedException) {
+                    // The user was asked for a key's biometric ack and said no
+                    // (or could not be asked). Say so and stop.
+                    //
+                    // This branch has to come first because the message
+                    // contains the word "authentication", which the classifier
+                    // below reads as an auth FAILURE and answers with the
+                    // password-fallback prompt. Offering another way in is a
+                    // politer version of the #559 bug itself: the answer to a
+                    // refusal is not "try a different credential".
+                    _error.value = msg.ifBlank { "Key unlock was declined" }
+                } else if (isFidoAuth && (isAuthError || (keyOnly && !isNetworkError))) {
                     val fidoDetail = fidoAuthenticator.lastAssertionError
                     _error.value = if (fidoDetail != null) {
                         "Security key: $fidoDetail"
@@ -4839,11 +4855,33 @@ class ConnectionsViewModel @Inject constructor(
     }
 
     /**
+     * Stop the connect if the user declined to unlock any key.
+     *
+     * The "try every key" paths walk the whole keyring, so without this
+     * a declined prompt just removed one key from the list and the
+     * connect carried on with the rest (#559). One decline is enough:
+     * the user was asked and said no, and there is no reading of that
+     * which means "go ahead with a different credential".
+     */
+    private fun failIfAnyDeclined(result: DecryptedKeys) {
+        result.declined.firstOrNull()?.let { throw KeyUnlockDeclinedException(it.reason) }
+    }
+
+    /**
      * Resolve a specific saved key into an auth method, running the
      * cert-renewal gate and handling FIDO2 / encrypted keys. Returns null
-     * if the key is missing or its bytes can't be decrypted (denied
-     * biometric, etc.) — callers fall through. [password] is used as the
-     * passphrase for an encrypted key.
+     * if the key is missing or its bytes can't be decrypted, and callers
+     * fall through. [password] is used as the passphrase for an encrypted
+     * key.
+     *
+     * A **declined** unlock is not a fall-through: it throws
+     * [KeyUnlockDeclinedException] so the connect stops before a socket
+     * is opened. Falling through on a decline is what #559 reported —
+     * the user pressed back on the prompt and Haven connected anyway,
+     * using whatever else the profile had (another key, a stored
+     * password, keyboard-interactive). The key itself was never
+     * unlocked, so nothing leaked; what failed was the promise that no
+     * connection is attempted without the ack.
      */
     private suspend fun resolveExplicitKey(
         keyId: String,
@@ -4854,7 +4892,15 @@ class ConnectionsViewModel @Inject constructor(
         // and the JSch connect. (#133 phase 2b)
         val originalKey = sshKeyRepository.getById(keyId)
         val key = if (originalKey != null) certRenewalGate.ensureFresh(originalKey) else null
-        val keyBytes = if (key != null) sshKeyRepository.getDecryptedKeyBytes(keyId) else null
+        val keyBytes = if (key != null) {
+            when (val material = sshKeyRepository.fetchKeyMaterial(keyId)) {
+                is KeyMaterial.Available -> material.bytes
+                is KeyMaterial.Declined -> throw KeyUnlockDeclinedException(material.reason)
+                KeyMaterial.Missing -> null
+            }
+        } else {
+            null
+        }
         if (keyBytes != null && key != null) {
             // Cert is public material so the same fetch works for both
             // software and FIDO2 paths; null = plain pubkey auth.
@@ -4921,7 +4967,9 @@ class ConnectionsViewModel @Inject constructor(
      * [resolveExplicitKey] resolves them to a [ConnectionConfig.AuthMethod.FidoKey].
      */
     private suspend fun resolveAnyUsableKeys(): ConnectionConfig.AuthMethod? {
-        val entries = sshKeyRepository.getAllDecrypted()
+        val entries = sshKeyRepository.getAllDecryptedDetailed()
+            .also(::failIfAnyDeclined)
+            .keys
             .filter { holdsLoadablePrivateKey(it.keyType) && it.enabledForAuth }
             .mapNotNull { key ->
                 if (key.isEncrypted) {
@@ -4960,7 +5008,9 @@ class ConnectionsViewModel @Inject constructor(
      * passed verbatim (no PEM wrap, unlike [resolveAnyUsableKeys]).
      */
     private suspend fun resolveAnyHardwareKeys(): ConnectionConfig.AuthMethod? {
-        val keys = sshKeyRepository.getAllDecrypted()
+        val keys = sshKeyRepository.getAllDecryptedDetailed()
+            .also(::failIfAnyDeclined)
+            .keys
             .filter { it.keyType.startsWith("sk-") && it.enabledForAuth }
         if (keys.isEmpty()) return null
         val fidoKeys = keys.map { key ->

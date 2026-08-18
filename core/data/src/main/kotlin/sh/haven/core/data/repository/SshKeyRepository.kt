@@ -35,48 +35,82 @@ class SshKeyRepository @Inject constructor(
     )
 
     /**
-     * Get decrypted private key bytes for use during SSH auth.
+     * Get decrypted private key bytes, keeping a declined prompt
+     * distinguishable from a missing key.
      *
      * Routes through the unified [Keystore.fetch] so any biometric
-     * gating set on the entry (#129 stage 5) actually fires before
-     * the bytes are returned. A denied prompt (or a backgrounded app
-     * with no Activity to host the prompt) surfaces as null — same
-     * as a missing key — so the SSH auth path falls through cleanly.
+     * gating set on the entry (#129 stage 5) actually fires before the
+     * bytes are returned. Prefer this over [getDecryptedKeyBytes]
+     * anywhere the answer changes what happens next — above all on the
+     * SSH auth path, where a declined prompt must stop the connect
+     * rather than hand it the next credential (#559).
      */
-    suspend fun getDecryptedKeyBytes(id: String): ByteArray? {
-        val result = keystore.fetch(KeystoreStore.SSH_KEYS, id)
-        return when (result) {
-            is KeystoreFetch.Bytes -> result.data
-            is KeystoreFetch.NotFound -> null
+    suspend fun fetchKeyMaterial(id: String): KeyMaterial =
+        when (val result = keystore.fetch(KeystoreStore.SSH_KEYS, id)) {
+            is KeystoreFetch.Bytes -> KeyMaterial.Available(result.data)
+            is KeystoreFetch.NotFound -> KeyMaterial.Missing
+            is KeystoreFetch.Denied -> KeyMaterial.Declined(result.reason)
             is KeystoreFetch.Failed -> {
                 Log.w(TAG, "fetch for key $id failed: ${result.reason}")
-                null
+                KeyMaterial.Missing
             }
             // Password is the wrong shape for SSH-keys; treat as missing.
-            is KeystoreFetch.Password -> null
+            is KeystoreFetch.Password -> KeyMaterial.Missing
         }
+
+    /**
+     * Get decrypted private key bytes, or null.
+     *
+     * Lenient: a declined biometric prompt is flattened back to null,
+     * the same as a missing key. That is only correct where "skip this
+     * key" is a sensible response — listing, export, a backup that
+     * should still run. **Auth paths must use [fetchKeyMaterial]**, or
+     * they reintroduce #559, where declining the prompt just moved the
+     * connect on to the next credential.
+     */
+    suspend fun getDecryptedKeyBytes(id: String): ByteArray? =
+        (fetchKeyMaterial(id) as? KeyMaterial.Available)?.bytes
+
+    /**
+     * Every stored key with decrypted private bytes, plus the keys the
+     * user declined to unlock.
+     *
+     * Each row goes through [Keystore.fetch], so a biometric-protected
+     * entry prompts before its bytes are returned. Rows that are simply
+     * unreadable (missing, decrypt error) are dropped as before, since
+     * a caller walking the list cannot do anything with them. Declined
+     * rows are reported separately: dropping those silently is what
+     * turned "I said no" into "try the next key" on the auth path
+     * (#559), and only the caller knows whether that matters.
+     */
+    suspend fun getAllDecryptedDetailed(): DecryptedKeys {
+        val usable = mutableListOf<SshKey>()
+        val declined = mutableListOf<KeyMaterial.Declined>()
+        for (key in sshKeyDao.getAll()) {
+            when (val r = keystore.fetch(KeystoreStore.SSH_KEYS, key.id)) {
+                is KeystoreFetch.Bytes -> usable += key.copy(privateKeyBytes = r.data)
+                is KeystoreFetch.Denied -> {
+                    Log.w(TAG, "getAllDecrypted: ${key.id} declined")
+                    declined += KeyMaterial.Declined(r.reason)
+                }
+                is KeystoreFetch.NotFound -> Unit
+                is KeystoreFetch.Failed ->
+                    Log.w(TAG, "getAllDecrypted: fetch for ${key.id} failed (${r.reason})")
+                is KeystoreFetch.Password -> Unit
+            }
+        }
+        return DecryptedKeys(keys = usable, declined = declined)
     }
 
     /**
-     * Get every stored key with decrypted private bytes. Routes each
-     * row through [Keystore.fetch] so any biometric-protected entry
-     * triggers its prompt before its bytes are returned. A row whose
-     * fetch failed (denied prompt, decrypt error) is silently dropped
-     * — callers walking the list (e.g. ConnectionsViewModel's "try
-     * every key" fallback when no explicit key is assigned) treat a
-     * missing key the same as a key the server doesn't accept.
+     * Every stored key that could be decrypted, declined ones dropped.
+     *
+     * Lenient in the same way as [getDecryptedKeyBytes], and with the
+     * same rule: fine for backup and listing, wrong for auth. Auth
+     * paths want [getAllDecryptedDetailed] so they can refuse to
+     * proceed when the user declined a prompt.
      */
-    suspend fun getAllDecrypted(): List<SshKey> = sshKeyDao.getAll().mapNotNull { key ->
-        when (val r = keystore.fetch(KeystoreStore.SSH_KEYS, key.id)) {
-            is KeystoreFetch.Bytes -> key.copy(privateKeyBytes = r.data)
-            is KeystoreFetch.NotFound -> null
-            is KeystoreFetch.Failed -> {
-                Log.w(TAG, "getAllDecrypted: fetch for ${key.id} failed (${r.reason})")
-                null
-            }
-            is KeystoreFetch.Password -> null
-        }
-    }
+    suspend fun getAllDecrypted(): List<SshKey> = getAllDecryptedDetailed().keys
 
     suspend fun delete(id: String) = sshKeyDao.deleteById(id)
 

@@ -7,6 +7,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertSame
 import sh.haven.core.data.db.entities.ConnectionProfile
 import sh.haven.core.data.db.entities.SshKey
@@ -29,7 +30,11 @@ import sh.haven.core.data.repository.ConnectionLogRepository
 import sh.haven.core.data.db.entities.ConnectionLog
 import org.junit.Assert.assertNotNull
 import sh.haven.core.data.repository.PortForwardRepository
+import sh.haven.core.data.repository.DecryptedKeys
+import sh.haven.core.data.repository.KeyMaterial
+import sh.haven.core.data.repository.KeyUnlockDeclinedException
 import sh.haven.core.data.repository.SshKeyRepository
+import sh.haven.core.ssh.ConnectionConfig
 import sh.haven.core.et.EtSessionManager
 import sh.haven.core.fido.FidoAuthenticator
 import sh.haven.core.local.DesktopManager
@@ -41,7 +46,6 @@ import sh.haven.core.reticulum.ReticulumTransport
 import sh.haven.core.reticulum.ReticulumSessionManager
 import sh.haven.core.smb.SmbSessionManager
 import sh.haven.core.rdp.RdpSessionManager
-import sh.haven.core.ssh.ConnectionConfig
 import sh.haven.core.ssh.HostKeyVerifier
 import sh.haven.core.ssh.SessionManagerRegistry
 import sh.haven.core.ssh.SshSessionManager
@@ -86,6 +90,7 @@ class ConnectionsViewModelSessionTest {
     private lateinit var desktopManager: DesktopManager
     private lateinit var sessionManagerRegistry: SessionManagerRegistry
     private lateinit var sshKeyRepository: SshKeyRepository
+    private lateinit var preferencesRepository: UserPreferencesRepository
     private lateinit var viewModel: ConnectionsViewModel
 
     @Before
@@ -165,6 +170,16 @@ class ConnectionsViewModelSessionTest {
             every { observeAll() } returns flowOf(emptyList())
         }
 
+        preferencesRepository = mockk(relaxed = true) {
+            every { sessionManager } returns flowOf(mockk(relaxed = true) {
+                every { label } returns "None"
+            })
+            // connectSsh reads both of these with .first(); a relaxed Flow
+            // mock never emits, so the connect would hang instead of failing.
+            every { verboseLoggingEnabled } returns flowOf(false)
+            every { sessionCommandOverride } returns flowOf(null)
+        }
+
         viewModel = ConnectionsViewModel(
             appContext = appContext,
             repository = repository,
@@ -204,11 +219,7 @@ class ConnectionsViewModelSessionTest {
             totpSecretRepository = mockk(relaxed = true) {
                 every { observeAll() } returns flowOf(emptyList())
             },
-            preferencesRepository = mockk(relaxed = true) {
-                every { sessionManager } returns flowOf(mockk(relaxed = true) {
-                    every { label } returns "None"
-                })
-            },
+            preferencesRepository = preferencesRepository,
             connectionGroupDao = mockk(relaxed = true) {
                 every { observeAll() } returns flowOf(emptyList())
             },
@@ -379,12 +390,17 @@ class ConnectionsViewModelSessionTest {
     // used to fall through to (empty) password auth and never be offered.
     @Test
     fun `resolveAuthMethod offers software and sk-keys together`() = runTest {
-        coEvery { sshKeyRepository.getAllDecrypted() } returns listOf(
-            SshKey(
-                label = "laptop", keyType = "ssh-ed25519",
-                privateKeyBytes = ByteArray(64), publicKeyOpenSsh = "", fingerprintSha256 = "",
+        // Auth paths read getAllDecryptedDetailed, not getAllDecrypted, so a
+        // declined unlock can stop the connect instead of being dropped (#559).
+        coEvery { sshKeyRepository.getAllDecryptedDetailed() } returns DecryptedKeys(
+            keys = listOf(
+                SshKey(
+                    label = "laptop", keyType = "ssh-ed25519",
+                    privateKeyBytes = ByteArray(64), publicKeyOpenSsh = "", fingerprintSha256 = "",
+                ),
+                skKey(),
             ),
-            skKey(),
+            declined = emptyList(),
         )
         val profile = ConnectionProfile(
             id = "p", label = "p", host = "h", username = "u", connectionType = "SSH",
@@ -403,7 +419,8 @@ class ConnectionsViewModelSessionTest {
     // A FIDO-only keystore must still resolve to the FIDO pool, not password.
     @Test
     fun `resolveAuthMethod offers a lone sk-key`() = runTest {
-        coEvery { sshKeyRepository.getAllDecrypted() } returns listOf(skKey())
+        coEvery { sshKeyRepository.getAllDecryptedDetailed() } returns
+            DecryptedKeys(keys = listOf(skKey()), declined = emptyList())
         val profile = ConnectionProfile(
             id = "p", label = "p", host = "h", username = "u", connectionType = "SSH",
         )
@@ -460,5 +477,105 @@ class ConnectionsViewModelSessionTest {
         coVerify(exactly = 0) {
             connectionLogRepository.logEvent(any(), ConnectionLog.Status.FAILED, any(), any(), any())
         }
+    }
+
+    // --- #559: a declined key unlock must stop the connect ---------------
+    //
+    // The report: with a biometric requirement set, pressing back on the
+    // prompt still connected. resolveAuthMethod is the last thing that runs
+    // before a socket is opened, so "throws here" is the same property as
+    // "no connection was attempted", and it is the one these three pin.
+
+    private fun keyProfile(keyId: String?) = ConnectionProfile(
+        id = "bio-profile", label = "bio", host = "example.invalid", username = "u",
+        connectionType = "SSH",
+        keyId = keyId,
+    )
+
+    @Test
+    fun `declining the prompt for a profile's pinned key aborts instead of falling through`() = runTest {
+        coEvery { sshKeyRepository.fetchKeyMaterial("k-bio") } returns
+            KeyMaterial.Declined("Authentication was declined for key \"work laptop\".")
+
+        val thrown = try {
+            viewModel.resolveAuthMethod(keyProfile("k-bio"), password = "hunter2")
+            null
+        } catch (e: KeyUnlockDeclinedException) {
+            e
+        }
+
+        // Before the fix this returned AuthMethod.Password("hunter2") — the
+        // declined key was dropped and the connect went ahead with whatever
+        // else the profile had.
+        assertNotNull("expected the connect to be refused", thrown)
+        assertTrue(thrown!!.reason, thrown.reason.contains("work laptop"))
+    }
+
+    @Test
+    fun `declining any key in the try-every-key path aborts too`() = runTest {
+        // No pinned key and no password, so resolveAuthMethod walks the whole
+        // keyring. A decline there used to drop just that key and carry on
+        // with the next one, which turned "no" into "use something else".
+        coEvery { sshKeyRepository.getAllDecryptedDetailed() } returns DecryptedKeys(
+            keys = listOf(
+                SshKey(
+                    id = "k-plain", label = "other", keyType = "ssh-ed25519",
+                    privateKeyBytes = byteArrayOf(1), publicKeyOpenSsh = "ssh-ed25519 A",
+                    fingerprintSha256 = "SHA256:other",
+                ),
+            ),
+            declined = listOf(KeyMaterial.Declined("Authentication was declined for key \"work laptop\".")),
+        )
+
+        val thrown = try {
+            viewModel.resolveAuthMethod(keyProfile(null), password = "")
+            null
+        } catch (e: KeyUnlockDeclinedException) {
+            e
+        }
+
+        assertNotNull("expected the connect to be refused", thrown)
+    }
+
+    @Test
+    fun `a keyring with nothing declined still resolves normally`() = runTest {
+        // The other half: this must not turn every connect into a refusal.
+        coEvery { sshKeyRepository.getAllDecryptedDetailed() } returns
+            DecryptedKeys(keys = emptyList(), declined = emptyList())
+
+        val method = viewModel.resolveAuthMethod(keyProfile(null), password = "hunter2")
+
+        assertTrue(method.toString(), method is ConnectionConfig.AuthMethod.Password)
+    }
+
+    @Test
+    fun `a declined key unlock reports the decline and does NOT offer the password fallback`() = runTest {
+        coEvery { sshKeyRepository.fetchKeyMaterial("k-bio") } returns
+            KeyMaterial.Declined("Authentication was declined for key \"work laptop\".")
+
+        // remoteCommand set so the connect skips session-manager discovery and
+        // goes straight at auth resolution, which is what this test is about.
+        val profile = keyProfile("k-bio").copy(remoteCommand = "true")
+        viewModel.connectSsh(profile, password = "", keyOnly = true)
+
+        // Auth resolution runs inside withContext(Dispatchers.IO), which the
+        // test scheduler does not own, so advanceUntilIdle alone returns before
+        // the failure lands. Pump both until the error appears or we give up.
+        val deadline = System.currentTimeMillis() + 10_000
+        while (viewModel.error.value == null && System.currentTimeMillis() < deadline) {
+            testDispatcher.scheduler.advanceUntilIdle()
+            Thread.sleep(20)
+        }
+
+        // The message says the user declined...
+        assertTrue(
+            "error was: ${viewModel.error.value}",
+            viewModel.error.value.orEmpty().contains("declined"),
+        )
+        // ...and Haven does not answer a refusal by suggesting another way in.
+        // The word "authentication" in the message makes the ordinary auth
+        // classifier want to raise the password prompt here, which is why the
+        // declined branch has to be tested rather than assumed.
+        assertNull(viewModel.passwordFallback.value)
     }
 }
