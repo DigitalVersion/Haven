@@ -5,6 +5,13 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.33
+
+- **The mouse works over SPICE on older guests** (#549, #543 — thanks empanadablues, who kept testing after the connection itself was fixed). SPICE lets the *server* choose how the pointer is described: a guest with a USB tablet is sent absolute positions, while a guest with only a PS/2 mouse — a Windows 98 VM, say — expects relative movements and silently discards absolute ones. Haven only ever sent absolute, so on those guests the pointer sat perfectly still while the keyboard worked fine. Haven now honours the mode the server asks for, which it had been reading and then ignoring.
+- **A failed port-knock or SPA packet is no longer invisible** (#557). These run just before a connection to open a firewall port, and they are deliberately non-fatal — so when one failed to send, the connection carried on and died later as an ordinary timeout, indistinguishable from the network being down. The failure now appears in the connection log with its reason, instead of only in verbose logging that you had to know to switch on first.
+
+🖱️ **Both of tonight's bugs were a message nobody was listening to.** The SPICE server announced how it wanted the mouse described and Haven parsed the announcement, logged it, and dropped it. The SPA packet reported that it never left, and that report went somewhere nobody reads. Neither was a hard problem once seen; both were invisible for months because the thing that knew was not talking to the thing that decided.
+
 ## v5.87.32
 
 - **Tapping a wrapped URL now opens the whole URL.** A login link long enough to wrap across nine rows of a narrow terminal opened truncated when tapped on most of its rows, and opened nothing at all on the last few — a URL that looks plausible and then fails at the server. Two internal limits on how far a wrapped link may be followed were both smaller than nine. They exist for a good reason (they stop unrelated lines being glued into an invented link), so rather than raising them, following now continues past them while each row is filled edge to edge with URL characters — something ordinary prose cannot be, since a single space disqualifies a row.
