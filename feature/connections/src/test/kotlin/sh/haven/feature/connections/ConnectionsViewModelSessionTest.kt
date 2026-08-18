@@ -578,4 +578,78 @@ class ConnectionsViewModelSessionTest {
         // declined branch has to be tested rather than assumed.
         assertNull(viewModel.passwordFallback.value)
     }
+
+    // The same property for the sibling connect paths. connectSsh got the
+    // declined branch first; Mosh, Eternal Terminal and the jump-host
+    // failure handler each have their own copy of the "authentication"
+    // classifier, and each of these fails with the password prompt raised
+    // if its declined branch is removed.
+
+    /** Pump until the connect's failure lands or the deadline passes. */
+    private fun awaitError() {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (viewModel.error.value == null && System.currentTimeMillis() < deadline) {
+            testDispatcher.scheduler.advanceUntilIdle()
+            Thread.sleep(20)
+        }
+    }
+
+    @Test
+    fun `a declined key unlock on the Mosh path does NOT offer the password fallback`() = runTest {
+        coEvery { sshKeyRepository.fetchKeyMaterial("k-bio") } returns
+            KeyMaterial.Declined("Authentication was declined for key \"work laptop\".")
+
+        viewModel.connectMosh(
+            keyProfile("k-bio").copy(useMosh = true),
+            password = "",
+            keyOnly = true,
+        )
+        awaitError()
+
+        assertTrue(
+            "error was: ${viewModel.error.value}",
+            viewModel.error.value.orEmpty().contains("declined"),
+        )
+        assertNull(viewModel.passwordFallback.value)
+    }
+
+    @Test
+    fun `a declined key unlock on the Eternal Terminal path does NOT offer the password fallback`() = runTest {
+        coEvery { sshKeyRepository.fetchKeyMaterial("k-bio") } returns
+            KeyMaterial.Declined("Authentication was declined for key \"work laptop\".")
+
+        viewModel.connectEternalTerminal(
+            keyProfile("k-bio").copy(useEternalTerminal = true),
+            password = "",
+            keyOnly = true,
+        )
+        awaitError()
+
+        assertTrue(
+            "error was: ${viewModel.error.value}",
+            viewModel.error.value.orEmpty().contains("declined"),
+        )
+        assertNull(viewModel.passwordFallback.value)
+    }
+
+    @Test
+    fun `a declined key unlock on a jump host does NOT re-open the password prompt`() = runTest {
+        // The prompt path needs the jump profile to resolve; stub it so the
+        // classifier below the declined branch WOULD raise the prompt if it
+        // were reached — otherwise this test could pass by lookup failure.
+        coEvery { repository.getById("jump") } returns jumpProfile("")
+
+        viewModel.handleTunnelJumpFailure(
+            KeyUnlockDeclinedException("Authentication was declined for key \"work laptop\"."),
+            dependentProfile = keyProfile(null).copy(id = "vnc-dep", connectionType = "VNC"),
+            sshProfileId = "jump",
+        )
+
+        assertTrue(
+            "error was: ${viewModel.error.value}",
+            viewModel.error.value.orEmpty().contains("declined"),
+        )
+        assertNull(viewModel.passwordFallback.value)
+        assertNull(viewModel.pendingTunnelDependent.value)
+    }
 }

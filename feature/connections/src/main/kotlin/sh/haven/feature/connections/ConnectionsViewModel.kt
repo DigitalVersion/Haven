@@ -2043,11 +2043,22 @@ class ConnectionsViewModel @Inject constructor(
      * 'password'" message (#121). Network and other failures fall through to a
      * clean [_error] string. Classification matches [connectSsh]'s catch block.
      */
-    private suspend fun handleTunnelJumpFailure(
+    // internal for unit test (#559: a declined key unlock must not surface
+    // as an auth failure and re-open the password prompt).
+    internal suspend fun handleTunnelJumpFailure(
         e: Exception,
         dependentProfile: ConnectionProfile,
         sshProfileId: String,
     ) {
+        if (e is KeyUnlockDeclinedException) {
+            // Same rule as connectSsh (#559): the user declined to unlock a
+            // key on the jump host. The message contains "authentication", so
+            // the classifier below would read it as an auth failure and
+            // re-open the password prompt — offering another way in after a
+            // refusal. Report the decline and stop.
+            _error.value = e.reason.ifBlank { "Key unlock was declined" }
+            return
+        }
         val msg = e.message ?: ""
         val isNetworkError = e.isSshNetworkError()
         val isAuthMessage = !isNetworkError && (
@@ -3658,7 +3669,9 @@ class ConnectionsViewModel @Inject constructor(
         sshClient
     }
 
-    private fun connectEternalTerminal(
+    // internal for unit test (#559: a declined key unlock must not surface
+    // as an auth failure and pop the password fallback).
+    internal fun connectEternalTerminal(
         profile: ConnectionProfile,
         password: String,
         keyOnly: Boolean,
@@ -3772,7 +3785,14 @@ class ConnectionsViewModel @Inject constructor(
                         msg.contains("authentication", ignoreCase = true) ||
                         msg.contains("publickey", ignoreCase = true)
                 val isAuthError = keyOnly && isAuthMessage
-                if (isFidoAuth && (isAuthError || (keyOnly && msg.isBlank()))) {
+                if (e is KeyUnlockDeclinedException) {
+                    // Same rule as connectSsh (#559), and first for the same
+                    // reason: the message contains "authentication", which the
+                    // classifier below reads as an auth failure and answers
+                    // with the password fallback. A declined key unlock is
+                    // reported, not answered with another way in.
+                    _error.value = msg.ifBlank { "Key unlock was declined" }
+                } else if (isFidoAuth && (isAuthError || (keyOnly && msg.isBlank()))) {
                     val fidoDetail = fidoAuthenticator.lastAssertionError
                     _error.value = if (fidoDetail != null) "Security key: $fidoDetail"
                     else msg.ifBlank { "Security key authentication failed" }
@@ -3789,7 +3809,9 @@ class ConnectionsViewModel @Inject constructor(
         }
     }
 
-    private fun connectMosh(
+    // internal for unit test (#559: a declined key unlock must not surface
+    // as an auth failure and pop the password fallback).
+    internal fun connectMosh(
         profile: ConnectionProfile,
         password: String,
         keyOnly: Boolean,
@@ -3893,7 +3915,14 @@ class ConnectionsViewModel @Inject constructor(
                         msg.contains("authentication", ignoreCase = true) ||
                         msg.contains("publickey", ignoreCase = true)
                 val isAuthError = keyOnly && isAuthMessage
-                if (isFidoAuth && (isAuthError || (keyOnly && msg.isBlank()))) {
+                if (e is KeyUnlockDeclinedException) {
+                    // Same rule as connectSsh (#559), and first for the same
+                    // reason: the message contains "authentication", which the
+                    // classifier below reads as an auth failure and answers
+                    // with the password fallback. A declined key unlock is
+                    // reported, not answered with another way in.
+                    _error.value = msg.ifBlank { "Key unlock was declined" }
+                } else if (isFidoAuth && (isAuthError || (keyOnly && msg.isBlank()))) {
                     val fidoDetail = fidoAuthenticator.lastAssertionError
                     _error.value = if (fidoDetail != null) "Security key: $fidoDetail"
                     else msg.ifBlank { "Security key authentication failed" }
