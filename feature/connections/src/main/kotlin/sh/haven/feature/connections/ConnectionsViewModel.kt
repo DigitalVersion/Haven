@@ -1592,15 +1592,18 @@ class ConnectionsViewModel @Inject constructor(
      * connect, since the parser already gates the save button and an
      * unparseable string here means hand-edited / corrupted state).
      *
-     * The returned suspend lambda fires the knock and writes a one-line
-     * summary into [verboseLogger] so the result shows up in the
-     * Connection Log entry. On knock failure it logs the error and
-     * returns normally — the real connect attempt is left to surface the
-     * actual symptom (timeout / connection refused / etc.). Aborting on
-     * knock failure would mask cases where the firewall already opened
-     * the port from a prior successful knock.
+     * The returned suspend lambda fires the SPA packet and/or knock and writes
+     * a one-line summary into [verboseLogger]. On failure it ALSO writes a
+     * FAILED row to the ordinary connection log — these gates are non-fatal, so
+     * without that a packet that never left is invisible and the connection
+     * dies later as a plain read timeout against a port nothing ever opened
+     * (#557). It still returns normally: the real connect attempt is left to
+     * surface the actual symptom (timeout / connection refused / etc.), because
+     * aborting here would mask cases where the firewall already opened the port
+     * from a prior successful knock.
      */
-    private fun buildKnockHook(
+    @androidx.annotation.VisibleForTesting
+    internal fun buildKnockHook(
         profile: ConnectionProfile,
         verboseLogger: SshVerboseLogger?,
     ): (suspend () -> Unit)? {
@@ -1614,10 +1617,10 @@ class ConnectionsViewModel @Inject constructor(
             // SPA runs first — it's the packet that opens the port. A knock
             // sequence, if also configured, stays a legacy fallback.
             if (spa != null) {
-                recordSpaResult(verboseLogger, spa, spaSender.send(profile.host, spa))
+                recordSpaResult(profile.id, verboseLogger, spa, spaSender.send(profile.host, spa))
             }
             if (sequence != null) {
-                recordKnockResult(verboseLogger, sequence, portKnocker.knock(profile.host, sequence))
+                recordKnockResult(profile.id, verboseLogger, sequence, portKnocker.knock(profile.host, sequence))
             }
         }
     }
@@ -1635,7 +1638,8 @@ class ConnectionsViewModel @Inject constructor(
             spaPort = profile.spaPort,
         ).getOrNull()
 
-    private fun recordSpaResult(
+    private suspend fun recordSpaResult(
+        profileId: String,
         verboseLogger: SshVerboseLogger?,
         config: SpaConfig,
         result: SpaResult,
@@ -1647,9 +1651,11 @@ class ConnectionsViewModel @Inject constructor(
         }
         Log.d(TAG, line)
         verboseLogger?.logInfo(line)
+        if (!result.ok) recordGateFailure(profileId, line)
     }
 
-    private fun recordKnockResult(
+    private suspend fun recordKnockResult(
+        profileId: String,
         verboseLogger: SshVerboseLogger?,
         sequence: KnockSequence,
         result: KnockResult,
@@ -1662,6 +1668,32 @@ class ConnectionsViewModel @Inject constructor(
         }
         Log.d(TAG, line)
         verboseLogger?.logInfo(line)
+        if (!result.ok) recordGateFailure(profileId, line)
+    }
+
+    /**
+     * Surface a failed pre-connect gate (SPA packet, port knock) in the NORMAL
+     * connection log, not only the verbose one.
+     *
+     * These gates are deliberately non-fatal: the connect proceeds even when
+     * the packet never left. That means a failure produces no error of its own
+     * and the connection dies later as an ordinary
+     * `SocketTimeoutException: Read timed out` against a port that was never
+     * opened — indistinguishable from the network being down (#557). The step
+     * that guards the connection should not need a debug setting switched on
+     * before anyone can discover it didn't happen.
+     *
+     * A FAILED row here can legitimately be followed by CONNECTED: the gate
+     * failed, the connect was attempted regardless, and it may still succeed
+     * (a knock is a no-op when the port is already open). The row records the
+     * step, not the verdict on the session.
+     */
+    private suspend fun recordGateFailure(profileId: String, line: String) {
+        connectionLogRepository.logEvent(
+            profileId = profileId,
+            status = ConnectionLog.Status.FAILED,
+            details = line,
+        )
     }
 
     /**

@@ -23,6 +23,11 @@ import org.junit.Before
 import org.junit.Test
 import sh.haven.core.data.preferences.UserPreferencesRepository
 import sh.haven.core.data.repository.ConnectionRepository
+import sh.haven.core.spa.SpaSender
+import sh.haven.core.spa.SpaResult
+import sh.haven.core.data.repository.ConnectionLogRepository
+import sh.haven.core.data.db.entities.ConnectionLog
+import org.junit.Assert.assertNotNull
 import sh.haven.core.data.repository.PortForwardRepository
 import sh.haven.core.data.repository.SshKeyRepository
 import sh.haven.core.et.EtSessionManager
@@ -64,6 +69,8 @@ class ConnectionsViewModelSessionTest {
     private val testDispatcher = StandardTestDispatcher()
 
     private lateinit var appContext: Context
+    private val connectionLogRepository: ConnectionLogRepository = mockk(relaxed = true)
+    private val spaSender: SpaSender = mockk(relaxed = true)
     private lateinit var repository: ConnectionRepository
     private lateinit var portForwardRepository: PortForwardRepository
     private lateinit var sshSessionManager: SshSessionManager
@@ -212,10 +219,10 @@ class ConnectionsViewModelSessionTest {
                 coEvery { applyTo(any()) } answers { firstArg() }
             },
             hostKeyVerifier = mockk(relaxed = true),
-            connectionLogRepository = mockk(relaxed = true),
+            connectionLogRepository = connectionLogRepository,
             tunnelResolver = mockk(relaxed = true),
             portKnocker = mockk(relaxed = true),
-            spaSender = mockk(relaxed = true),
+            spaSender = spaSender,
             tunnelConfigRepository = mockk(relaxed = true) {
                 every { observeAll() } returns flowOf(emptyList())
             },
@@ -405,5 +412,53 @@ class ConnectionsViewModelSessionTest {
 
         val fido = auth as ConnectionConfig.AuthMethod.FidoKey
         org.junit.Assert.assertEquals("yk", fido.keyLabel)
+    }
+
+    // --- #557: a pre-connect gate that fails must not be invisible ---------
+    //
+    // SPA/knock failures are deliberately non-fatal, so the connect proceeds
+    // and dies later as an ordinary read timeout against a port nothing
+    // opened. Before this, the only trace was a VERBOSE log line — a reporter
+    // chasing exactly this saw a connection log holding the hostname and a
+    // socket exception, with nothing about the packet that never left.
+
+    private fun spaProfile() = ConnectionProfile(
+        id = "spa-profile", label = "spa", host = "example.invalid", username = "u",
+        connectionType = "SSH",
+        spaKey = "0123456789abcdef",
+        spaAccessSpec = "tcp/22",
+        spaPort = 62201,
+    )
+
+    @Test
+    fun `a failed SPA packet is written to the ordinary connection log`() = runTest {
+        coEvery { spaSender.send(any(), any()) } returns
+            SpaResult(packetLen = 0, totalDurationMs = 5021, error = java.io.IOException("network unreachable"))
+
+        val hook = viewModel.buildKnockHook(spaProfile(), verboseLogger = null)
+        assertNotNull(hook)
+        hook!!.invoke()
+
+        coVerify {
+            connectionLogRepository.logEvent(
+                profileId = "spa-profile",
+                status = ConnectionLog.Status.FAILED,
+                details = match { it != null && it.startsWith("[spa]") && it.contains("failed") },
+            )
+        }
+    }
+
+    // The other half of the property: success stays quiet. A FAILED row per
+    // successful connect would be worse than the silence it replaced.
+    @Test
+    fun `a successful SPA packet writes no connection-log row`() = runTest {
+        coEvery { spaSender.send(any(), any()) } returns
+            SpaResult(packetLen = 152, totalDurationMs = 1043, error = null)
+
+        viewModel.buildKnockHook(spaProfile(), verboseLogger = null)!!.invoke()
+
+        coVerify(exactly = 0) {
+            connectionLogRepository.logEvent(any(), ConnectionLog.Status.FAILED, any(), any(), any())
+        }
     }
 }
