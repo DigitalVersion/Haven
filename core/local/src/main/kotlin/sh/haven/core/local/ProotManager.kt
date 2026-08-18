@@ -1275,8 +1275,14 @@ class ProotManager @Inject constructor(
             installLogRepository.logEvent(distroId = slug, phase = "RootfsDownload", message = "Import: $source")
 
             // Obtain the tarball: download a URL, or use a local file as-is.
+            // See [ImportSource] for why file:// and content:// are handled
+            // rather than falling through to File(source) (#560).
             val tarball: File
-            val isUrl = source.startsWith("http://") || source.startsWith("https://")
+            val resolved = ImportSource.of(source)
+            if (resolved is ImportSource.Unsupported) {
+                throw IllegalArgumentException(resolved.reason)
+            }
+            val isUrl = resolved is ImportSource.Remote
             if (isUrl) {
                 tarball = File(context.cacheDir, "$slug-import.tar")
                 withContext(Dispatchers.IO) {
@@ -1303,8 +1309,9 @@ class ProotManager @Inject constructor(
                     }
                 }
             } else {
-                tarball = File(source)
-                if (!tarball.isFile) throw IllegalArgumentException("Local rootfs not found: $source")
+                val path = (resolved as ImportSource.LocalFile).path
+                tarball = File(path)
+                if (!tarball.isFile) throw IllegalArgumentException("Local rootfs not found: $path")
             }
 
             if (expectedSha256 != null) {
