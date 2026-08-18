@@ -5,6 +5,18 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.34
+
+- Declining a key's biometric prompt now stops the connection (#559 — thanks andar1an)
+- Connection failures say which half failed — reaching the host, or SSH itself — and against which address (#557)
+- The rootfs import field accepts `file://` paths and says so when handed a bare one (#560)
+
+- **Declining a key's biometric prompt now stops the connection** (#559 — thanks andar1an). The prompt itself was honest: press back and the key is never unlocked, never offered to the server. But every kind of failure was flattened into the same "no key" value on its way up, so the connect could not tell your refusal from a key that does not exist — and it did what it does for a missing key, which is carry on with whatever else the profile had: another key, a stored password, keyboard-interactive. On the "try every key" path a decline just removed that one key from the list. A refusal is now its own outcome all the way up, and every connect path — SSH, Mosh, Eternal Terminal, and the jump host under a VNC/RDP/SMB tunnel — reports it and stops before a socket is opened. The near-miss version is guarded too: the first fix's message contained the word "authentication", which the error classifier read as an auth failure and answered by offering the password prompt — a politer form of the same mistake, now pinned by tests on all four paths.
+- **Connection failures name which half failed** (#557). "Socket error" covered everything from a typo in the hostname to a firewall dropping the port to the SSH handshake dying. Failures now say whether Haven couldn't reach the host or the SSH exchange itself failed, and name the address it was trying — so a wrong port and a wrong password no longer look identical.
+- **The rootfs import field takes `file://` paths** (#560). Pasting a `file://` URI — the form most file managers put on the clipboard — was rejected with a message that named neither what was wrong nor what would work. It's accepted now, and the error for a bare content URI says what kind of path it wants.
+
+🔐 **A "no" that only removes one option is indistinguishable from bad luck.** Haven's biometric gate did refuse — the key stayed locked — but refusal was encoded as absence, and absence already meant "try the next thing". Consent that matters has to be a first-class value, not a gap where a credential used to be; otherwise every layer above helpfully routes around it, each one sure it is being resilient.
+
 ## v5.87.33
 
 - **The mouse works over SPICE on older guests** (#549, #543 — thanks empanadablues, who kept testing after the connection itself was fixed). SPICE lets the *server* choose how the pointer is described: a guest with a USB tablet is sent absolute positions, while a guest with only a PS/2 mouse — a Windows 98 VM, say — expects relative movements and silently discards absolute ones. Haven only ever sent absolute, so on those guests the pointer sat perfectly still while the keyboard worked fine. Haven now honours the mode the server asks for, which it had been reading and then ignoring.
