@@ -12,8 +12,12 @@ class SshOptionsApplierTest {
      *  exercises realistic values. */
     private class FakeTarget(seed: Map<String, String>) : SshOptionsApplier.Target {
         val store: MutableMap<String, String> = seed.toMutableMap()
+        var aliveIntervalMs: Int? = null
+        var aliveCountMax: Int? = null
         override fun getConfig(key: String): String? = store[key]
         override fun setConfig(key: String, value: String) { store[key] = value }
+        override fun setServerAliveInterval(intervalMs: Int) { aliveIntervalMs = intervalMs }
+        override fun setServerAliveCountMax(count: Int) { aliveCountMax = count }
     }
 
     private fun defaultTarget() = FakeTarget(
@@ -59,8 +63,10 @@ class SshOptionsApplierTest {
             "ServerAliveInterval" to "30",
         ))
         assertFalse("HavenSshEngine leaked", target.store.keys.any { it.lowercase().startsWith("haven") })
-        // Non-Haven unknown keys still fall through to raw setConfig.
-        assertEquals("30", target.store["ServerAliveInterval"])
+        // ServerAliveInterval routes to the real setter (seconds -> ms),
+        // never to the inert setConfig map (#537).
+        assertEquals(30_000, target.aliveIntervalMs)
+        assertFalse("ServerAliveInterval leaked into config", "ServerAliveInterval" in target.store)
     }
 
     // --- Prefix semantics on mergeAlgorithmList ---
@@ -180,8 +186,45 @@ class SshOptionsApplierTest {
     @Test
     fun `unknown key passes through verbatim for forward compat`() {
         val target = defaultTarget()
+        SshOptionsApplier.apply(target, mapOf("RekeyLimit" to "1G"))
+        assertEquals("1G", target.store["RekeyLimit"])
+    }
+
+    // --- ServerAlive overrides: JSch ignores these in the config map, so
+    // --- they must reach the Session setters (#537, found by kanazawahere).
+
+    @Test
+    fun `ServerAliveInterval seconds reach the setter as milliseconds`() {
+        val target = defaultTarget()
         SshOptionsApplier.apply(target, mapOf("ServerAliveInterval" to "60"))
-        assertEquals("60", target.store["ServerAliveInterval"])
+        assertEquals(60_000, target.aliveIntervalMs)
+        assertFalse("leaked into config", "ServerAliveInterval" in target.store)
+    }
+
+    @Test
+    fun `ServerAliveInterval zero disables keepalive via the setter`() {
+        val target = defaultTarget()
+        SshOptionsApplier.apply(target, mapOf("ServerAliveInterval" to "0"))
+        assertEquals(0, target.aliveIntervalMs)
+    }
+
+    @Test
+    fun `ServerAliveCountMax routes to the setter`() {
+        val target = defaultTarget()
+        SshOptionsApplier.apply(target, mapOf("serveralivecountmax" to "5"))
+        assertEquals(5, target.aliveCountMax)
+        assertFalse("leaked into config", target.store.keys.any { it.lowercase() == "serveralivecountmax" })
+    }
+
+    @Test
+    fun `unparsable or negative ServerAlive values leave the default untouched`() {
+        val target = defaultTarget()
+        SshOptionsApplier.apply(target, mapOf(
+            "ServerAliveInterval" to "-5",
+            "ServerAliveCountMax" to "soon",
+        ))
+        assertEquals(null, target.aliveIntervalMs)
+        assertEquals(null, target.aliveCountMax)
     }
 
     @Test

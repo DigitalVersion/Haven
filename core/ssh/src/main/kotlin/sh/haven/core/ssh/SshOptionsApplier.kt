@@ -1,5 +1,6 @@
 package sh.haven.core.ssh
 
+import android.util.Log
 import com.jcraft.jsch.Session
 
 /**
@@ -17,14 +18,21 @@ import com.jcraft.jsch.Session
  * keep Haven's defaults instead of accidentally replacing them.
  *
  * Unknown keys fall through to a raw `setConfig` so users already
- * familiar with the JSch-native names (`ServerAliveInterval`, etc.)
- * keep working.
+ * familiar with JSch-native names keep working — except
+ * `ServerAliveInterval`/`ServerAliveCountMax`, which JSch keeps as
+ * Session fields with setters and never reads out of the config map,
+ * so a `setConfig` of them is silently inert (found by kanazawahere,
+ * #537). Those two route through the real setters instead.
  */
 object SshOptionsApplier {
+
+    private const val TAG = "SshOptionsApplier"
 
     interface Target {
         fun getConfig(key: String): String?
         fun setConfig(key: String, value: String)
+        fun setServerAliveInterval(intervalMs: Int)
+        fun setServerAliveCountMax(count: Int)
     }
 
     private val OPENSSH_TO_JSCH: Map<String, List<String>> = mapOf(
@@ -65,6 +73,17 @@ object SshOptionsApplier {
                     target.setConfig(jschKey, mergeAlgorithmList(base, value))
                 }
                 lower == "pubkeyauthentication" -> applyPubkeyAuthentication(target, value)
+                // OpenSSH semantics: the interval is in SECONDS (JSch's setter
+                // takes ms), 0 disables keepalive. A value that doesn't parse
+                // or is negative leaves the session default untouched.
+                lower == "serveraliveinterval" -> {
+                    val sec = value.toIntOrNull()
+                    if (sec != null && sec >= 0) target.setServerAliveInterval(sec * 1000)
+                }
+                lower == "serveralivecountmax" -> {
+                    val count = value.toIntOrNull()
+                    if (count != null && count > 0) target.setServerAliveCountMax(count)
+                }
                 else -> target.setConfig(key, value)
             }
         }
@@ -73,6 +92,23 @@ object SshOptionsApplier {
     private fun targetOf(session: Session): Target = object : Target {
         override fun getConfig(key: String): String? = session.getConfig(key)
         override fun setConfig(key: String, value: String) { session.setConfig(key, value) }
+        // A swallowed failure here would make the user's override vanish
+        // with no trace (the pre-#537 behaviour, by a different road) —
+        // warn so a dead override is at least visible in logcat.
+        override fun setServerAliveInterval(intervalMs: Int) {
+            try {
+                session.serverAliveInterval = intervalMs
+            } catch (e: Exception) {
+                Log.w(TAG, "ServerAliveInterval override ($intervalMs ms) not applied: ${e.message}")
+            }
+        }
+        override fun setServerAliveCountMax(count: Int) {
+            try {
+                session.serverAliveCountMax = count
+            } catch (e: Exception) {
+                Log.w(TAG, "ServerAliveCountMax override ($count) not applied: ${e.message}")
+            }
+        }
     }
 
     private fun applyPubkeyAuthentication(target: Target, value: String) {
