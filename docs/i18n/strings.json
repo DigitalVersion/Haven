@@ -9276,7 +9276,7 @@
       "fr": "Syntaxe ssh_config, une par ligne. Prend en charge KexAlgorithms, Ciphers, MACs, HostKeyAlgorithms, PubkeyAcceptedAlgorithms, PubkeyAuthentication, ServerAlive*. Préfixez les listes d\\'algorithmes par + (ajouter), - (retirer) ou ^ (préfixer) pour conserver les valeurs par défaut.",
       "hi": "ssh_config सिंटैक्स, प्रति पंक्ति एक। KexAlgorithms, Ciphers, MACs, HostKeyAlgorithms, PubkeyAcceptedAlgorithms, PubkeyAuthentication, ServerAlive* समर्थित हैं। डिफ़ॉल्ट बनाए रखने के लिए एल्गोरिथम सूचियों के आगे + (जोड़ें), - (हटाएँ) या ^ (आगे जोड़ें) लगाएँ।",
       "ja": "ssh_config構文、1行に1つ。KexAlgorithms、Ciphers、MACs、HostKeyAlgorithms、PubkeyAcceptedAlgorithms、PubkeyAuthentication、ServerAlive* に対応。アルゴリズムのリストの先頭に + (追加)、- (削除)、^ (先頭に追加) を付けると既定値が維持されます。",
-      "ko": "ssh_config 형식: 키 값(한 줄에 하나)",
+      "ko": "ssh_config 형식으로 한 줄에 하나씩 입력하세요. KexAlgorithms, Ciphers, MACs, HostKeyAlgorithms, PubkeyAcceptedAlgorithms, PubkeyAuthentication, ServerAlive* 등을 지원합니다. 알고리즘 목록 앞에 + (추가), - (제거) 또는 ^ (앞에 추가)를 붙이면 기본값을 유지합니다.",
       "pt": "Sintaxe do ssh_config, uma por linha. Suporta KexAlgorithms, Ciphers, MACs, HostKeyAlgorithms, PubkeyAcceptedAlgorithms, PubkeyAuthentication, ServerAlive*. Prefixe as listas de algoritmos com + (anexar), - (remover) ou ^ (preceder) para manter os padrões.",
       "ru": "Синтаксис ssh_config, по одному в строке. Поддерживает KexAlgorithms, Ciphers, MACs, HostKeyAlgorithms, PubkeyAcceptedAlgorithms, PubkeyAuthentication, ServerAlive*. Ставьте перед списками алгоритмов + (добавить), - (удалить) или ^ (в начало), чтобы сохранить значения по умолчанию.",
       "zh": "ssh_config 格式：键 值（每行一个）"
@@ -11600,7 +11600,7 @@
       "fr": "Votre clavier a accès à Internet et peut transmettre ce que vous tapez. Envisagez un clavier respectueux de la vie privée (par ex. HeliBoard, Simple Keyboard).",
       "hi": "आपके कीबोर्ड के पास इंटरनेट पहुँच है और वह आपके टाइप किए गए को भेज सकता है। गोपनीयता वाला कीबोर्ड उपयोग करने पर विचार करें (जैसे HeliBoard, Simple Keyboard)।",
       "ja": "お使いのキーボードはインターネットに接続でき、入力内容を送信する可能性があります。プライバシー重視のキーボード (HeliBoard、Simple Keyboard など) の利用を検討してください。",
-      "ko": "키보드는 일반적으로 입력을 기록할 수 있습니다. 안전한 키보드를 사용하세요.",
+      "ko": "사용 중인 키보드가 인터넷 접근 권한이 있어 입력 내용을 전송할 수 있습니다. HeliBoard나 Simple Keyboard 같은 프라이버시 키보드를 사용해 보세요.",
       "pt": "Seu teclado tem acesso à internet e pode transmitir o que você digita. Considere usar um teclado voltado à privacidade (ex.: HeliBoard, Simple Keyboard).",
       "ru": "У вашей клавиатуры есть доступ в интернет, и она может передавать набранный текст. Рассмотрите клавиатуру, ориентированную на приватность (например, HeliBoard, Simple Keyboard).",
       "zh": "您的输入法可访问网络，输入内容可能被上传。建议改用注重隐私的输入法（例如 HeliBoard、Simple Keyboard）。"
@@ -11815,7 +11815,7 @@
       "fr": "Branchez votre clé de sécurité en USB, ou présentez-la à l’arrière de l’appareil pour le NFC. Haven poursuivra automatiquement dès qu’elle sera détectée.",
       "hi": "अपनी सुरक्षा कुंजी को USB से लगाएँ, या NFC के लिए डिवाइस के पीछे टैप करें। पहचान होते ही Haven अपने आप आगे बढ़ेगा।",
       "ja": "セキュリティ キーを USB で接続するか、NFC の場合は本体の背面にかざしてください。検出されると Haven は自動的に続行します。",
-      "ko": "안전한 채널을 통해 보안 키와 통신 중입니다. 화면이 너무 오래 멈춰 있으면 취소하고 다시 시도하세요.",
+      "ko": "보안 키를 USB로 연결하거나, NFC라면 기기 뒷면에 태그하세요. 감지되면 Haven이 자동으로 계속 진행합니다.",
       "pt": "Conecte sua chave de segurança via USB ou aproxime-a da parte de trás do dispositivo para NFC. O Haven continuará automaticamente assim que a detectar.",
       "ru": "Подключите аппаратный ключ по USB или приложите его к задней панели для NFC. Haven продолжит автоматически, как только обнаружит ключ.",
       "zh": "通过 USB 插入安全密钥，或将其贴在设备背面以使用 NFC。检测到密钥后 Haven 会自动继续。"
@@ -12159,7 +12159,7 @@
       "fr": "1. Démarrer la VM Linux",
       "hi": "1. Linux VM शुरू करें",
       "ja": "1. Linux VM を起動",
-      "ko": "VM 시작",
+      "ko": "1. Linux VM 시작",
       "pt": "1. Iniciar a VM Linux",
       "ru": "1. Запустите Linux VM",
       "zh": "1. 启动 Linux 虚拟机"
@@ -12197,7 +12197,7 @@
       "fr": "2. Ouvrir le port 8022",
       "hi": "2. पोर्ट 8022 खोलें",
       "ja": "2. ポート 8022 を開く",
-      "ko": "포트 열기",
+      "ko": "2. 포트 8022 열기",
       "pt": "2. Abrir a porta 8022",
       "ru": "2. Откройте порт 8022",
       "zh": "2. 开放 8022 端口"
@@ -12216,7 +12216,7 @@
       "fr": "3. Définir le mot de passe et installer SSH",
       "hi": "3. पासवर्ड सेट करें और SSH इंस्टॉल करें",
       "ja": "3. パスワードを設定して SSH をインストール",
-      "ko": "비밀번호 설정",
+      "ko": "3. 비밀번호 설정 및 SSH 설치",
       "pt": "3. Definir senha e instalar SSH",
       "ru": "3. Задайте пароль и установите SSH",
       "zh": "3. 设置密码并安装 SSH"
@@ -12235,7 +12235,7 @@
       "fr": "4. Installer un serveur VNC (facultatif)",
       "hi": "4. VNC सर्वर इंस्टॉल करें (वैकल्पिक)",
       "ja": "4. VNC サーバーをインストール (任意)",
-      "ko": "VNC 서버 설치",
+      "ko": "4. VNC 서버 설치 (선택)",
       "pt": "4. Instalar servidor VNC (opcional)",
       "ru": "4. Установите сервер VNC (необязательно)",
       "zh": "4. 安装 VNC 服务器（可选）"
@@ -12254,7 +12254,7 @@
       "fr": "5. Installer un bureau (facultatif)",
       "hi": "5. एक डेस्कटॉप इंस्टॉल करें (वैकल्पिक)",
       "ja": "5. デスクトップをインストール (任意)",
-      "ko": "데스크톱 환경",
+      "ko": "5. 데스크톱 설치 (선택)",
       "pt": "5. Instalar um desktop (opcional)",
       "ru": "5. Установите рабочий стол (необязательно)",
       "zh": "5. 安装桌面环境（可选）"
@@ -12273,7 +12273,7 @@
       "fr": "6. Installer des applications de bureau (facultatif)",
       "hi": "6. डेस्कटॉप ऐप्स इंस्टॉल करें (वैकल्पिक)",
       "ja": "6. デスクトップ アプリをインストール (任意)",
-      "ko": "앱 설치",
+      "ko": "6. 데스크톱 앱 설치 (선택)",
       "pt": "6. Instalar apps de desktop (opcional)",
       "ru": "6. Установите приложения рабочего стола (необязательно)",
       "zh": "6. 安装桌面应用（可选）"
@@ -12292,7 +12292,7 @@
       "fr": "Installe SSH, VNC, le bureau Xfce4 et des applications (navigateur, éditeur, gestionnaire de fichiers) :",
       "hi": "SSH, VNC, Xfce4 डेस्कटॉप और ऐप्स (ब्राउज़र, एडिटर, फ़ाइल मैनेजर) इंस्टॉल करता है:",
       "ja": "SSH、VNC、Xfce4 デスクトップ、アプリ (ブラウザー、エディター、ファイル マネージャー) をインストールします:",
-      "ko": "Pixel 9의 가상화 터미널에서 실행되는 Linux VM. Linux 앱을 휴대폰에서 직접 실행할 수 있습니다.",
+      "ko": "SSH, VNC, Xfce4 데스크톱 및 앱(브라우저, 편집기, 파일 관리자)을 설치합니다:",
       "pt": "Instala SSH, VNC, o desktop Xfce4 e apps (navegador, editor, gerenciador de arquivos):",
       "ru": "Устанавливает SSH, VNC, рабочий стол Xfce4 и приложения (браузер, редактор, файловый менеджер):",
       "zh": "一键安装 SSH、VNC、Xfce4 桌面以及常用应用（浏览器、编辑器、文件管理器）："
@@ -12368,7 +12368,7 @@
       "fr": "Ouvrez l’application Terminal d’Android pour démarrer la VM.",
       "hi": "VM बूट करने के लिए Android टर्मिनल ऐप खोलें।",
       "ja": "VM を起動するには Android のターミナル アプリを開きます。",
-      "ko": "Pixel 9 시스템 설정에서 Linux 개발 환경을 활성화하고 Terminal 앱을 여세요.",
+      "ko": "Android Terminal 앱을 열어 VM을 부팅하세요.",
       "pt": "Abra o app Terminal do Android para iniciar a VM.",
       "ru": "Откройте приложение «Терминал» Android, чтобы загрузить ВМ.",
       "zh": "打开 Android 终端应用以启动虚拟机。"
@@ -12387,7 +12387,7 @@
       "fr": "Dans les paramètres de l’application Terminal, ajoutez le port 8022 à la liste des ports d’écoute.",
       "hi": "टर्मिनल ऐप सेटिंग्स में, लिसनिंग पोर्ट सूची में पोर्ट 8022 जोड़ें।",
       "ja": "ターミナル アプリの設定で、待ち受けポートの一覧にポート 8022 を追加します。",
-      "ko": "Terminal 앱 설정에서 SSH 및 VNC 포트가 호스트에 노출되도록 포워드를 추가하세요.",
+      "ko": "Terminal 앱 설정에서 수신 포트 목록에 포트 8022를 추가하세요.",
       "pt": "Nas configurações do app Terminal, adicione a porta 8022 à lista de portas de escuta.",
       "ru": "В настройках приложения «Терминал» добавьте порт 8022 в список прослушиваемых портов.",
       "zh": "在终端应用的设置中，将 8022 端口添加到监听端口列表。"
@@ -12406,7 +12406,7 @@
       "fr": "À exécuter dans l’application Terminal. Vous serez invité à définir un mot de passe pour l’utilisateur droid.",
       "hi": "टर्मिनल ऐप में चलाएँ। आपसे droid उपयोगकर्ता के लिए पासवर्ड सेट करने को कहा जाएगा।",
       "ja": "ターミナル アプリで実行します。droid ユーザーのパスワードを設定するよう求められます。",
-      "ko": "기본 사용자 \\'droid\\'에는 비밀번호가 없습니다. SSH로 접속하려면 비밀번호를 설정하세요.",
+      "ko": "Terminal 앱에서 실행하세요. droid 사용자의 비밀번호를 설정하라는 메시지가 표시됩니다.",
       "pt": "Execute no app Terminal. Você será solicitado a definir uma senha para o usuário droid.",
       "ru": "Выполните в приложении «Терминал». Вам предложат задать пароль для пользователя droid.",
       "zh": "在终端应用中运行。系统会提示为 droid 用户设置密码。"
@@ -12425,7 +12425,7 @@
       "fr": "Connectez-vous ensuite avec : droid@localhost:8022",
       "hi": "फिर इससे कनेक्ट करें: droid@localhost:8022",
       "ja": "その後、droid@localhost:8022 で接続します",
-      "ko": "Terminal 앱에서 \\'sudo passwd droid\\' 실행",
+      "ko": "그 다음 연결은: droid@localhost:8022",
       "pt": "Depois conecte com: droid@localhost:8022",
       "ru": "Затем подключитесь: droid@localhost:8022",
       "zh": "然后通过 droid@localhost:8022 连接"
@@ -12444,7 +12444,7 @@
       "fr": "Pour l’accès au bureau à distance via l’onglet Desktop de Haven.",
       "hi": "Haven के Desktop टैब से रिमोट डेस्कटॉप पहुँच के लिए।",
       "ja": "Haven の Desktop タブからリモート デスクトップに接続するために使います。",
-      "ko": "데스크톱을 표시할 수 있도록 VM에서 VNC 서버를 설치하고 시작하세요.",
+      "ko": "Haven 데스크톱 탭을 통한 원격 데스크톱 접근용.",
       "pt": "Para acesso remoto à área de trabalho pela aba Desktop do Haven.",
       "ru": "Для доступа к удалённому рабочему столу через вкладку Desktop в Haven.",
       "zh": "用于通过 Haven 的桌面标签页进行远程桌面访问。"
@@ -12463,7 +12463,7 @@
       "fr": "Xfce4 est léger et fonctionne bien via VNC.",
       "hi": "Xfce4 हल्का है और VNC पर अच्छा काम करता है।",
       "ja": "Xfce4 は軽量で、VNC 経由でも快適に動作します。",
-      "ko": "VM 내에서 데스크톱 환경(예: XFCE)을 설치하고 시작하세요.",
+      "ko": "Xfce4는 가볍고 VNC에서 잘 작동합니다.",
       "pt": "O Xfce4 é leve e funciona bem sobre VNC.",
       "ru": "Xfce4 лёгкий и хорошо работает через VNC.",
       "zh": "Xfce4 轻量且通过 VNC 表现良好。"
@@ -12482,7 +12482,7 @@
       "fr": "Gestionnaire de fichiers, éditeur de texte, visionneuse d’images, navigateur, calculatrice.",
       "hi": "फ़ाइल मैनेजर, टेक्स्ट एडिटर, इमेज व्यूअर, ब्राउज़र, कैलकुलेटर।",
       "ja": "ファイル マネージャー、テキスト エディター、画像ビューアー、ブラウザー、電卓。",
-      "ko": "Terminal에 설치된 패키지 관리자를 통해 원하는 패키지를 설치하세요.",
+      "ko": "파일 관리자, 텍스트 편집기, 이미지 뷰어, 브라우저, 계산기.",
       "pt": "Gerenciador de arquivos, editor de texto, visualizador de imagens, navegador, calculadora.",
       "ru": "Файловый менеджер, текстовый редактор, просмотрщик изображений, браузер, калькулятор.",
       "zh": "文件管理器、文本编辑器、图片查看器、浏览器、计算器。"
@@ -16109,7 +16109,7 @@
       "fr": "Tentées dans l\\'ordre en une seule connexion — pour les serveurs qui en requièrent plusieurs (ex. clé + mot de passe, ou chaînes PAM/OTP).",
       "hi": "एक ही कनेक्ट में क्रम से प्रयास किया जाता है — उन सर्वरों के लिए जो एक से अधिक माँगते हैं (जैसे key + password, या PAM/OTP chains)।",
       "ja": "1 回の接続で順番に試行されます — 複数必要なサーバー（例: 鍵 + パスワード、PAM/OTP チェーン）向けです。",
-      "ko": "단일 연결에서 순서대로 시도됩니다 — 두 가지 이상의 인증이 필요한 서버용 (예: 키 + 비밀번호, PAM/OTP 체인).",
+      "ko": "목록의 모든 인증 방법이 순서대로 서버에 제시되며, 여러 인증을 요구하는 서버(예: 키 + 비밀번호 또는 두 개의 키)는 각각을 충족해야 합니다. \"SSH 키: 아무거나\"는 소프트웨어 키를 시도하고, \"모든 하드웨어 키(FIDO)\"는 보유한 보안 키 중 하나를 탭하게 합니다. 특정 키를 이름으로 고정하면 해당 키만 요구됩니다.",
       "pt": "Tentados em ordem numa única conexão — para servidores que exigem mais de um (ex. chave + senha ou cadeias PAM/OTP).",
       "ru": "Применяются по порядку в одном подключении — для серверов, требующих нескольких методов (напр. ключ + пароль, цепочки PAM/OTP).",
       "zh": "在一次连接中按顺序尝试——用于需要多种方式的服务器（如密钥+密码、PAM/OTP 链）。"
@@ -25438,7 +25438,7 @@
       "fr": "Capturer les détails du protocole pour SSH, Mosh et ET. Peut inclure des noms d\\'hôtes et d\\'utilisateurs",
       "hi": "SSH, Mosh और ET कनेक्शन के प्रोटोकॉल विवरण कैप्चर करें। होस्टनाम और उपयोगकर्ता नाम शामिल हो सकते हैं",
       "ja": "SSH、Mosh、ET接続のプロトコル詳細をキャプチャ。ホスト名やユーザー名を含む場合があります",
-      "ko": "SSH, Mosh, ET 연결의 프로토콜 세부 정보를 캡처합니다. 호스트 이름과 사용자 이름이 포함될 수 있습니다",
+      "ko": "SSH, Mosh, ET, RDP 연결의 프로토콜 세부 정보를 캡처합니다 — 느린 원격 데스크톱 진단에 필요한 RDP 프레임 타이밍 포함. 호스트 이름과 사용자 이름이 포함될 수 있습니다",
       "pt": "Capturar detalhes de protocolo para conexões SSH, Mosh e ET. Pode incluir nomes de host e usuários",
       "ru": "Захват деталей протокола для SSH, Mosh и ET. Может включать имена хостов и пользователей",
       "zh": "捕获 SSH、Mosh 和 ET 连接的协议详情。可能包含主机名和用户名"
@@ -32328,7 +32328,7 @@
       "fr": "Il devra être approuvé à nouveau lors de sa prochaine connexion, et toute approbation automatique est révoquée.",
       "hi": "अगली बार कनेक्ट होने पर इसे फिर से स्वीकृत करना होगा, और कोई भी स्वतः-स्वीकृति रद्द हो जाएगी।",
       "ja": "次回接続時に再度承認が必要になり、自動承認は取り消されます。",
-      "ko": "다음에 연결할 때 다시 승인해야 하며, 자동 승인은 취소됩니다.",
+      "ko": "다음에 연결할 때 다시 승인해야 하며 기존 자동 승인은 해제됩니다.",
       "pt": "Ele precisará ser aprovado novamente na próxima vez que se conectar, e qualquer aprovação automática é revogada.",
       "ru": "При следующем подключении его потребуется одобрить заново, а любое автоодобрение отменяется.",
       "zh": "下次连接时它需要重新获得批准，并且任何自动批准都会被撤销。"
