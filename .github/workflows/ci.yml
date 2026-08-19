@@ -125,7 +125,11 @@ jobs:
               sudo timeout -k 30 "$wall" apt-get $APT_OPTS "$@" && return 0
               echo "apt-get $1 failed or timed out (attempt $attempt)"
               pgrep -a 'apt|dpkg' || true
-              sleep 15
+              # Fail over to the canonical archive when the azure mirror
+              # stalls (see setup-toolchain for the incident detail).
+              echo 'http://archive.ubuntu.com/ubuntu/	priority:1' | sudo tee /etc/apt/apt-mirrors.txt
+              sudo timeout -k 30 180 apt-get $APT_OPTS update -qq || true
+              sleep 5
             done
             echo "apt-get $1 failed after 3 attempts"
             return 1
