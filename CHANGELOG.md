@@ -5,6 +5,15 @@ the corresponding GitHub Release; a release can't ship without its section
 (enforced by `scripts/check-changelog.sh` in CI). The GitHub "Full Changelog"
 compare link is appended automatically — don't add it here.
 
+## v5.87.35
+
+- Returning to zellij or tmux no longer repaints the whole screen when the keyboard was open (#554 — thanks paour)
+- Dependency updates: Compose BOM 2026.08.00, AppCompat 1.8.0, org.json 20260814, golang.org/x/crypto 0.55.0
+
+- **Returning to a full-screen TUI no longer repaints it** (#554 — thanks paour, whose keyboard-open/keyboard-closed comparison identified the trigger). Backgrounding Haven with the soft keyboard up made zellij visibly redraw every tab on return. The cause was a pair of resizes nobody asked for: Android takes the keyboard down a moment *before* the app is paused, so the terminal briefly became full height and the guest was told to grow; on return Haven restores the keyboard and the guest was told to shrink back. Both signals now cancel out — a grow that looks like a keyboard hide waits long enough to see whether the app is being backgrounded, and one caught mid-backgrounding is held until the return settles, by which point there is nothing to resize. The earlier theory on that issue (a stray refresh keystroke) was wrong, and the evidence that killed it — a byte-level trace showing nothing injected — came from the reporter.
+
+⌛ **The two halves of a round trip each looked correct alone.** Reflowing to the keyboard is right while the user watches; restoring the keyboard on return is right too. Composed across a backgrounding, they became grow-then-shrink — two truthful size reports whose net effect was zero, except that the guest repainted for each. The fix is not to report less truthfully but to wait out the moment when the truth is about to reverse itself.
+
 ## v5.87.34
 
 - Declining a key's biometric prompt now stops the connection (#559 — thanks andar1an)
